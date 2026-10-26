@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NogitaEngine } from '../core/engine.ts';
 import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
+import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import type { Utterance } from '../core/contracts.ts';
@@ -94,11 +95,13 @@ const server = createServer(async (req, res) => {
       const payload = JSON.parse(await readRaw(req)) as { id?: string; meetingUrl?: string; provider?: string };
       if (typeof payload.id !== 'string' || !payload.id) { respond(res, 400, { error: 'session id required' }); return; }
       const provider = payload.provider ?? env.MEETING_PROVIDER ?? 'demo';
-      if (provider !== 'recall' && provider !== 'demo') {
+      if (provider !== 'recall' && provider !== 'attendee' && provider !== 'demo') {
         respond(res, 400, { error: 'unsupported meeting provider' }); return;
       }
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
+        : provider === 'attendee'
+        ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true')
         : new DemoMeeting(payload.id);
       await nogita.startSession(payload.id, meeting, payload.meetingUrl);
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
