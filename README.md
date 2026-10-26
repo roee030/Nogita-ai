@@ -102,3 +102,10 @@ The `.env.example` file documents environment variables. Never commit real secre
 - [Jira Cloud v3 create issue](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-post)
 - [monday.com GraphQL](https://developer.monday.com/api-reference/docs/basics)
 - [Claude Messages API](https://platform.claude.com/docs/en/api/messages/create)
+
+## Alternative meeting provider — Attendee.dev
+
+The HTTP server now supports `MEETING_PROVIDER=attendee` alongside `demo` and `recall`.
+The Attendee adapter supports meeting join, provider TTS speech requests, completion-chat messages, and leave using its REST API. **It does not yet ingest live audio**, verify who spoke, or implement native raise-hand. Never expose the development utterance endpoint to meeting participants or the internet.
+
+Before testing with a real meeting: review Attendee's audio/recording/retention policy, set `ATTENDEE_PRIVACY_REVIEWED=true` only after that review, and provide `ATTENDEE_API_KEY` securely. An API key is not needed for local mocks. Attendee remains an evaluation candidate; endpoint behavior must be tested against a real account. Docs: https://docs.attendee.dev/api-reference/tag/bots
