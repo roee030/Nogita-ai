@@ -4,7 +4,7 @@
 
 | Category | First | Expansion | Integration requirement |
 | --- | --- | --- | --- |
-| Voice meeting | Google Meet via Recall | Zoom, Microsoft Teams, Webex | Audio in/out, chat, participant IDs, leave, raise-hand fallback |
+| Voice meeting | Google Meet via Recall or Attendee | Zoom, Microsoft Teams, Webex | Audio in/out, chat, participant IDs, leave, raise-hand fallback |
 | Messaging | Slack | Microsoft Teams, Discord | Mentions, conversations/threads, source search with per-user permission |
 | Project boards | Jira Cloud | monday.com, Linear, Azure DevOps, Trello, Asana | Search/create/read/update, custom fields, assignee mapping, issue link |
 | Code & PRs | GitHub | GitLab, Bitbucket | Read source/index, branch creation, checks, draft PR, review protection |
@@ -55,3 +55,7 @@ The existence of an HTTP connector **is not proof it works on a real organizatio
 - Meeting exit and cleanup including Recall/provider retention.
 - Rate limits, interrupted requests and duplicate webhook replay.
 - p90 time to first spoken response, provider costs and interruptions.
+
+## Provider independence milestone
+
+An Attendee meeting adapter has been added for join, provider TTS, meeting chat and leave, with credentials and privacy gates. Real speech recognition, verified audio origin, true raise-hand capability and full live integration testing remain blockers. Compare Recall, Attendee, and Meeting BaaS on reliability, cost, retention, participant identification and end-to-end latency before selecting a default.
