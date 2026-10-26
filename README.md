@@ -109,3 +109,12 @@ The HTTP server now supports `MEETING_PROVIDER=attendee` alongside `demo` and `r
 The Attendee adapter supports meeting join, provider TTS speech requests, completion-chat messages, and leave using its REST API. **It does not yet ingest live audio**, verify who spoke, or implement native raise-hand. Never expose the development utterance endpoint to meeting participants or the internet.
 
 Before testing with a real meeting: review Attendee's audio/recording/retention policy, set `ATTENDEE_PRIVACY_REVIEWED=true` only after that review, and provide `ATTENDEE_API_KEY` securely. An API key is not needed for local mocks. Attendee remains an evaluation candidate; endpoint behavior must be tested against a real account. Docs: https://docs.attendee.dev/api-reference/tag/bots
+
+## Quick Slack test (no public webhook needed)
+
+1. Create a Slack app (from scratch), enable **Socket Mode**, then generate an app-level token with `connections:write` (starts with `xapp-`).
+2. Set bot token scopes `app_mentions:read`, `chat:write`, and `im:history`, subscribe to bot events `app_mention` and `message.im`, and **Install to Workspace** to obtain a bot token (`xoxb-`). Reinstall after scope changes.
+3. In local `.env`, set `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_ALLOWED_TEAM_IDS=T012...`, `SLACK_BOT_USER_ID=U012...`, and `AUTHORIZED_ACTOR_IDS=slack:T012...:U012...` (replace placeholders with real workspace/user IDs). For a no-cost echo test keep `NOGITA_MODE=demo` and providers `demo`; answers and task links are simulated.
+4. Run `npm install` and `npm run slack`, invite the app to a test channel (`/invite @Nogita`), then say `@Nogita hello` or send it a DM saying `Nogita, hello`. The reply stays in the originating thread. DMs without an explicit name are ignored.
+
+`MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. Real spoken meetings still require verified audio ingestion and a live identity bridge. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.
