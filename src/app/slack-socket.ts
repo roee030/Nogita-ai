@@ -2,6 +2,7 @@ import { SocketModeClient } from '@slack/socket-mode';
 import { NogitaEngine } from '../core/engine.ts';
 import { SlackThreadMeeting } from '../adapters/slack.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
+import { registerSlackEventHandlers } from './slack-socket-events.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 
 loadDotEnv();
@@ -11,15 +12,16 @@ const teams = new Set((process.env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(
 if (!token?.startsWith('xoxb-') || !appToken?.startsWith('xapp-') || !teams.size) {
   throw new Error('SLACK_BOT_TOKEN, SLACK_APP_TOKEN and SLACK_ALLOWED_TEAM_IDS are required');
 }
-const engine = new NogitaEngine(createDependencies());
+const dependencies = createDependencies();
+const engine = new NogitaEngine(dependencies);
 const client = new SocketModeClient({ appToken });
 const sessions = new Set<string>();
 const seen = new Set<string>();
 
-client.on('events_api', async ({ body, ack }) => {
+registerSlackEventHandlers(client, async ({ body, ack }) => {
   // Acknowledge promptly; processing may include slow model and tool calls.
   await ack();
-  const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID);
+  const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
   if (!request || seen.has(request.utterance.eventId)) return;
   seen.add(request.utterance.eventId);
   if (seen.size > 2000) seen.delete(seen.values().next().value!);

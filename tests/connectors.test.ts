@@ -35,6 +35,19 @@ test('Jira rejects unknown assignee before network call', async () => {
     token: 'test-token', projectKey: 'NG', issueType: 'Task', allowedAssigneeIds: new Set(['trusted']) });
   await assert.rejects(() => jira.createTask({ ...issue, assigneeId: 'unknown' }), /allowlist/);
 });
+test('Jira resolves an internal identity to the provider account ID', async () => {
+  let request: Record<string, unknown> | undefined;
+  const mockFetch: typeof fetch = async (_url, options) => {
+    request = JSON.parse(String(options?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify({ key: 'NG-43' }), { status: 201 });
+  };
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task',
+    resolveAssigneeId: id => id === 'roee' ? 'jira-roee' : undefined }, mockFetch);
+  await jira.createTask({ ...issue, assigneeId: 'roee' });
+  const fields = request?.fields as Record<string, unknown>;
+  assert.deepEqual(fields.assignee, { accountId: 'jira-roee' });
+});
 test('Monday GraphQL returns verified item link, never guesses assignment', async () => {
   const mockFetch: typeof fetch = async () => new Response(JSON.stringify({
     data: { create_item: { id: '123', url: 'https://example.monday.com/boards/7/pulses/123' } } }), { status: 200 });

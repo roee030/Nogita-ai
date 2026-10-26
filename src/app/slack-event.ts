@@ -1,5 +1,6 @@
 import { directlyAddressesNogita } from '../core/policy.ts';
 import type { Utterance } from '../core/contracts.ts';
+import type { IdentityDirectory } from '../core/identity.ts';
 
 /** Shared by Socket Mode and future HTTP event handling. No untrusted Slack event becomes a verified actor. */
 export interface SlackEnvelope {
@@ -29,6 +30,7 @@ export function parseSlackRequest(
   body: SlackEnvelope,
   allowedTeams: ReadonlySet<string>,
   botUserId?: string,
+  identities?: IdentityDirectory,
 ): SlackRequest | null {
   const e = body.event;
   const team = body.team_id ?? '';
@@ -59,13 +61,16 @@ export function parseSlackRequest(
   if (!text.trim()) return null;
 
   const threadTs = e.thread_ts || e.ts;
+  const identity = identities?.fromSlack(team, e.user);
   return {
     sessionId: `slack:${team}:${e.channel}:${threadTs}`,
     channel: e.channel,
     threadTs,
     utterance: {
       eventId: body.event_id,
-      actor: { id: `slack:${team}:${e.user}`, displayName: `Slack user ${e.user}`, verified: true },
+      actor: identity
+        ? { id: identity.id, displayName: identity.displayName, verified: true }
+        : { id: `unmapped:slack:${team}:${e.user}`, displayName: `Slack user ${e.user}`, verified: false },
       text,
     },
   };

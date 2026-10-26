@@ -19,7 +19,7 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
     calls.push({ url: String(url), method: String(options?.method), payload: options?.body ? JSON.parse(String(options.body)) : undefined,
       auth: new Headers(options?.headers).get('Authorization') });
     if (String(url).endsWith('/api/v1/bots')) return new Response(JSON.stringify(bot), { status: 201 });
-    return new Response('', { status: 204 });
+    return new Response(null, { status: 204 });
   };
   const meeting = new AttendeeMeeting('session', 'test-token', true, mock);
   assert.equal(await meeting.raiseHand(), false);

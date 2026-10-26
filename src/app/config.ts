@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { BoardPort, BrainPort, CodePort, PolicyPort } from '../core/contracts.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
+import { IdentityDirectory, parseIdentityRecords } from '../core/identity.ts';
 import { DemoBoard, DemoBrain, DemoCode } from '../adapters/demo.ts';
 import { AnthropicBrain } from '../adapters/anthropic.ts';
 import { JiraBoard } from '../adapters/jira.ts';
@@ -16,13 +17,15 @@ export function loadDotEnv(): void {
     if (match && process.env[match[1]!] === undefined) process.env[match[1]!] = match[2]!;
   }
 }
-export function createDependencies(): { board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort } {
+export function createDependencies(): { board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort; identities: IdentityDirectory } {
   const env = process.env;
+  const identities = new IdentityDirectory(env.IDENTITY_MAP_JSON ? parseIdentityRecords(env.IDENTITY_MAP_JSON) : []);
   const board: BoardPort = env.BOARD_PROVIDER === 'jira'
     ? new JiraBoard({ baseUrl: env.JIRA_BASE_URL ?? '', email: env.JIRA_EMAIL ?? '',
         token: env.JIRA_API_TOKEN ?? '', projectKey: env.JIRA_PROJECT_KEY ?? '',
         issueType: env.JIRA_ISSUE_TYPE ?? 'Task',
-        allowedAssigneeIds: new Set((env.JIRA_ASSIGNEE_ACCOUNT_ID ?? '').split(',').filter(Boolean)) })
+        allowedAssigneeIds: new Set((env.JIRA_ASSIGNEE_ACCOUNT_ID ?? '').split(',').filter(Boolean)),
+        resolveAssigneeId: id => identities.jiraAccountIdFor(id) })
     : env.BOARD_PROVIDER === 'monday'
     ? new MondayBoard(env.MONDAY_API_TOKEN ?? '', Number(env.MONDAY_BOARD_ID ?? NaN), env.MONDAY_DESCRIPTION_COLUMN_ID ?? '')
     : new DemoBoard();
@@ -34,5 +37,5 @@ export function createDependencies(): { board: BoardPort; code: CodePort; brain:
     ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? '')
     : new DemoBrain();
   const authorized = new Set((env.AUTHORIZED_ACTOR_IDS ?? 'demo-lead').split(',').map(s => s.trim()).filter(Boolean));
-  return { board, code, brain, policy: new AllowlistPolicy(authorized) };
+  return { board, code, brain, policy: new AllowlistPolicy(authorized), identities };
 }

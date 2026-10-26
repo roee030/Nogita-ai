@@ -77,14 +77,21 @@ The `.env.example` file documents environment variables. Never commit real secre
 - For GitHub set `REPO_PROVIDER=github` and a read-only fine-grained PAT restricted to a test repository.
 - For Anthropic set `NOGITA_MODE=live` plus `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. The text planner is functional against the documented API shape but has not been exercised with real credentials.
 - For a Recall join/chat API integration set `MEETING_PROVIDER=recall` and `RECALL_API_KEY`, and provide an allowed `meetingUrl` when creating a session. **Do not attempt a voice demo yet.** `speak()` intentionally rejects so we cannot misrepresent missing functionality.
+- For shared identities, set `IDENTITY_MAP_JSON` in local `.env` from `config/identities.example.json`, then authorize internal IDs such as `roee` in `AUTHORIZED_ACTOR_IDS`. Provider identifiers are never guessed; unknown users remain unauthorized.
 - For Slack configure a signed Events subscription to `POST /slack/events`, supply `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN`, and include Slack user IDs in the allowlist to enable sensitive actions. Use a properly configured HTTPS endpoint and a durable queue before production.
+
+### Provisioning test identities
+
+The repository includes `qa-user` and `developer-user` records in `config/identities.example.json`. Each external service still requires a real test account: invite the account to the Slack workspace, add it to the Jira site/project, and create or select its GitHub account. Copy the provider-issued Slack User ID, Jira Account ID, and GitHub username into the matching local `.env` record while keeping the same internal `id`. Never invent provider IDs, and do not commit the populated identity map.
+
+The shared internal ID is Nogita's stable identity key; Slack, Jira, and GitHub keep their own unrelated IDs. Only internal IDs listed in `AUTHORIZED_ACTOR_IDS` may read repository evidence or create Jira tasks.
 
 ## Verified status
 
-- `npm test`: **17 passing tests** for activation behavior, non-interruption, permissions, request guards, mocked Slack verification, Jira/Monday/GitHub/Recall HTTP contracts, and session cleanup.
+- `npm test`: **31 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, and session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
-- Live provider tests: **not run** (no credentials).
-- TypeScript `npm run typecheck`: **not run successfully here** because this isolated environment could not install `@types/node` from npm. Run `npm install && npm run typecheck` on your development machine.
+- Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
+- `npm run typecheck`: **passes** with the installed dependencies.
 
 ## Documentation
 
@@ -114,7 +121,7 @@ Before testing with a real meeting: review Attendee's audio/recording/retention 
 
 1. Create a Slack app (from scratch), enable **Socket Mode**, then generate an app-level token with `connections:write` (starts with `xapp-`).
 2. Set bot token scopes `app_mentions:read`, `chat:write`, and `im:history`, subscribe to bot events `app_mention` and `message.im`, and **Install to Workspace** to obtain a bot token (`xoxb-`). Reinstall after scope changes.
-3. In local `.env`, set `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_ALLOWED_TEAM_IDS=T012...`, `SLACK_BOT_USER_ID=U012...`, and `AUTHORIZED_ACTOR_IDS=slack:T012...:U012...` (replace placeholders with real workspace/user IDs). For a no-cost echo test keep `NOGITA_MODE=demo` and providers `demo`; answers and task links are simulated.
+3. In local `.env`, set `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_ALLOWED_TEAM_IDS=T012...`, `SLACK_BOT_USER_ID=U012...`, `IDENTITY_MAP_JSON` with the matching Slack identity, and `AUTHORIZED_ACTOR_IDS` with its internal ID. For a no-cost echo test keep `NOGITA_MODE=demo` and providers `demo`; answers and task links are simulated.
 4. Run `npm install` and `npm run slack`, invite the app to a test channel (`/invite @Nogita`), then say `@Nogita hello` or send it a DM saying `Nogita, hello`. The reply stays in the originating thread. DMs without an explicit name are ignored.
 
 `MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. Real spoken meetings still require verified audio ingestion and a live identity bridge. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.

@@ -8,6 +8,7 @@ export interface JiraConfig {
   issueType: string;
   /** Trusted mapping from user identity to Jira account IDs must happen outside the model. */
   allowedAssigneeIds?: ReadonlySet<string>;
+  resolveAssigneeId?: (internalId: string) => string | undefined;
 }
 export function adfParagraph(text: string): object {
   return { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: text || 'No description provided.' }] }] };
@@ -24,8 +25,11 @@ export class JiraBoard implements BoardPort {
     }
   }
   async createTask(task: CreateTask): Promise<ActionReceipt> {
-    if (task.assigneeId && !this.config.allowedAssigneeIds?.has(task.assigneeId)) {
-      throw new Error('Assignee not in explicitly configured Jira allowlist');
+    let providerAssigneeId: string | undefined;
+    if (task.assigneeId) {
+      providerAssigneeId = this.config.resolveAssigneeId?.(task.assigneeId)
+        ?? (this.config.allowedAssigneeIds?.has(task.assigneeId) ? task.assigneeId : undefined);
+      if (!providerAssigneeId) throw new Error('Assignee not in explicitly configured Jira allowlist');
     }
     const fields: Record<string, unknown> = {
       project: { key: this.config.projectKey },
@@ -33,7 +37,7 @@ export class JiraBoard implements BoardPort {
       summary: task.title,
       description: adfParagraph(task.description),
     };
-    if (task.assigneeId) fields.assignee = { accountId: task.assigneeId };
+    if (providerAssigneeId) fields.assignee = { accountId: providerAssigneeId };
     const response = await this.http(new URL('/rest/api/3/issue', this.config.baseUrl), {
       method: 'POST',
       headers: {

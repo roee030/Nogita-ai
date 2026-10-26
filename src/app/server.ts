@@ -6,6 +6,7 @@ import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
+import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -14,7 +15,9 @@ const token = env.NOGITA_ADMIN_TOKEN;
 if (!token || token.length < 20 || token.startsWith('replace-')) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
-const nogita = new NogitaEngine(createDependencies());
+const dependencies = createDependencies();
+const nogita = new NogitaEngine(dependencies);
+const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const seenSlackEvents = new Set<string>();
 const slackThreads = new Set<string>();
@@ -47,28 +50,19 @@ async function handleSlack(raw: string): Promise<{ status: number; response: unk
     return { status: 200, response: { challenge: payload.challenge } };
   }
   if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
-  const eventId = String(payload.event_id ?? '');
-  if (!eventId || seenSlackEvents.has(eventId)) return { status: 200, response: { ok: true } };
-  seenSlackEvents.add(eventId);
-  if (seenSlackEvents.size > 2000) seenSlackEvents.delete(seenSlackEvents.values().next().value!);
-  const event = payload.event as Record<string, unknown> | undefined;
-  if (!event || event.type !== 'app_mention' || event.bot_id || event.subtype) {
+  const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
+    env.SLACK_BOT_USER_ID, dependencies.identities);
+  if (!request || seenSlackEvents.has(request.utterance.eventId) || !env.SLACK_BOT_TOKEN) {
     return { status: 200, response: { ok: true } };
   }
-  const channel = String(event.channel ?? '');
-  const ts = String(event.thread_ts ?? event.ts ?? '');
-  const user = String(event.user ?? '');
-  if (!channel || !ts || !user || !env.SLACK_BOT_TOKEN) return { status: 200, response: { ok: true } };
-  const sid = `slack:${channel}:${ts}`;
-  if (!slackThreads.has(sid)) {
-    await nogita.startSession(sid, new SlackThreadMeeting(sid, env.SLACK_BOT_TOKEN, channel, ts));
-    slackThreads.add(sid);
+  seenSlackEvents.add(request.utterance.eventId);
+  if (seenSlackEvents.size > 2000) seenSlackEvents.delete(seenSlackEvents.values().next().value!);
+  if (!slackThreads.has(request.sessionId)) {
+    await nogita.startSession(request.sessionId,
+      new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN, request.channel, request.threadTs));
+    slackThreads.add(request.sessionId);
   }
-  const text = String(event.text ?? '').replace(/<@[^>]+>/g, '').trim();
-  // Slack's app_mention event is a verified direct address to the bot.
-  const u: Utterance = { eventId, actor: { id: user, displayName: `Slack user ${user}`, verified: true },
-    text: `Nogita, ${text}` };
-  void nogita.onUtterance(sid, u).catch(err => {
+  void nogita.onUtterance(request.sessionId, request.utterance).catch(err => {
     console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
   });
   return { status: 200, response: { ok: true } };
