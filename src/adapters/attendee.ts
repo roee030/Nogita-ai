@@ -8,7 +8,7 @@ import type { ActionReceipt, Capability, MeetingPort } from '../core/contracts.t
  * API: https://docs.attendee.dev/api-reference/tag/bots
  */
 export class AttendeeMeeting implements MeetingPort {
-  readonly capabilities: ReadonlySet<Capability> = new Set(['speak', 'chat_receipt']);
+  readonly capabilities: ReadonlySet<Capability>;
   private botId?: string;
   private readonly endpoint = 'https://app.attendee.dev/api/v1/bots';
 
@@ -17,9 +17,17 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly apiKey: string,
     private readonly privacyReviewed: boolean,
     private readonly http: typeof fetch = fetch,
+    private readonly webhookUrl?: string,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
+    if (webhookUrl) {
+      const url = new URL(webhookUrl);
+      if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Attendee webhook URL must use HTTPS');
+    }
+    this.capabilities = new Set(webhookUrl ? ['listen', 'speak', 'chat_receipt'] : ['speak', 'chat_receipt']);
   }
+
+  get botIdentifier(): string | undefined { return this.botId; }
 
   private async request(path: string, body?: unknown): Promise<unknown> {
     const response = await this.http(`${this.endpoint}${path}`, {
@@ -53,6 +61,11 @@ export class AttendeeMeeting implements MeetingPort {
       meeting_url: meetingUrl,
       bot_name: 'Nogita',
       deduplication_key: `nogita-${this.id}`,
+      metadata: { session_id: this.id },
+      ...(this.webhookUrl ? { webhooks: [{
+        url: this.webhookUrl,
+        triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
+      }] } : {}),
       debug_settings: { create_debug_recording: false },
     }) as { id?: string } | undefined;
     if (!data?.id || !/^bot_[a-zA-Z0-9_-]+$/.test(data.id)) {

@@ -2,7 +2,7 @@
 
 An extensible virtual engineering teammate for real-time meetings, project knowledge, and authorized task execution.
 
-> **Status: development foundation, NOT a completed voice agent or production app.** The bundled demo and 17 automated tests pass using Node 22.16. No external account or provider API was called during validation. See [Status](#verified-status).
+> **Status: development foundation, NOT a completed voice agent or production app.** The bundled demo and automated tests pass on Node 22.16 or newer. See [Status](#verified-status) for the integrations that have been live-validated.
 
 ## Your exact interaction rules
 
@@ -66,6 +66,7 @@ The `.env.example` file documents environment variables. Never commit real secre
 | monday.com | GraphQL item creation (title + required configured description Text column) | Column discovery, assignee mapping, robust error reconciliation |
 | Slack | Signed Events API ingestion (mentions) and thread replies with bot token | OAuth installation, per-user authorization, realtime contextual search, durable event queue |
 | Recall | Create a bot with approved Meet/Zoom/Teams URL, send receipt to meeting chat, remove bot | **Real-time audio input/output and authenticated event ingestion**, raise-hand bridge, live validation |
+| Attendee | Join, provider TTS, chat receipt, signed live transcript events, stable speaker mapping, provider-ended cleanup | Stable HTTPS deployment, privacy review, speaker UUID enrollment, native raise hand, live meeting validation |
 | Anthropic | Optional live Messages API text planner and source-grounded summary | Voice pipeline, streaming, latency tuning |
 | Teams messaging | Port planned | Adapter/permissions implementation |
 | Zoom/Meet | Meeting URL routed through Recall bot | Native voice + platform-specific raise hand |
@@ -84,11 +85,21 @@ The `.env.example` file documents environment variables. Never commit real secre
 
 The repository includes `qa-user` and `developer-user` records in `config/identities.example.json`. Each external service still requires a real test account: invite the account to the Slack workspace, add it to the Jira site/project, and create or select its GitHub account. Copy the provider-issued Slack User ID, Jira Account ID, and GitHub username into the matching local `.env` record while keeping the same internal `id`. Never invent provider IDs, and do not commit the populated identity map.
 
-The shared internal ID is Nogita's stable identity key; Slack, Jira, and GitHub keep their own unrelated IDs. Only internal IDs listed in `AUTHORIZED_ACTOR_IDS` may read repository evidence or create Jira tasks.
+The shared internal ID is Nogita's stable identity key; Slack, Jira, GitHub, and Attendee keep their own unrelated IDs. Only internal IDs listed in `AUTHORIZED_ACTOR_IDS` may read repository evidence or create Jira tasks.
+
+### Attendee live transcript loop
+
+1. Deploy `npm start` behind a stable HTTPS endpoint; do not expose the development server directly from a laptop.
+2. Set `ATTENDEE_WEBHOOK_URL=https://your-service.example/webhooks/attendee` and the base64 project secret in `ATTENDEE_WEBHOOK_SECRET`.
+3. Set `ATTENDEE_PRIVACY_REVIEWED=true` only after confirming recording, transcription, consent, and retention settings for the workspace.
+4. Add each trusted platform `speaker_user_uuid` as `attendeeUserUuid` in the local `IDENTITY_MAP_JSON`. Display names are never accepted as identity proof.
+5. Start a session through `POST /api/sessions` with `provider: "attendee"`. The bot subscribes to `transcript.update`, `participant_events.join_leave`, and `bot.state_change`; signed transcripts feed the existing direct-address policy, and provider-ended events purge the session without an unnecessary leave request.
+
+Closed-caption transcription is the recommended first deployment because Attendee documents it as lower-latency and free of additional transcription-provider cost. A live reasoning provider is still required for natural general conversation; deterministic code lookup and explicit Jira task requests work in demo mode.
 
 ## Verified status
 
-- `npm test`: **31 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, and session cleanup.
+- `npm test`: **40 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed Attendee transcript ingestion, ordered retry behavior, and race-safe session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.
@@ -112,10 +123,9 @@ The shared internal ID is Nogita's stable identity key; Slack, Jira, and GitHub 
 
 ## Alternative meeting provider — Attendee.dev
 
-The HTTP server now supports `MEETING_PROVIDER=attendee` alongside `demo` and `recall`.
-The Attendee adapter supports meeting join, provider TTS speech requests, completion-chat messages, and leave using its REST API. **It does not yet ingest live audio**, verify who spoke, or implement native raise-hand. Never expose the development utterance endpoint to meeting participants or the internet.
+The HTTP server supports `MEETING_PROVIDER=attendee` alongside `demo` and `recall`. Its bot can join, request provider TTS speech, send completion links in meeting chat, ingest signed live transcripts, map enrolled speakers to shared internal identities, and clean up when the provider reports that the meeting ended. It does not yet implement native raise-hand or a direct realtime audio stream.
 
-Before testing with a real meeting: review Attendee's audio/recording/retention policy, set `ATTENDEE_PRIVACY_REVIEWED=true` only after that review, and provide `ATTENDEE_API_KEY` securely. An API key is not needed for local mocks. Attendee remains an evaluation candidate; endpoint behavior must be tested against a real account. Docs: https://docs.attendee.dev/api-reference/tag/bots
+Before testing with a real meeting: deploy the webhook behind stable HTTPS, review Attendee's audio/recording/retention policy, set `ATTENDEE_PRIVACY_REVIEWED=true` only after that review, enroll the stable speaker UUIDs, and provide credentials securely. An API key is not needed for local mocks. Attendee remains an evaluation candidate until a real meeting is validated. Docs: https://docs.attendee.dev/api-reference/tag/bots
 
 ## Quick Slack test (no public webhook needed)
 
@@ -124,4 +134,4 @@ Before testing with a real meeting: review Attendee's audio/recording/retention 
 3. In local `.env`, set `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_ALLOWED_TEAM_IDS=T012...`, `SLACK_BOT_USER_ID=U012...`, `IDENTITY_MAP_JSON` with the matching Slack identity, and `AUTHORIZED_ACTOR_IDS` with its internal ID. For a no-cost echo test keep `NOGITA_MODE=demo` and providers `demo`; answers and task links are simulated.
 4. Run `npm install` and `npm run slack`, invite the app to a test channel (`/invite @Nogita`), then say `@Nogita hello` or send it a DM saying `Nogita, hello`. The reply stays in the originating thread. DMs without an explicit name are ignored.
 
-`MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. Real spoken meetings still require verified audio ingestion and a live identity bridge. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.
+`MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. A real spoken-meeting test still requires stable HTTPS, privacy acceptance, enrolled Attendee speaker UUIDs, and live provider validation. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.

@@ -21,10 +21,11 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
     if (String(url).endsWith('/api/v1/bots')) return new Response(JSON.stringify(bot), { status: 201 });
     return new Response(null, { status: 204 });
   };
-  const meeting = new AttendeeMeeting('session', 'test-token', true, mock);
+  const meeting = new AttendeeMeeting('session', 'test-token', true, mock, 'https://nogita.example/webhooks/attendee');
   assert.equal(await meeting.raiseHand(), false);
   assert.equal(calls.length, 0);
   await meeting.join(meetingUrl);
+  assert.equal(meeting.botIdentifier, bot.id);
   await assert.rejects(() => meeting.join(meetingUrl), /already joining/);
   await meeting.speak('Hello.');
   await meeting.sendCompletion({ provider: 'jira', kind: 'task', label: 'NG-1', url: 'https://example.atlassian.net/browse/NG-1' });
@@ -36,6 +37,12 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   ]);
   assert.ok(calls.every(x => x.auth === 'Token test-token'));
   assert.equal(calls[0]?.payload.debug_settings.create_debug_recording, false);
+  assert.deepEqual(calls[0]?.payload.metadata, { session_id: 'session' });
+  assert.equal(calls[0]?.payload.bot_metadata, undefined);
+  assert.deepEqual(calls[0]?.payload.webhooks, [{
+    url: 'https://nogita.example/webhooks/attendee',
+    triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
+  }]);
   assert.equal(calls[1]?.payload.text, 'Hello.');
   assert.deepEqual(calls[2]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
 });

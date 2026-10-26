@@ -4,6 +4,7 @@ export interface IdentityRecord {
   slack?: { teamId: string; userId: string };
   jiraAccountId?: string;
   githubUsername?: string;
+  attendeeUserUuid?: string;
 }
 
 function required(value: unknown, field: string): string {
@@ -36,6 +37,7 @@ export function parseIdentityRecords(raw: string): IdentityRecord[] {
     }
     if (input.jiraAccountId !== undefined) record.jiraAccountId = required(input.jiraAccountId, `record ${index} jiraAccountId`);
     if (input.githubUsername !== undefined) record.githubUsername = required(input.githubUsername, `record ${index} githubUsername`);
+    if (input.attendeeUserUuid !== undefined) record.attendeeUserUuid = required(input.attendeeUserUuid, `record ${index} attendeeUserUuid`);
     return record;
   });
 }
@@ -45,6 +47,7 @@ export class IdentityDirectory {
   private readonly bySlack = new Map<string, IdentityRecord>();
   private readonly byJira = new Map<string, IdentityRecord>();
   private readonly byGitHub = new Map<string, IdentityRecord>();
+  private readonly byAttendee = new Map<string, IdentityRecord>();
 
   constructor(records: readonly IdentityRecord[]) {
     for (const record of records) {
@@ -64,6 +67,10 @@ export class IdentityDirectory {
         if (this.byGitHub.has(key)) throw new Error(`duplicate GitHub identity: ${record.githubUsername}`);
         this.byGitHub.set(key, record);
       }
+      if (record.attendeeUserUuid) {
+        if (this.byAttendee.has(record.attendeeUserUuid)) throw new Error(`duplicate Attendee identity: ${record.attendeeUserUuid}`);
+        this.byAttendee.set(record.attendeeUserUuid, record);
+      }
     }
   }
 
@@ -72,5 +79,6 @@ export class IdentityDirectory {
   }
   fromJira(accountId: string): IdentityRecord | undefined { return this.byJira.get(accountId); }
   fromGitHub(username: string): IdentityRecord | undefined { return this.byGitHub.get(username.toLowerCase()); }
+  fromAttendee(userUuid: string): IdentityRecord | undefined { return this.byAttendee.get(userUuid); }
   jiraAccountIdFor(id: string): string | undefined { return this.byId.get(id)?.jiraAccountId; }
 }

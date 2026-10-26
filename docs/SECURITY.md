@@ -5,6 +5,7 @@
 ## Present safety controls
 
 - Signed Slack Events verification: HMAC SHA256 and 5-minute timestamp window.
+- Signed Attendee webhook verification using the provider's canonical JSON and project HMAC secret.
 - Admin-token protection for development ingestion and session administration.
 - Code read and board mutation gated by verified actor ID + explicit configured allowlist.
 - User requests must directly address Nogita by name before any spoken answer or task execution.
@@ -17,11 +18,11 @@
 
 ## Known blockers before real teams use it
 
-1. **Authenticating meeting participants:** voice IDs need cryptographically trusted linkage to organization identities, not self-asserted input.
+1. **Authenticating meeting participants:** Attendee stable user UUIDs can be enrolled into the shared identity directory, but the workspace's identity provenance and enrollment procedure still require live validation. Self-asserted names are never trusted.
 2. **Audience-level authorization:** a verified questioner may still be in a meeting with unauthorized listeners. Sensitive GitHub/Jira answers must account for all attendees.
 3. **Real-time media disclosure and provider data retention:** verify actual Recall, speech provider and AI processor settings, consent requirements, regional storage and logs.
 4. **Persistent idempotency:** current deduplication lives in process memory; network retries after restart could create duplicate external writes.
-5. **Real-time media:** listening/speaking have not been implemented in Recall. The adapter currently joins/sends chat only.
+5. **Real-time media:** Attendee signed transcript ingestion and provider TTS are implemented; direct realtime audio streaming is not. Recall still joins/sends chat only.
 6. **Raise-hand limitation:** no native Recall raise-hand API was confirmed. No fallback chat or speech to violate product rules.
 7. **Work completion jobs:** a durable queue and cancellation semantics are required for long-running operations and tool errors.
 8. **Slack resilience:** incoming events are acked before background work completes, with no durable queue and no verified Slack workspace OAuth installation.

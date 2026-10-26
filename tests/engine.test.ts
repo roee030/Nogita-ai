@@ -82,6 +82,100 @@ test('meeting state purged on end, cannot accept more utterances', async () => {
   assert.equal(f.engine.sessionCount(), 0);
   await assert.rejects(() => f.utter('Nogita, hello', '2'), /unknown session/);
 });
+
+test('provider-ended meeting purges state without sending a redundant leave command', async () => {
+  const f = fixture();
+  await f.engine.startSession('provider-ended', f.meeting);
+  await f.engine.endSession('provider-ended', false);
+  assert.equal(f.engine.sessionCount(), 0);
+  assert.equal(f.meeting.events.filter(e => e.type === 'leave').length, 0);
+});
+
+test('failed event processing can be retried instead of being silently discarded', async () => {
+  const f = fixture();
+  await f.engine.startSession('retryable', f.meeting);
+  const originalSpeak = f.meeting.speak.bind(f.meeting);
+  let attempts = 0;
+  f.meeting.speak = async text => {
+    attempts++;
+    if (attempts === 1) throw new Error('temporary speech failure');
+    return originalSpeak(text);
+  };
+  await assert.rejects(() => f.engine.onUtterance('retryable', {
+    eventId: 'retry-event', actor: { id: 'lead', displayName: 'Lead', verified: true }, text: 'Nogita, hello',
+  }), /temporary speech failure/);
+  assert.equal(await f.engine.onUtterance('retryable', {
+    eventId: 'retry-event', actor: { id: 'lead', displayName: 'Lead', verified: true }, text: 'Nogita, hello',
+  }), 'answered');
+});
+
+test('utterances in one session are serialized so a failed rollback cannot erase a concurrent event', async () => {
+  const histories: string[][] = [];
+  const brain: BrainPort = {
+    plan: async (_current, history): Promise<Plan> => {
+      histories.push([...history]);
+      return { kind: 'answer', message: 'ok' };
+    },
+    answerWithEvidence: async () => '',
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain);
+  await f.engine.startSession('serialized', f.meeting);
+  let releaseFirst!: () => void;
+  let markStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markStarted = resolve; });
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const originalSpeak = f.meeting.speak.bind(f.meeting);
+  let attempts = 0;
+  f.meeting.speak = async text => {
+    attempts++;
+    if (attempts === 1) {
+      markStarted();
+      await firstGate;
+      throw new Error('first event failed');
+    }
+    return originalSpeak(text);
+  };
+  const first = f.engine.onUtterance('serialized', {
+    eventId: 'first', actor: lead, text: 'Nogita, first',
+  });
+  await firstStarted;
+  const second = f.engine.onUtterance('serialized', {
+    eventId: 'second', actor: lead, text: 'Nogita, second',
+  });
+  await Promise.resolve();
+  assert.equal(attempts, 1);
+  releaseFirst();
+  await assert.rejects(first, /first event failed/);
+  assert.equal(await second, 'answered');
+  assert.deepEqual(histories, [[], []]);
+});
+
+test('ending a session drains in-flight speech and refuses new utterances', async () => {
+  const f = fixture();
+  await f.engine.startSession('ending', f.meeting);
+  let releaseSpeak!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const gate = new Promise<void>(resolve => { releaseSpeak = resolve; });
+  const originalSpeak = f.meeting.speak.bind(f.meeting);
+  f.meeting.speak = async text => {
+    markStarted();
+    await gate;
+    await originalSpeak(text);
+  };
+  const active = f.engine.onUtterance('ending', { eventId: 'active', actor: lead, text: 'Nogita, hello' });
+  await started;
+  const ending = f.engine.endSession('ending');
+  await assert.rejects(() => f.engine.onUtterance('ending', {
+    eventId: 'late', actor: lead, text: 'Nogita, too late',
+  }), /unknown session/);
+  assert.equal(f.meeting.events.some(event => event.type === 'leave'), false);
+  releaseSpeak();
+  assert.equal(await active, 'answered');
+  await ending;
+  assert.equal(f.meeting.events.at(-1)?.type, 'leave');
+});
 test('create task request is recognized, question not treated as request', () => {
   assert.equal(isExplicitCreateRequest('create a jira task'), true);
   assert.equal(isExplicitCreateRequest('Do we have a task about auth?'), false);

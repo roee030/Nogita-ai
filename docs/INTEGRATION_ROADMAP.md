@@ -16,7 +16,7 @@ The existence of an HTTP connector **is not proof it works on a real organizatio
 
 - Generic contracts and code scaffold.
 - Demo running end to end.
-- 17 passing behavior and API-shape tests.
+- Automated behavior, security-boundary, identity, and provider API-shape tests.
 - GitHub read and Jira/monday write connector code (not live-verified).
 - Slack signed webhook and reply connector code (not live-verified).
 - Recall join/chat connector code (not live-verified).
@@ -58,4 +58,4 @@ The existence of an HTTP connector **is not proof it works on a real organizatio
 
 ## Provider independence milestone
 
-An Attendee meeting adapter has been added for join, provider TTS, meeting chat and leave, with credentials and privacy gates. Real speech recognition, verified audio origin, true raise-hand capability and full live integration testing remain blockers. Compare Recall, Attendee, and Meeting BaaS on reliability, cost, retention, participant identification and end-to-end latency before selecting a default.
+An Attendee meeting adapter has been added for join, provider TTS, meeting chat, leave, signed transcript webhooks, stable speaker UUID mapping, replay suppression, and provider-ended cleanup, with credentials and privacy gates. Stable HTTPS deployment, privacy acceptance, real speaker enrollment, true raise-hand capability and full live integration testing remain blockers. Compare Recall, Attendee, and Meeting BaaS on reliability, cost, retention, participant identification and end-to-end latency before selecting a default.

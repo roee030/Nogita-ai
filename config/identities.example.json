@@ -4,14 +4,16 @@
     "displayName": "Roee Angel",
     "slack": { "teamId": "T012EXAMPLE", "userId": "U012ROEE" },
     "jiraAccountId": "replace-with-jira-account-id",
-    "githubUsername": "roee030"
+    "githubUsername": "roee030",
+    "attendeeUserUuid": "replace-with-stable-meeting-user-uuid"
   },
   {
     "id": "qa-user",
     "displayName": "QA Test User",
     "slack": { "teamId": "T012EXAMPLE", "userId": "U012QA" },
     "jiraAccountId": "replace-with-qa-jira-account-id",
-    "githubUsername": "replace-with-qa-github-username"
+    "githubUsername": "replace-with-qa-github-username",
+    "attendeeUserUuid": "replace-with-qa-meeting-user-uuid"
   },
   {
     "id": "developer-user",
@@ -21,6 +23,7 @@
       "userId": "U012DEV"
     },
     "jiraAccountId": "replace-with-developer-jira-account-id",
-    "githubUsername": "replace-with-developer-github-username"
+    "githubUsername": "replace-with-developer-github-username",
+    "attendeeUserUuid": "replace-with-developer-meeting-user-uuid"
   }
 ]

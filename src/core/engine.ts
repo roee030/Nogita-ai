@@ -7,6 +7,8 @@ interface Session {
   eventIds: Set<string>;
   raised: boolean;
   mutedUntil: number;
+  processing: Promise<void>;
+  ending: boolean;
 }
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
@@ -24,27 +26,43 @@ export class NogitaEngine {
     if (this.sessions.has(sessionId)) throw new Error('session already exists');
     if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
     await meeting.join(meetingUrl);
-    this.sessions.set(sessionId, { meeting, history: [], eventIds: new Set(), raised: false, mutedUntil: 0 });
+    this.sessions.set(sessionId, {
+      meeting, history: [], eventIds: new Set(), raised: false, mutedUntil: 0,
+      processing: Promise.resolve(), ending: false,
+    });
   }
-  async endSession(sessionId: string): Promise<void> {
+  async endSession(sessionId: string, leaveProvider = true): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    session.ending = true;
+    await session.processing;
+    if (this.sessions.get(sessionId) !== session) return;
     this.sessions.delete(sessionId);
     session.history.length = 0;
     session.eventIds.clear();
     for (const key of this.completed.keys()) {
       if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
     }
-    await session.meeting.leave();
+    if (leaveProvider) await session.meeting.leave();
   }
   sessionCount(): number { return this.sessions.size; }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
     const s = this.sessions.get(sessionId);
-    if (!s) throw new Error('unknown session');
+    if (!s || s.ending) throw new Error('unknown session');
     if (!utterance.actor.verified || !utterance.eventId || !utterance.text.trim()) return 'ignored';
+    const previous = s.processing;
+    let release!: () => void;
+    s.processing = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+    if (this.sessions.get(sessionId) !== s) throw new Error('unknown session');
     if (s.eventIds.has(utterance.eventId)) return 'ignored';
     s.eventIds.add(utterance.eventId);
+    const historyBefore = s.history.slice();
+    const raisedBefore = s.raised;
+    const mutedUntilBefore = s.mutedUntil;
+    try {
     // Prevent unbounded in-memory event metadata or transcript retention.
     if (s.eventIds.size > 2000) s.eventIds.delete(s.eventIds.values().next().value!);
     const current = utterance.text.trim().slice(0, 4000);
@@ -114,5 +132,15 @@ export class NogitaEngine {
       return 'not_supported';
     }
     return 'not_supported';
+    } catch (error) {
+      s.eventIds.delete(utterance.eventId);
+      s.history.splice(0, s.history.length, ...historyBefore);
+      s.raised = raisedBefore;
+      s.mutedUntil = mutedUntilBefore;
+      throw error;
+    }
+    } finally {
+      release();
+    }
   }
 }

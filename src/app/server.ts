@@ -7,6 +7,7 @@ import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
+import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -20,7 +21,14 @@ const nogita = new NogitaEngine(dependencies);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const seenSlackEvents = new Set<string>();
+const seenAttendeeEvents = new Set<string>();
+const activeAttendeeEvents = new Set<string>();
+const attendeeBotsBySession = new Map<string, string>();
 const slackThreads = new Set<string>();
+
+function forgetAttendeeSession(sessionId: string): void {
+  attendeeBotsBySession.delete(sessionId);
+}
 
 function safeToken(auth: string | undefined): boolean {
   const supplied = auth?.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -68,6 +76,41 @@ async function handleSlack(raw: string): Promise<{ status: number; response: unk
   return { status: 200, response: { ok: true } };
 }
 
+async function handleAttendee(raw: string, signature: string | undefined): Promise<{ status: number; response: unknown }> {
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  if (!verifyAttendeeWebhookSignature(env.ATTENDEE_WEBHOOK_SECRET ?? '', payload, signature)) {
+    return { status: 401, response: { error: 'invalid Attendee signature' } };
+  }
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || attendeeBotsBySession.get(envelope.sessionId) !== envelope.botId) {
+    return { status: 200, response: { ok: true } };
+  }
+  if (seenAttendeeEvents.has(envelope.eventId)) return { status: 200, response: { ok: true } };
+  if (activeAttendeeEvents.has(envelope.eventId)) {
+    return { status: 503, response: { error: 'Attendee event is still processing' } };
+  }
+  activeAttendeeEvents.add(envelope.eventId);
+
+  try {
+    const endedSession = parseAttendeeEndedSession(payload);
+    if (endedSession) {
+      await nogita.endSession(endedSession, false);
+      forgetAttendeeSession(endedSession);
+    } else {
+      const transcript = parseAttendeeTranscript(payload, dependencies.identities);
+      if (transcript) await nogita.onUtterance(transcript.sessionId, transcript.utterance);
+    }
+    seenAttendeeEvents.add(envelope.eventId);
+    if (seenAttendeeEvents.size > 2000) seenAttendeeEvents.delete(seenAttendeeEvents.values().next().value!);
+    return { status: 200, response: { ok: true } };
+  } catch (error) {
+    console.error('attendee_event_failed', error instanceof Error ? error.message : 'unknown');
+    return { status: 503, response: { error: 'Attendee event processing failed' } };
+  } finally {
+    activeAttendeeEvents.delete(envelope.eventId);
+  }
+}
+
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
   try {
@@ -84,6 +127,11 @@ const server = createServer(async (req, res) => {
       const result = await handleSlack(raw);
       respond(res, result.status, result.response); return;
     }
+    if (req.method === 'POST' && pathname === '/webhooks/attendee') {
+      const result = await handleAttendee(await readRaw(req),
+        req.headers['x-webhook-signature'] as string | undefined);
+      respond(res, result.status, result.response); return;
+    }
     if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
     if (req.method === 'POST' && pathname === '/api/sessions') {
       const payload = JSON.parse(await readRaw(req)) as { id?: string; meetingUrl?: string; provider?: string };
@@ -95,10 +143,16 @@ const server = createServer(async (req, res) => {
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
-        ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true')
+        ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true',
+            fetch, env.ATTENDEE_WEBHOOK_URL)
         : new DemoMeeting(payload.id);
       await nogita.startSession(payload.id, meeting, payload.meetingUrl);
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
+      if (meeting instanceof AttendeeMeeting) {
+        const botId = meeting.botIdentifier;
+        if (!botId) throw new Error('Attendee did not return a bot ID');
+        attendeeBotsBySession.set(payload.id, botId);
+      }
       respond(res, 201, { sessionId: payload.id, provider, capabilities: [...meeting.capabilities] }); return;
     }
     if (req.method === 'POST' && pathname === '/api/utterances') {
@@ -114,8 +168,12 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'DELETE' && pathname.startsWith('/api/sessions/')) {
       const id = decodeURIComponent(pathname.slice('/api/sessions/'.length));
-      await nogita.endSession(id);
-      meetingHandles.delete(id);
+      try {
+        await nogita.endSession(id);
+      } finally {
+        meetingHandles.delete(id);
+        forgetAttendeeSession(id);
+      }
       respond(res, 200, { ended: id }); return;
     }
     respond(res, 404, { error: 'not found' });

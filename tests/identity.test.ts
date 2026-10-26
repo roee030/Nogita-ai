@@ -10,6 +10,7 @@ const records = [
     slack: { teamId: 'T123', userId: 'U123' },
     jiraAccountId: 'jira-roee',
     githubUsername: 'roee030',
+    attendeeUserUuid: 'meet-roee',
   },
   {
     id: 'qa-user',
@@ -25,6 +26,7 @@ test('one internal identity resolves from Slack, Jira, and GitHub identifiers', 
   assert.equal(directory.fromSlack('T123', 'U123')?.id, 'roee');
   assert.equal(directory.fromJira('jira-roee')?.id, 'roee');
   assert.equal(directory.fromGitHub('ROEE030')?.id, 'roee');
+  assert.equal(directory.fromAttendee('meet-roee')?.id, 'roee');
   assert.equal(directory.jiraAccountIdFor('roee'), 'jira-roee');
 });
 
