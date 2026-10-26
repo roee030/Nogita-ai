@@ -54,6 +54,15 @@ This endpoint returns demo `speak` and `chat` events. The endpoint trusts the be
 
 Stop the session by issuing `DELETE /api/sessions/demo-meeting` with the bearer token.
 
+Check product configuration without exposing any secret values:
+
+```bash
+curl http://127.0.0.1:8787/api/readiness \
+  -H 'Authorization: Bearer YOUR_ADMIN_TOKEN'
+```
+
+The protected endpoint returns fixed `ready`/`blocked` checks for the runtime, admin authentication, Slack, Jira, GitHub, Attendee, and live reasoning. It returns HTTP 503 while a blocker remains, which makes it suitable for deployment readiness probes without turning `/health` into a secrets/configuration inventory.
+
 ## Provider configuration (incrementally)
 
 The `.env.example` file documents environment variables. Never commit real secrets or expose the development API publicly.
@@ -99,7 +108,7 @@ Closed-caption transcription is the recommended first deployment because Attende
 
 ## Verified status
 
-- `npm test`: **40 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed Attendee transcript ingestion, ordered retry behavior, and race-safe session cleanup.
+- `npm test`: **45 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, secret-safe readiness reporting, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed Attendee transcript ingestion, ordered retry behavior, and race-safe session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.

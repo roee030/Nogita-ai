@@ -81,4 +81,5 @@ export class IdentityDirectory {
   fromGitHub(username: string): IdentityRecord | undefined { return this.byGitHub.get(username.toLowerCase()); }
   fromAttendee(userUuid: string): IdentityRecord | undefined { return this.byAttendee.get(userUuid); }
   jiraAccountIdFor(id: string): string | undefined { return this.byId.get(id)?.jiraAccountId; }
+  hasAttendeeIdentity(): boolean { return this.byAttendee.size > 0; }
 }

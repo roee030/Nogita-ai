@@ -8,6 +8,7 @@ import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
+import { buildReadinessReport } from './readiness.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -16,7 +17,20 @@ const token = env.NOGITA_ADMIN_TOKEN;
 if (!token || token.length < 20 || token.startsWith('replace-')) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
-const dependencies = createDependencies();
+let providerConfigValid = true;
+let dependencies: ReturnType<typeof createDependencies>;
+try {
+  dependencies = createDependencies(env);
+} catch {
+  providerConfigValid = false;
+  console.error('provider_configuration_invalid');
+  const safeEnv = { ...env, BOARD_PROVIDER: 'demo', REPO_PROVIDER: 'demo', NOGITA_MODE: 'demo' };
+  try {
+    dependencies = createDependencies(safeEnv);
+  } catch {
+    dependencies = createDependencies({ ...safeEnv, IDENTITY_MAP_JSON: '[]' });
+  }
+}
 const nogita = new NogitaEngine(dependencies);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
@@ -81,6 +95,7 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
   if (!verifyAttendeeWebhookSignature(env.ATTENDEE_WEBHOOK_SECRET ?? '', payload, signature)) {
     return { status: 401, response: { error: 'invalid Attendee signature' } };
   }
+  if (!providerConfigValid) return { status: 503, response: { error: 'provider configuration invalid' } };
   const envelope = parseAttendeeEnvelope(payload);
   if (!envelope || attendeeBotsBySession.get(envelope.sessionId) !== envelope.botId) {
     return { status: 200, response: { ok: true } };
@@ -124,6 +139,7 @@ const server = createServer(async (req, res) => {
         req.headers['x-slack-signature'] as string | undefined ?? null, raw)) {
         respond(res, 401, { error: 'invalid Slack signature' }); return;
       }
+      if (!providerConfigValid) { respond(res, 503, { error: 'provider configuration invalid' }); return; }
       const result = await handleSlack(raw);
       respond(res, result.status, result.response); return;
     }
@@ -133,6 +149,11 @@ const server = createServer(async (req, res) => {
       respond(res, result.status, result.response); return;
     }
     if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
+    if (req.method === 'GET' && pathname === '/api/readiness') {
+      const report = buildReadinessReport(env, dependencies.identities, process.versions.node, providerConfigValid);
+      respond(res, report.ok ? 200 : 503, report); return;
+    }
+    if (!providerConfigValid) { respond(res, 503, { error: 'provider configuration invalid' }); return; }
     if (req.method === 'POST' && pathname === '/api/sessions') {
       const payload = JSON.parse(await readRaw(req)) as { id?: string; meetingUrl?: string; provider?: string };
       if (typeof payload.id !== 'string' || !payload.id) { respond(res, 400, { error: 'session id required' }); return; }

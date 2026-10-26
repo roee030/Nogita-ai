@@ -17,8 +17,7 @@ export function loadDotEnv(): void {
     if (match && process.env[match[1]!] === undefined) process.env[match[1]!] = match[2]!;
   }
 }
-export function createDependencies(): { board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort; identities: IdentityDirectory } {
-  const env = process.env;
+export function createDependencies(env: NodeJS.ProcessEnv = process.env): { board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort; identities: IdentityDirectory } {
   const identities = new IdentityDirectory(env.IDENTITY_MAP_JSON ? parseIdentityRecords(env.IDENTITY_MAP_JSON) : []);
   const board: BoardPort = env.BOARD_PROVIDER === 'jira'
     ? new JiraBoard({ baseUrl: env.JIRA_BASE_URL ?? '', email: env.JIRA_EMAIL ?? '',

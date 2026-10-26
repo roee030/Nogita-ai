@@ -15,6 +15,7 @@
 - No persistent meeting transcript or recording in app code; bounded in-memory buffer cleared on leave.
 - Draft PR deliberately rejected until a trusted isolated code runner and policy exist.
 - API secret strings are environment variables and never written into demo output.
+- The authenticated readiness report exposes only fixed status messages; it never returns configured values, identifiers, URLs, or secrets.
 
 ## Known blockers before real teams use it
 
