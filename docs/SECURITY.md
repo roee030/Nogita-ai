@@ -1,0 +1,41 @@
+# Security and privacy: non-negotiable V1 gates
+
+**This repository is a development starter. Do not expose the local server to a public URL or use it in a sensitive team meeting yet.**
+
+## Present safety controls
+
+- Signed Slack Events verification: HMAC SHA256 and 5-minute timestamp window.
+- Admin-token protection for development ingestion and session administration.
+- Code read and board mutation gated by verified actor ID + explicit configured allowlist.
+- User requests must directly address Nogita by name before any spoken answer or task execution.
+- Regex second gate prevents unrequested model-proposed task creation.
+- GitHub repository is fixed by configuration; no model-selected arbitrary endpoint or token scope.
+- Jira Cloud domain is allowlisted; Recall meeting URL has an explicit host allowlist.
+- No persistent meeting transcript or recording in app code; bounded in-memory buffer cleared on leave.
+- Draft PR deliberately rejected until a trusted isolated code runner and policy exist.
+- API secret strings are environment variables and never written into demo output.
+
+## Known blockers before real teams use it
+
+1. **Authenticating meeting participants:** voice IDs need cryptographically trusted linkage to organization identities, not self-asserted input.
+2. **Audience-level authorization:** a verified questioner may still be in a meeting with unauthorized listeners. Sensitive GitHub/Jira answers must account for all attendees.
+3. **Real-time media disclosure and provider data retention:** verify actual Recall, speech provider and AI processor settings, consent requirements, regional storage and logs.
+4. **Persistent idempotency:** current deduplication lives in process memory; network retries after restart could create duplicate external writes.
+5. **Real-time media:** listening/speaking have not been implemented in Recall. The adapter currently joins/sends chat only.
+6. **Raise-hand limitation:** no native Recall raise-hand API was confirmed. No fallback chat or speech to violate product rules.
+7. **Work completion jobs:** a durable queue and cancellation semantics are required for long-running operations and tool errors.
+8. **Slack resilience:** incoming events are acked before background work completes, with no durable queue and no verified Slack workspace OAuth installation.
+9. **monday.com mapping:** item description now requires an explicitly mapped Text column; assignee mapping is still absent.
+10. **Jira specifics:** issue types/required fields vary per project; check create metadata. Generic v3 payload is not a guarantee for every Jira board.
+11. **Prompt injection:** retrieved code and documents are marked untrusted, but live defensive tests, more robust schema validation and tool result boundary rules are still necessary.
+12. **Project secrecy:** logs must avoid API response bodies, PII, meeting URLs (which may contain join secrets) and raw transcripts.
+13. **Privacy lifecycle:** cleanup is memory-only; include temporary network buffers, crash handling and all subprocess/provider retention before claiming ZDR.
+14. **DDoS / replay / abuse:** add rate limits, durable replay ledger, quotas, outbound API circuit breakers and request tracing with redaction.
+
+## Recommended staging procedure
+
+- Begin with a disposable company test workspace and deliberately non-sensitive demo code.
+- Rotate all tokens after testing. Use fine-grained scopes and store production credentials in a proper secret manager.
+- Keep writes restricted to sandbox boards until end-to-end security acceptance passes.
+- Require a human to review every draft PR, never auto-merge or auto-deploy.
+- Audit provider SDK/API changes regularly; documentation links in README point to official provider docs.

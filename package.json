@@ -1,0 +1,18 @@
+{
+  "name": "nogita-v1-starter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Policy-first, provider-independent virtual engineering teammate",
+  "engines": { "node": ">=22.16.0" },
+  "scripts": {
+    "demo": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/demo.ts",
+    "start": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/app/server.ts",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test tests/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}
