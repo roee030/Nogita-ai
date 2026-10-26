@@ -17,6 +17,8 @@ An extensible virtual engineering teammate for real-time meetings, project knowl
 
 Requires **Node.js >=22.16.0**.
 
+The repository pins `22.16.0` in `.node-version`. Use a Node version manager that honors this file, or install any newer supported release before running the commands. Pull requests and pushes to `main` run the same tests and type checks in GitHub Actions with read-only repository permissions.
+
 ```bash
 cd nogita-v1-starter
 npm run demo
@@ -108,7 +110,7 @@ Closed-caption transcription is the recommended first deployment because Attende
 
 ## Verified status
 
-- `npm test`: **45 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, secret-safe readiness reporting, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed Attendee transcript ingestion, ordered retry behavior, and race-safe session cleanup.
+- `npm test`: **47 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime guardrails, secret-safe readiness reporting, Slack verification and Socket Mode, Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed Attendee transcript ingestion, ordered retry behavior, and race-safe session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.

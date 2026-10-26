@@ -3,5 +3,6 @@ node_modules/
 .env.*
 !.env.example
 coverage/
+.nogita-state/
 .DS_Store
 *.log
