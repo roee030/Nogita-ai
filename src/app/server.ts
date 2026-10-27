@@ -19,6 +19,7 @@ import { EncryptedFileEventQueue } from './durable-event-queue.ts';
 import { EventWorker } from './event-worker.ts';
 import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
+import { probeConnections } from './connection-probes.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -240,6 +241,10 @@ const server = createServer(async (req, res) => {
       respond(res, result.status, result.response); return;
     }
     if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
+    if (req.method === 'GET' && pathname === '/api/connections') {
+      const report = await probeConnections(env);
+      respond(res, report.ok ? 200 : 503, report); return;
+    }
     if (req.method === 'GET' && pathname === '/api/readiness') {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node, providerConfigValid);
       respond(res, report.ok ? 200 : 503, report); return;
