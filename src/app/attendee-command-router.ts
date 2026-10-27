@@ -4,7 +4,11 @@ import { directlyAddressesNogita } from '../core/policy.ts';
 import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 
 type ScheduledWork = () => void | Promise<void>;
-interface BufferEntry { actor: Actor; eventIds: string[]; fragments: string[]; at?: number; timer: unknown }
+interface Fragment { text: string; eventId: string; at?: number; sequence: number }
+interface BufferEntry {
+  actor: Actor; fragments: Fragment[]; timer: unknown;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
 interface SessionState {
   owner?: Actor;
   challenge?: string;
@@ -31,6 +35,7 @@ export class AttendeeCommandRouter {
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private readonly onError: (error: unknown) => void;
+  private sequence = 0;
 
   constructor(
     private readonly emit: (sessionId: string, utterance: Utterance) => Promise<void>,
@@ -54,49 +59,67 @@ export class AttendeeCommandRouter {
     return challenge;
   }
 
-  accept(request: AttendeeTranscriptRequest): void {
+  accept(request: AttendeeTranscriptRequest): Promise<void> {
     const state = this.sessions.get(request.sessionId);
-    if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return;
+    if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
     state.acceptedEventIds.add(request.utterance.eventId);
     if (state.acceptedEventIds.size > 2000) state.acceptedEventIds.delete(state.acceptedEventIds.values().next().value!);
     const previous = state.buffers.get(request.speakerUuid);
     if (previous) this.cancel(previous.timer);
-    const fragments = [...(previous?.fragments ?? []), request.utterance.text.trim()].slice(-24);
-    const eventIds = [...(previous?.eventIds ?? []), request.utterance.eventId].slice(-24);
+    const fragment: Fragment = { text: request.utterance.text.trim(), eventId: request.utterance.eventId,
+      sequence: this.sequence++, ...(request.utterance.at === undefined ? {} : { at: request.utterance.at }) };
+    const fragments = [...(previous?.fragments ?? []), fragment].slice(-24);
     const actor = request.utterance.actor.verified ? request.utterance.actor : previous?.actor ?? request.utterance.actor;
-    const at = previous?.at ?? request.utterance.at;
-    const entry: BufferEntry = { actor, fragments, eventIds, ...(at === undefined ? {} : { at }), timer: undefined };
+    let resolve!: () => void; let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise; reject = rejectPromise;
+    });
+    completion.catch(() => undefined);
+    const entry: BufferEntry = { actor, fragments, waiters: [...(previous?.waiters ?? []), { resolve, reject }], timer: undefined };
     entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.quietMs);
     state.buffers.set(request.speakerUuid, entry);
+    return completion;
   }
 
   private async flush(sessionId: string, speakerUuid: string): Promise<void> {
     const state = this.sessions.get(sessionId); const entry = state?.buffers.get(speakerUuid);
     if (!state || !entry) return;
     state.buffers.delete(speakerUuid);
-    const text = entry.fragments.join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
-    const bound = state.bindings.get(speakerUuid);
-    const actor = bound ?? entry.actor;
-    if (!actor.verified) {
-      if (state.owner && state.challenge && normalized(text) === normalized(state.challenge)) {
-        state.bindings.set(speakerUuid, state.owner);
-        await this.sendStatus(sessionId, `Verified ${state.owner.displayName} for this meeting.`);
-      } else if (directlyAddressesNogita(text)) {
-        const guidance = state.challenge
-          ? `I heard you, but I cannot verify this speaker. Please repeat: ${state.challenge}`
-          : 'I heard you, but I cannot verify this speaker. Start the session with an authorized owner.';
-        await this.sendStatus(sessionId, guidance);
+    const ordered = [...entry.fragments].sort((a, b) =>
+      (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER) || a.sequence - b.sequence);
+    const text = ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    try {
+      const bound = state.bindings.get(speakerUuid);
+      const actor = bound ?? entry.actor;
+      if (!actor.verified) {
+        if (state.owner && state.challenge && normalized(text) === normalized(state.challenge)) {
+          state.bindings.set(speakerUuid, state.owner);
+          await this.sendStatus(sessionId, `Verified ${state.owner.displayName} for this meeting.`);
+        } else if (directlyAddressesNogita(text)) {
+          const guidance = state.challenge
+            ? `I heard you, but I cannot verify this speaker. Please repeat: ${state.challenge}`
+            : 'I heard you, but I cannot verify this speaker. Start the session with an authorized owner.';
+          await this.sendStatus(sessionId, guidance);
+        }
+      } else {
+        const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
+        const at = ordered.find(fragment => fragment.at !== undefined)?.at;
+        await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
       }
-      return;
+      for (const waiter of entry.waiters) waiter.resolve();
+    } catch (error) {
+      for (const waiter of entry.waiters) waiter.reject(error);
+      throw error;
     }
-    const eventId = `attendee-combined-${createHash('sha256').update(entry.eventIds.join('\0')).digest('hex')}`;
-    await this.emit(sessionId, { eventId, actor, text, ...(entry.at === undefined ? {} : { at: entry.at }) });
   }
 
   endSession(sessionId: string): void {
     const state = this.sessions.get(sessionId);
     if (!state) return;
-    for (const entry of state.buffers.values()) this.cancel(entry.timer);
+    for (const entry of state.buffers.values()) {
+      this.cancel(entry.timer);
+      for (const waiter of entry.waiters) waiter.resolve();
+    }
     state.buffers.clear(); state.bindings.clear(); state.acceptedEventIds.clear();
     this.sessions.delete(sessionId);
   }

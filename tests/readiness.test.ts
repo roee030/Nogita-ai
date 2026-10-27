@@ -5,6 +5,7 @@ import { IdentityDirectory } from '../src/core/identity.ts';
 
 const completeEnv: NodeJS.ProcessEnv = {
   NOGITA_ADMIN_TOKEN: 'admin-secret-that-is-long-enough',
+  NOGITA_QUEUE_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   SLACK_APP_TOKEN: 'xapp-test-secret', SLACK_BOT_TOKEN: 'xoxb-test-secret',
   SLACK_ALLOWED_TEAM_IDS: 'team-secret-id', SLACK_BOT_USER_ID: 'bot-secret-id',
   BOARD_PROVIDER: 'jira', JIRA_BASE_URL: 'https://example.atlassian.net',
@@ -60,7 +61,7 @@ test('readiness returns actionable blockers for the current MVP requirements', (
     NOGITA_MODE: 'demo',
   }, new IdentityDirectory([]), '22.12.0');
   assert.equal(report.ok, false);
-  assert.deepEqual(report.blockers, ['runtime', 'admin_auth', 'slack', 'jira', 'github', 'attendee', 'reasoning']);
+  assert.deepEqual(report.blockers, ['runtime', 'admin_auth', 'durable_queue', 'slack', 'jira', 'github', 'attendee', 'reasoning']);
   assert.ok(report.checks.every(check => !check.detail.includes('present')));
 });
 
@@ -108,4 +109,13 @@ test('readiness surfaces strict adapter construction failures without exposing t
   }]), '22.16.0', false);
   assert.deepEqual(report.blockers, ['provider_config']);
   assert.equal(JSON.stringify(report).includes('jira-secret'), false);
+});
+
+test('readiness blocks production when the durable queue encryption key is missing or malformed', () => {
+  for (const value of ['', 'not-base64', 'c2hvcnQ=']) {
+    const report = buildReadinessReport({ ...completeEnv, NOGITA_QUEUE_ENCRYPTION_KEY: value },
+      new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]), '22.16.0');
+    assert.equal(report.checks.find(item => item.id === 'durable_queue')?.status, 'blocked');
+    if (value) assert.equal(JSON.stringify(report).includes(value), false);
+  }
 });

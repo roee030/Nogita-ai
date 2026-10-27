@@ -15,6 +15,8 @@ import { InFlightWork } from './in-flight.ts';
 import { AttendeeEnrollmentCandidates } from './attendee-enrollment.ts';
 import { AttendeeCommandRouter } from './attendee-command-router.ts';
 import { SessionUsageRegistry } from './session-usage.ts';
+import { EncryptedFileEventQueue } from './durable-event-queue.ts';
+import { EventWorker } from './event-worker.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -43,6 +45,12 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+let providerQueue: EncryptedFileEventQueue | undefined;
+try {
+  if (env.NOGITA_QUEUE_ENCRYPTION_KEY) {
+    providerQueue = new EncryptedFileEventQueue(stateDirectory, env.NOGITA_QUEUE_ENCRYPTION_KEY);
+  }
+} catch { console.error('durable_queue_configuration_invalid'); }
 const slackLedger = new FileEventLedger(stateDirectory);
 const attendeeLedger = new FileEventLedger(stateDirectory);
 const attendeeBindings = new FileBindingRegistry(stateDirectory);
@@ -101,59 +109,45 @@ function respond(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function handleSlack(raw: string): Promise<{ status: number; response: unknown }> {
+async function processSlack(raw: string): Promise<void> {
   const payload = JSON.parse(raw) as Record<string, unknown>;
-  if (payload.type === 'url_verification' && typeof payload.challenge === 'string') {
-    return { status: 200, response: { challenge: payload.challenge } };
-  }
-  if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
+  if (payload.type !== 'event_callback') return;
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
     env.SLACK_BOT_USER_ID, dependencies.identities);
-  if (!request || !env.SLACK_BOT_TOKEN) {
-    return { status: 200, response: { ok: true } };
-  }
-  if (!slackWork.accepting) return { status: 503, response: { error: 'service is shutting down' } };
+  if (!request || !env.SLACK_BOT_TOKEN) return;
+  if (!slackWork.accepting) throw new Error('service is shutting down');
   const ledger = await slackLedger.begin('slack', request.utterance.eventId);
-  if (ledger.status !== 'started') return { status: 200, response: { ok: true } };
-  slackWork.track(finishEventClaim(ledger.claim, async () => {
+  if (ledger.status !== 'started') return;
+  const work = finishEventClaim(ledger.claim, async () => {
     if (!slackThreads.has(request.sessionId)) {
       await nogita.startSession(request.sessionId,
         new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
       slackThreads.add(request.sessionId);
     }
     await nogita.onUtterance(request.sessionId, request.utterance);
-  }).catch(err => {
-    console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
-  }));
-  return { status: 200, response: { ok: true } };
+  });
+  slackWork.track(work);
+  await work;
 }
 
-async function handleAttendee(raw: string, signature: string | undefined): Promise<{ status: number; response: unknown }> {
-  const payload = JSON.parse(raw) as Record<string, unknown>;
-  if (!verifyAttendeeWebhookSignature(env.ATTENDEE_WEBHOOK_SECRET ?? '', payload, signature)) {
-    return { status: 401, response: { error: 'invalid Attendee signature' } };
-  }
-  if (!providerConfigValid) return { status: 503, response: { error: 'provider configuration invalid' } };
-  const envelope = parseAttendeeEnvelope(payload);
-  if (!envelope) {
-    return { status: 200, response: { ok: true } };
-  }
+async function authorizeAttendeeEnvelope(envelope: NonNullable<ReturnType<typeof parseAttendeeEnvelope>>): Promise<boolean> {
   const activeBot = attendeeBotsBySession.get(envelope.sessionId);
-  if (activeBot && activeBot !== envelope.botId) return { status: 200, response: { ok: true } };
+  if (activeBot && activeBot !== envelope.botId) return false;
   if (!activeBot) {
-    if (!await attendeeBindings.has(envelope.sessionId, envelope.botId)) {
-      return { status: 200, response: { ok: true } };
-    }
+    if (!await attendeeBindings.has(envelope.sessionId, envelope.botId)) return false;
     attendeeBotsBySession.set(envelope.sessionId, envelope.botId);
   }
+  return true;
+}
+
+async function processAttendee(payload: Record<string, unknown>): Promise<void> {
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || !await authorizeAttendeeEnvelope(envelope)) return;
   const ledger = await attendeeLedger.begin('attendee', envelope.eventId);
-  if (ledger.status === 'completed') return { status: 200, response: { ok: true } };
-  if (ledger.status === 'active') {
-    return { status: 503, response: { error: 'Attendee event is still processing' } };
-  }
+  if (ledger.status === 'completed') return;
+  if (ledger.status === 'active') throw new Error('Attendee event is still processing');
   if (ledger.status !== 'started') throw new Error('unexpected Attendee ledger state');
   const claim = ledger.claim;
-
   try {
     const endedSession = parseAttendeeEndedSession(payload);
     if (endedSession) {
@@ -167,16 +161,48 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
           attendeeEnrollment.observe(transcript.attendeeUserUuid);
         }
         restoreAttendeeSession(transcript.sessionId, envelope.botId);
-        attendeeCommands.accept(transcript);
+        await attendeeCommands.accept(transcript);
       }
     }
     await claim.complete();
-    return { status: 200, response: { ok: true } };
   } catch (error) {
     try { await claim.abandon(); } catch { console.error('attendee_ledger_release_failed'); }
-    console.error('attendee_event_failed', error instanceof Error ? error.message : 'unknown');
-    return { status: 503, response: { error: 'Attendee event processing failed' } };
+    throw error;
   }
+}
+
+const providerWorker = providerQueue ? new EventWorker(providerQueue, async item => {
+  if (item.namespace === 'slack') await processSlack(item.payload);
+  else await processAttendee(JSON.parse(item.payload) as Record<string, unknown>);
+}, { concurrency: 4, onError: error => console.error('provider_event_failed',
+  error instanceof Error ? error.message : 'unknown') }) : undefined;
+providerWorker?.start();
+
+async function acceptSlack(raw: string): Promise<{ status: number; response: unknown }> {
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  if (payload.type === 'url_verification' && typeof payload.challenge === 'string') {
+    return { status: 200, response: { challenge: payload.challenge } };
+  }
+  if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
+  const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
+    env.SLACK_BOT_USER_ID, dependencies.identities);
+  if (!request || !env.SLACK_BOT_TOKEN) return { status: 200, response: { ok: true } };
+  if (providerQueue) await providerQueue.enqueue('slack', request.utterance.eventId, raw);
+  else await processSlack(raw);
+  return { status: 200, response: { ok: true } };
+}
+
+async function acceptAttendee(raw: string, signature: string | undefined): Promise<{ status: number; response: unknown }> {
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  if (!verifyAttendeeWebhookSignature(env.ATTENDEE_WEBHOOK_SECRET ?? '', payload, signature)) {
+    return { status: 401, response: { error: 'invalid Attendee signature' } };
+  }
+  if (!providerConfigValid) return { status: 503, response: { error: 'provider configuration invalid' } };
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || !await authorizeAttendeeEnvelope(envelope)) return { status: 200, response: { ok: true } };
+  if (providerQueue) await providerQueue.enqueue('attendee', envelope.eventId, raw);
+  else await processAttendee(payload);
+  return { status: 200, response: { ok: true } };
 }
 
 const server = createServer(async (req, res) => {
@@ -193,11 +219,11 @@ const server = createServer(async (req, res) => {
         respond(res, 401, { error: 'invalid Slack signature' }); return;
       }
       if (!providerConfigValid) { respond(res, 503, { error: 'provider configuration invalid' }); return; }
-      const result = await handleSlack(raw);
+      const result = await acceptSlack(raw);
       respond(res, result.status, result.response); return;
     }
     if (req.method === 'POST' && pathname === '/webhooks/attendee') {
-      const result = await handleAttendee(await readRaw(req),
+      const result = await acceptAttendee(await readRaw(req),
         req.headers['x-webhook-signature'] as string | undefined);
       respond(res, result.status, result.response); return;
     }
@@ -304,7 +330,7 @@ function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
     const closed = new Promise<void>((resolveClose, rejectClose) => {
       server.close(error => error ? rejectClose(error) : resolveClose());
     });
-    const [drained] = await Promise.all([slackWork.drain(30_000), closed]);
+    const [drained] = await Promise.all([slackWork.drain(30_000), closed, providerWorker?.stop()]);
     if (!drained) {
       process.exitCode = 1;
       console.error('shutdown_slack_drain_timed_out');

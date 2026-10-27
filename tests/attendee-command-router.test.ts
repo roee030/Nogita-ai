@@ -73,3 +73,24 @@ test('ending a session clears pending fragments, challenge, and binding', async 
   assert.equal(f.emitted.length, 0);
   assert.equal(f.router.sessionCount(), 0);
 });
+
+test('accept resolves only after combined command processing completes', async () => {
+  const f = fixture(); f.router.beginSession('s');
+  let settled = false;
+  const accepted = f.router.accept(f.request('speaker-a', 'Nogita, hello', 'a1', owner))
+    .then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  await f.flush();
+  await accepted;
+  assert.equal(settled, true);
+});
+
+test('same-speaker fragments are ordered by provider timestamp', async () => {
+  const f = fixture(); f.router.beginSession('s');
+  const later = f.request('speaker-a', 'second', 'a2', owner); later.utterance.at = 2;
+  const earlier = f.request('speaker-a', 'Nogita, first', 'a1', owner); earlier.utterance.at = 1;
+  f.router.accept(later); f.router.accept(earlier);
+  await f.flush();
+  assert.equal(f.emitted[0]?.utterance.text, 'Nogita, first second');
+});

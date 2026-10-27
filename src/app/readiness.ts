@@ -1,7 +1,7 @@
 import type { IdentityDirectory } from '../core/identity.ts';
 
 export interface ReadinessCheck {
-  id: 'runtime' | 'admin_auth' | 'provider_config' | 'slack' | 'jira' | 'github' | 'attendee' | 'reasoning';
+  id: 'runtime' | 'admin_auth' | 'provider_config' | 'durable_queue' | 'slack' | 'jira' | 'github' | 'attendee' | 'reasoning';
   status: 'ready' | 'blocked';
   detail: string;
 }
@@ -35,6 +35,11 @@ function validHttpsUrl(value: string | undefined): boolean {
   }
 }
 
+function validQueueKey(value: string | undefined): boolean {
+  if (!value) return false;
+  try { return Buffer.from(value, 'base64').length === 32; } catch { return false; }
+}
+
 function check(id: ReadinessCheck['id'], ready: boolean, readyDetail: string, blockedDetail: string): ReadinessCheck {
   return { id, status: ready ? 'ready' : 'blocked', detail: ready ? readyDetail : blockedDetail };
 }
@@ -59,6 +64,9 @@ export function buildReadinessReport(
       'Set a strong local or deployment NOGITA_ADMIN_TOKEN before starting the HTTP service.'),
     check('provider_config', providerConfigValid, 'Selected provider adapters accepted their configuration.',
       'Correct invalid provider configuration before processing events or sessions.'),
+    check('durable_queue', validQueueKey(env.NOGITA_QUEUE_ENCRYPTION_KEY),
+      'The encrypted durable event queue is configured.',
+      'Set NOGITA_QUEUE_ENCRYPTION_KEY to 32 random base64-encoded bytes in deployment secrets.'),
     check('slack', slackSocketMode || slackEventsMode,
       'Slack Socket Mode or signed Events API configuration is complete.',
       'Configure the common Slack bot/workspace values plus either an app token or signing secret.'),

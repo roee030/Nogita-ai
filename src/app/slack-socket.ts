@@ -7,6 +7,8 @@ import { createDependencies, loadDotEnv } from './config.ts';
 import { FileEventLedger } from './event-ledger.ts';
 import { runClaimedEvent } from './claimed-event.ts';
 import { InFlightWork } from './in-flight.ts';
+import { EncryptedFileEventQueue } from './durable-event-queue.ts';
+import { EventWorker } from './event-worker.ts';
 
 loadDotEnv();
 const token = process.env.SLACK_BOT_TOKEN;
@@ -21,23 +23,40 @@ const client = new SocketModeClient({ appToken });
 const sessions = new Set<string>();
 const slackLedger = new FileEventLedger(process.env.NOGITA_STATE_DIR ?? '.nogita-state');
 const inFlight = new InFlightWork();
+const queue = process.env.NOGITA_QUEUE_ENCRYPTION_KEY
+  ? new EncryptedFileEventQueue(process.env.NOGITA_STATE_DIR ?? '.nogita-state', process.env.NOGITA_QUEUE_ENCRYPTION_KEY)
+  : undefined;
+
+async function processBody(raw: string): Promise<void> {
+  const body = JSON.parse(raw) as SlackEnvelope;
+  const request = parseSlackRequest(body, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
+  if (!request || !inFlight.accepting) return;
+  const work = runClaimedEvent(slackLedger, 'slack', request.utterance.eventId, async () => {
+    if (!sessions.has(request.sessionId)) {
+      await engine.startSession(request.sessionId,
+        new SlackThreadMeeting(request.sessionId, token!, request.channel, request.threadTs));
+      sessions.add(request.sessionId);
+    }
+    await engine.onUtterance(request.sessionId, request.utterance);
+  }).then(() => undefined);
+  inFlight.track(work);
+  await work;
+}
+
+const queueWorker = queue ? new EventWorker(queue, async item => {
+  if (item.namespace === 'slack') await processBody(item.payload);
+}, { concurrency: 4, onError: error => console.error('slack_event_failed',
+  error instanceof Error ? error.message : 'unknown') }) : undefined;
+queueWorker?.start();
 
 registerSlackEventHandlers(client, async ({ body, ack }) => {
-  // Acknowledge promptly; processing may include slow model and tool calls.
-  await ack();
   const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
-  if (!request || !inFlight.accepting) return;
+  if (!request || !inFlight.accepting) { await ack(); return; }
   try {
-    const work = runClaimedEvent(slackLedger, 'slack', request.utterance.eventId, async () => {
-      if (!sessions.has(request.sessionId)) {
-        await engine.startSession(request.sessionId,
-          new SlackThreadMeeting(request.sessionId, token, request.channel, request.threadTs));
-        sessions.add(request.sessionId);
-      }
-      await engine.onUtterance(request.sessionId, request.utterance);
-    });
-    inFlight.track(work);
-    await work;
+    const raw = JSON.stringify(body);
+    if (queue) await queue.enqueue('slack', request.utterance.eventId, raw);
+    await ack();
+    if (!queue) await processBody(raw);
   } catch (err) {
     console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
   }
@@ -48,6 +67,7 @@ function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   shutdown = (async () => {
     console.log(`shutdown_started signal=${signal}`);
     await client.disconnect();
+    await queueWorker?.stop();
     const drained = await inFlight.drain(30_000);
     if (!drained) {
       process.exitCode = 1;
