@@ -119,7 +119,14 @@ export class NogitaEngine {
         await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
         return 'denied';
       }
-      const evidence = await this.dependencies.code.findEvidence('README package.json');
+      let evidence;
+      try {
+        evidence = await this.dependencies.code.findEvidence('README package.json');
+      } catch {
+        await this.speakOrChat(sessionId, s.meeting,
+          'I tried to check the repository, but GitHub refused the request. My server connection needs attention.');
+        return 'answered';
+      }
       this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
       if (!evidence.length) {
         await this.speakOrChat(sessionId, s.meeting, 'I could not verify a live repository connection.');
