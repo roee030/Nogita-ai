@@ -18,6 +18,7 @@
 - The authenticated readiness report exposes only fixed status messages; it never returns configured values, identifiers, URLs, or secrets.
 - Accepted Slack and Attendee payloads are encrypted with AES-256-GCM before atomic persistence; keyed filenames, exclusive leases, bounded retries/retention, and hash-only completion markers support restart recovery without plaintext at rest.
 - Meeting-scoped random challenge verification binds an authorized internal owner to one provider speaker without trusting display names or durably storing the challenge/speaker binding.
+- Attendee answers and action acknowledgements are mirrored to meeting chat before TTS because an accepted speech request does not prove the audio was audible.
 
 ## Known blockers before real teams use it
 

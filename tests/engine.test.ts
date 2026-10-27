@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { NogitaEngine } from '../src/core/engine.ts';
 import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
-import type { BrainPort, Plan, UsagePort } from '../src/core/contracts.ts';
+import { SpeechFallbackSentError, type BrainPort, type Plan, type UsagePort } from '../src/core/contracts.ts';
 
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const engineer = { id: 'engineer', displayName: 'Engineer', verified: true };
@@ -17,6 +17,12 @@ function fixture(brain: BrainPort = new DemoBrain()) {
 
 class SpeechFailingMeeting extends DemoMeeting {
   override async speak(_message: string): Promise<void> { throw new Error('tts unavailable'); }
+}
+class MirroredSpeechFailingMeeting extends DemoMeeting {
+  override async speak(message: string): Promise<void> {
+    await this.sendStatus(message);
+    throw new SpeechFallbackSentError();
+  }
 }
 
 test('activation: direct name address only', () => {
@@ -46,6 +52,14 @@ test('spoken answer falls back to meeting chat when TTS fails', async () => {
   assert.equal(await engine.onUtterance('s', { text: 'Nogita, what time is it?', eventId: 'answer-fallback', actor: lead }), 'answered');
   assert.deepEqual(meeting.events.filter(e => e.type === 'chat').map(e => e.text),
     ["I'm here. You asked: what time is it?"]);
+});
+test('engine does not duplicate a chat fallback already sent before asynchronous TTS failed', async () => {
+  const meeting = new MirroredSpeechFailingMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead'])) });
+  await engine.startSession('s', meeting);
+  await engine.onUtterance('s', { text: 'Nogita, what time is it?', eventId: 'mirrored-fallback', actor: lead });
+  assert.equal(meeting.events.filter(e => e.type === 'chat').length, 1);
 });
 test('task acknowledgement falls back to chat and task is still created once', async () => {
   const meeting = new SpeechFailingMeeting('m'); const board = new DemoBoard();

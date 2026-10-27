@@ -1,4 +1,4 @@
-import type { ActionReceipt, Capability, MeetingPort } from '../core/contracts.ts';
+import { SpeechFallbackSentError, type ActionReceipt, type Capability, type MeetingPort } from '../core/contracts.ts';
 
 /**
  * Attendee meeting control adapter (API v1).
@@ -89,10 +89,17 @@ export class AttendeeMeeting implements MeetingPort {
   async speak(message: string): Promise<void> {
     if (!this.botId) throw new Error('not joined');
     if (!message.trim()) throw new Error('empty spoken message');
-    await this.request(`/${this.botId}/speech`, {
-      text: message,
-      text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
-    });
+    // Attendee acknowledges queued TTS but does not prove that an unmuted client played it.
+    // Mirror first so muted/delayed speech never hides the answer or intended action.
+    await this.sendStatus(message);
+    try {
+      await this.request(`/${this.botId}/speech`, {
+        text: message,
+        text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
+      });
+    } catch {
+      throw new SpeechFallbackSentError();
+    }
   }
 
   async sendStatus(message: string): Promise<void> {

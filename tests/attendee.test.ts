@@ -31,7 +31,8 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   await meeting.sendCompletion({ provider: 'jira', kind: 'task', label: 'NG-1', url: 'https://example.atlassian.net/browse/NG-1' });
   await meeting.leave();
   assert.deepEqual(calls.map(x => new URL(x.url).pathname), [
-    '/api/v1/bots', '/api/v1/bots/bot_weIAju4OXNZkDTpZ/speech',
+    '/api/v1/bots', '/api/v1/bots/bot_weIAju4OXNZkDTpZ/send_chat_message',
+    '/api/v1/bots/bot_weIAju4OXNZkDTpZ/speech',
     '/api/v1/bots/bot_weIAju4OXNZkDTpZ/send_chat_message',
     '/api/v1/bots/bot_weIAju4OXNZkDTpZ/leave'
   ]);
@@ -47,8 +48,9 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
     url: 'https://nogita.example/webhooks/attendee',
     triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
   }]);
-  assert.equal(calls[1]?.payload.text, 'Hello.');
-  assert.deepEqual(calls[2]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
+  assert.deepEqual(calls[1]?.payload, { to: 'everyone', message: 'Hello.' });
+  assert.equal(calls[2]?.payload.text, 'Hello.');
+  assert.deepEqual(calls[3]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
 });
 
 test('Attendee: restored bot can speak without creating a replacement bot', async () => {
@@ -61,7 +63,10 @@ test('Attendee: restored bot can speak without creating a replacement bot', asyn
     'https://nogita.example/webhooks/attendee');
   meeting.attach('bot_restored123');
   await meeting.speak('Back online.');
-  assert.deepEqual(paths, ['/api/v1/bots/bot_restored123/speech']);
+  assert.deepEqual(paths, [
+    '/api/v1/bots/bot_restored123/send_chat_message',
+    '/api/v1/bots/bot_restored123/speech',
+  ]);
   assert.throws(() => meeting.attach('bot_second'), /already joining/);
   assert.throws(() => new AttendeeMeeting('s', 'key', true, mock).attach('../bad'), /valid ID/);
 });

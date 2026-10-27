@@ -1,4 +1,5 @@
-import type { ActionReceipt, BoardPort, BrainPort, CodePort, MeetingPort, PolicyPort, UsagePort, Utterance } from './contracts.ts';
+import { SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort,
+  type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest, removeAddress } from './policy.ts';
 
 interface Session {
@@ -72,9 +73,9 @@ export class NogitaEngine {
     try {
       await meeting.speak(message);
       this.dependencies.usage?.recordTts(sessionId, true);
-    } catch {
+    } catch (error) {
       this.dependencies.usage?.recordTts(sessionId, false);
-      await meeting.sendStatus(message);
+      if (!(error instanceof SpeechFallbackSentError)) await meeting.sendStatus(message);
     }
   }
 

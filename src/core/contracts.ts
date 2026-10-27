@@ -20,6 +20,10 @@ export interface ActionReceipt {
   url: string;
   label: string;
 }
+/** Signals that speech failed after the user-visible meeting-chat mirror was already delivered. */
+export class SpeechFallbackSentError extends Error {
+  constructor() { super('speech unavailable after chat fallback'); }
+}
 export interface MeetingPort {
   readonly id: string;
   readonly capabilities: ReadonlySet<Capability>;
