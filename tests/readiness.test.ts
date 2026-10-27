@@ -41,8 +41,18 @@ test('readiness returns actionable blockers for the current MVP requirements', (
     NOGITA_MODE: 'demo',
   }, new IdentityDirectory([]), '22.12.0');
   assert.equal(report.ok, false);
-  assert.deepEqual(report.blockers, ['runtime', 'slack', 'jira', 'github', 'attendee', 'reasoning']);
+  assert.deepEqual(report.blockers, ['runtime', 'admin_auth', 'slack', 'jira', 'github', 'attendee', 'reasoning']);
   assert.ok(report.checks.every(check => !check.detail.includes('present')));
+});
+
+test('readiness mirrors the HTTP admin token startup gate without exposing the token', () => {
+  for (const value of ['', 'too-short', 'replace-with-long-random-local-token']) {
+    const report = buildReadinessReport({ ...completeEnv, NOGITA_ADMIN_TOKEN: value },
+      new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]), '22.16.0');
+    assert.equal(report.checks.find(item => item.id === 'admin_auth')?.status, 'blocked');
+    assert.ok(report.blockers.includes('admin_auth'));
+    if (value) assert.equal(JSON.stringify(report).includes(value), false);
+  }
 });
 
 test('Slack readiness accepts either Socket Mode or signed Events API configuration', () => {

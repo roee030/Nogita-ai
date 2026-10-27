@@ -1,7 +1,7 @@
 import type { IdentityDirectory } from '../core/identity.ts';
 
 export interface ReadinessCheck {
-  id: 'runtime' | 'provider_config' | 'slack' | 'jira' | 'github' | 'attendee' | 'reasoning';
+  id: 'runtime' | 'admin_auth' | 'provider_config' | 'slack' | 'jira' | 'github' | 'attendee' | 'reasoning';
   status: 'ready' | 'blocked';
   detail: string;
 }
@@ -19,6 +19,10 @@ function present(env: NodeJS.ProcessEnv, names: readonly string[]): boolean {
 function supportedNode(version: string): boolean {
   const [major = 0, minor = 0] = version.split('.').map(part => Number.parseInt(part, 10));
   return major > 22 || (major === 22 && minor >= 16);
+}
+
+export function validAdminToken(value: string | undefined): boolean {
+  return Boolean(value && value.length >= 20 && !value.startsWith('replace-'));
 }
 
 function validHttpsUrl(value: string | undefined): boolean {
@@ -48,6 +52,9 @@ export function buildReadinessReport(
   const checks: ReadinessCheck[] = [
     check('runtime', supportedNode(nodeVersion), 'The Node.js runtime is supported.',
       'Upgrade the runtime to Node.js 22.16 or newer.'),
+    check('admin_auth', validAdminToken(env.NOGITA_ADMIN_TOKEN),
+      'HTTP administration authentication is configured.',
+      'Set a strong local or deployment NOGITA_ADMIN_TOKEN before starting the HTTP service.'),
     check('provider_config', providerConfigValid, 'Selected provider adapters accepted their configuration.',
       'Correct invalid provider configuration before processing events or sessions.'),
     check('slack', slackSocketMode || slackEventsMode,

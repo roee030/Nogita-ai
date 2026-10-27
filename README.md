@@ -112,7 +112,7 @@ Slack Socket Mode and signed Events API deliveries use the same bounded, hash-on
 
 ## Verified status
 
-- `npm test`: **64 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime/container guardrails, secret-safe readiness reporting, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, Anthropic/Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
+- `npm test`: **65 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime/container guardrails, secret-safe readiness reporting including the HTTP startup gate, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, Anthropic/Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.

@@ -8,7 +8,7 @@ import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
-import { buildReadinessReport } from './readiness.ts';
+import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
 import type { Utterance } from '../core/contracts.ts';
@@ -16,7 +16,7 @@ import type { Utterance } from '../core/contracts.ts';
 loadDotEnv();
 const env = process.env;
 const token = env.NOGITA_ADMIN_TOKEN;
-if (!token || token.length < 20 || token.startsWith('replace-')) {
+if (!validAdminToken(token)) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
 let providerConfigValid = true;
