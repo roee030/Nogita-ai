@@ -48,9 +48,14 @@ export interface BoardPort {
 export interface Evidence { path: string; url: string; excerpt: string; }
 export interface AiUsage {
   model: string;
+  modelCalls: number;
   inputTokens: number;
   outputTokens: number;
   estimatedUsd: number;
+}
+export interface UsagePort {
+  recordTts(sessionId: string, success: boolean): void;
+  recordExternalAction(sessionId: string, action: 'create_task' | 'code_lookup'): void;
 }
 export interface CodePort {
   readonly name: string;

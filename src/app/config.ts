@@ -33,7 +33,10 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
         repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main' })
     : new DemoCode();
   const brain: BrainPort = env.NOGITA_MODE === 'live'
-    ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL)
+    ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL, fetch, {
+        inputUsdPerMillion: Number(env.ANTHROPIC_INPUT_USD_PER_MILLION ?? '0.10'),
+        outputUsdPerMillion: Number(env.ANTHROPIC_OUTPUT_USD_PER_MILLION ?? '0.50'),
+      })
     : new DemoBrain();
   const authorized = new Set((env.AUTHORIZED_ACTOR_IDS ?? 'demo-lead').split(',').map(s => s.trim()).filter(Boolean));
   return { board, code, brain, policy: new AllowlistPolicy(authorized), identities };

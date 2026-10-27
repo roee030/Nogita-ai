@@ -1,24 +1,39 @@
-import type { AiUsage } from '../core/contracts.ts';
+import type { AiUsage, UsagePort } from '../core/contracts.ts';
 
-interface SessionTiming { provider: string; startedAt: number; endedAt?: number }
+interface SessionTiming {
+  provider: string; startedAt: number; endedAt?: number;
+  ttsRequests: number; ttsFailures: number; createTasks: number; codeLookups: number;
+}
 export interface SessionUsageReport {
   sessionId: string;
   provider: string;
   active: boolean;
   durationSeconds: number;
+  transcriptionMode?: 'closed_captions';
   meetingEstimatedUsd: number;
+  tts: { requests: number; failures: number };
+  externalActions: { create_task: number; code_lookup: number };
   ai?: AiUsage;
   totalEstimatedUsd: number;
 }
 
-export class SessionUsageRegistry {
+export class SessionUsageRegistry implements UsagePort {
   private readonly sessions = new Map<string, SessionTiming>();
   constructor(private readonly attendeeUsdPerHour = 0.50, private readonly now = Date.now) {
     if (!Number.isFinite(attendeeUsdPerHour) || attendeeUsdPerHour < 0) throw new Error('invalid Attendee hourly price');
   }
   start(sessionId: string, provider: string): void {
-    this.sessions.set(sessionId, { provider, startedAt: this.now() });
+    this.sessions.set(sessionId, { provider, startedAt: this.now(), ttsRequests: 0, ttsFailures: 0,
+      createTasks: 0, codeLookups: 0 });
     if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value!);
+  }
+  recordTts(sessionId: string, success: boolean): void {
+    const session = this.sessions.get(sessionId); if (!session) return;
+    session.ttsRequests++; if (!success) session.ttsFailures++;
+  }
+  recordExternalAction(sessionId: string, action: 'create_task' | 'code_lookup'): void {
+    const session = this.sessions.get(sessionId); if (!session) return;
+    if (action === 'create_task') session.createTasks++; else session.codeLookups++;
   }
   end(sessionId: string): void {
     const session = this.sessions.get(sessionId);
@@ -32,7 +47,10 @@ export class SessionUsageRegistry {
     const meetingEstimatedUsd = session.provider === 'attendee'
       ? Number((durationSeconds / 3600 * this.attendeeUsdPerHour).toFixed(6)) : 0;
     const totalEstimatedUsd = Number((meetingEstimatedUsd + (ai?.estimatedUsd ?? 0)).toFixed(6));
-    return { sessionId, provider: session.provider, active, durationSeconds, meetingEstimatedUsd,
+    return { sessionId, provider: session.provider, active, durationSeconds,
+      ...(session.provider === 'attendee' ? { transcriptionMode: 'closed_captions' as const } : {}),
+      meetingEstimatedUsd, tts: { requests: session.ttsRequests, failures: session.ttsFailures },
+      externalActions: { create_task: session.createTasks, code_lookup: session.codeLookups },
       ...(ai ? { ai } : {}), totalEstimatedUsd };
   }
 }

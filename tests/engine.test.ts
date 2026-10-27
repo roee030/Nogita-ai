@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { NogitaEngine } from '../src/core/engine.ts';
 import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
-import type { BrainPort, Plan } from '../src/core/contracts.ts';
+import type { BrainPort, Plan, UsagePort } from '../src/core/contracts.ts';
 
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const engineer = { id: 'engineer', displayName: 'Engineer', verified: true };
@@ -56,6 +56,22 @@ test('task acknowledgement falls back to chat and task is still created once', a
   assert.equal(board.tasks.length, 1);
   assert.match(meeting.events.filter(e => e.type === 'chat')[0]?.text ?? '', /I will create the task/);
   assert.match(meeting.events.filter(e => e.type === 'chat')[1]?.text ?? '', /DEMO-1/);
+});
+test('engine reports TTS failures and completed external actions to usage accounting', async () => {
+  const meeting = new SpeechFailingMeeting('m'); const board = new DemoBoard();
+  const events: Array<{ kind: string; success?: boolean; action?: string }> = [];
+  const usage: UsagePort = {
+    recordTts: (_sessionId, success) => { events.push({ kind: 'tts', success }); },
+    recordExternalAction: (_sessionId, action) => { events.push({ kind: 'action', action }); },
+  };
+  const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(), usage,
+    policy: new AllowlistPolicy(new Set(['lead'])) });
+  await engine.startSession('s', meeting);
+  await engine.onUtterance('s', { text: 'Nogita, create a task to track usage', eventId: 'usage-task', actor: lead });
+  assert.deepEqual(events, [
+    { kind: 'tts', success: false },
+    { kind: 'action', action: 'create_task' },
+  ]);
 });
 test('create task -> short spoken acknowledgement and completed chat receipt', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);

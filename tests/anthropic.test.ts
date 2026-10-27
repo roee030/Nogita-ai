@@ -92,9 +92,20 @@ test('Anthropic usage is attributed to one meeting and priced without storing pr
 
   assert.deepEqual(brain.usageFor('meeting-cost'), {
     model: DEFAULT_ANTHROPIC_MODEL,
+    modelCalls: 1,
     inputTokens: 1250,
     outputTokens: 200,
     estimatedUsd: 0.000225,
   });
   assert.equal(brain.usageFor('another-meeting').inputTokens, 0);
+});
+
+test('Anthropic usage cost uses configured per-million token prices', async () => {
+  const brain = new AnthropicBrain('key', 'custom-model', async () =>
+    response('{"kind":"answer","message":"Hello."}', { input_tokens: 1000, output_tokens: 100 }),
+  { inputUsdPerMillion: 2, outputUsdPerMillion: 10 });
+
+  await brain.plan('Hello?', [], 'priced-meeting');
+
+  assert.equal(brain.usageFor('priced-meeting').estimatedUsd, 0.003);
 });

@@ -37,7 +37,9 @@ try {
     dependencies = createDependencies({ ...safeEnv, IDENTITY_MAP_JSON: '[]' });
   }
 }
-const nogita = new NogitaEngine(dependencies);
+const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
+const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice);
+const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
@@ -49,8 +51,6 @@ const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
-const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
-const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice);
 const attendeeCommands = new AttendeeCommandRouter(
   async (sessionId, utterance) => { await nogita.onUtterance(sessionId, utterance); },
   async (sessionId, message) => {

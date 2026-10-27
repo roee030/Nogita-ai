@@ -20,11 +20,19 @@ function isPlan(value: unknown): value is Plan {
 
 export class AnthropicBrain implements BrainPort {
   private readonly model: string;
-  private readonly usage = new Map<string, { inputTokens: number; outputTokens: number }>();
+  private readonly usage = new Map<string, { modelCalls: number; inputTokens: number; outputTokens: number }>();
+  private readonly inputUsdPerMillion: number;
+  private readonly outputUsdPerMillion: number;
 
-  constructor(private readonly key: string, model = DEFAULT_ANTHROPIC_MODEL, private readonly http: typeof fetch = fetch) {
+  constructor(private readonly key: string, model = DEFAULT_ANTHROPIC_MODEL, private readonly http: typeof fetch = fetch,
+    prices: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } = {}) {
     if (!key) throw new Error('Anthropic key required in live mode');
     this.model = model.trim() || DEFAULT_ANTHROPIC_MODEL;
+    this.inputUsdPerMillion = prices.inputUsdPerMillion ?? 0.10;
+    this.outputUsdPerMillion = prices.outputUsdPerMillion ?? 0.50;
+    if (![this.inputUsdPerMillion, this.outputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0)) {
+      throw new Error('invalid Anthropic token price');
+    }
   }
   private async ask(system: string, user: string, maxTokens: number, usageContext?: string): Promise<string> {
     const res = await this.http('https://api.anthropic.com/v1/messages', {
@@ -40,12 +48,13 @@ export class AnthropicBrain implements BrainPort {
       usage?: { input_tokens?: number; output_tokens?: number };
     };
     if (usageContext) {
-      const previous = this.usage.get(usageContext) ?? { inputTokens: 0, outputTokens: 0 };
+      const previous = this.usage.get(usageContext) ?? { modelCalls: 0, inputTokens: 0, outputTokens: 0 };
       const inputTokens = Number.isSafeInteger(value.usage?.input_tokens) && value.usage!.input_tokens! >= 0
         ? value.usage!.input_tokens! : 0;
       const outputTokens = Number.isSafeInteger(value.usage?.output_tokens) && value.usage!.output_tokens! >= 0
         ? value.usage!.output_tokens! : 0;
       this.usage.set(usageContext, {
+        modelCalls: previous.modelCalls + 1,
         inputTokens: previous.inputTokens + inputTokens,
         outputTokens: previous.outputTokens + outputTokens,
       });
@@ -83,9 +92,9 @@ Give concise spoken answers. Do not infer permission from prior turns.`;
     return false;
   }
   usageFor(usageContext: string): AiUsage {
-    const usage = this.usage.get(usageContext) ?? { inputTokens: 0, outputTokens: 0 };
-    // Claude Haiku 5.5 standard pricing for prompts below 100K tokens.
-    const estimatedUsd = (usage.inputTokens * 0.10 + usage.outputTokens * 0.50) / 1_000_000;
+    const usage = this.usage.get(usageContext) ?? { modelCalls: 0, inputTokens: 0, outputTokens: 0 };
+    const estimatedUsd = (usage.inputTokens * this.inputUsdPerMillion +
+      usage.outputTokens * this.outputUsdPerMillion) / 1_000_000;
     return { model: this.model, ...usage, estimatedUsd: Number(estimatedUsd.toFixed(6)) };
   }
 }

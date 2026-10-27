@@ -1,4 +1,4 @@
-import type { ActionReceipt, BoardPort, BrainPort, CodePort, MeetingPort, PolicyPort, Utterance } from './contracts.ts';
+import type { ActionReceipt, BoardPort, BrainPort, CodePort, MeetingPort, PolicyPort, UsagePort, Utterance } from './contracts.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest, removeAddress } from './policy.ts';
 
 interface Session {
@@ -21,6 +21,7 @@ export class NogitaEngine {
     code: CodePort;
     brain: BrainPort;
     policy: PolicyPort;
+    usage?: UsagePort;
   }) {}
 
   private validateSessionId(sessionId: string): void {
@@ -67,9 +68,14 @@ export class NogitaEngine {
   }
   sessionCount(): number { return this.sessions.size; }
 
-  private async speakOrChat(meeting: MeetingPort, message: string): Promise<void> {
-    try { await meeting.speak(message); }
-    catch { await meeting.sendStatus(message); }
+  private async speakOrChat(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
+    try {
+      await meeting.speak(message);
+      this.dependencies.usage?.recordTts(sessionId, true);
+    } catch {
+      this.dependencies.usage?.recordTts(sessionId, false);
+      await meeting.sendStatus(message);
+    }
   }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
@@ -108,21 +114,22 @@ export class NogitaEngine {
     const request = removeAddress(current);
     const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1), sessionId);
     if (plan.kind === 'answer') {
-      await this.speakOrChat(s.meeting, plan.message);
+      await this.speakOrChat(sessionId, s.meeting, plan.message);
       return 'answered';
     }
     if (plan.kind === 'inspect_code') {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
-        await this.speakOrChat(s.meeting, 'I cannot access restricted project code for this request.');
+        await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
         return 'denied';
       }
       const evidence = await this.dependencies.code.findEvidence(plan.query);
+      this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
       if (!evidence.length) {
-        await this.speakOrChat(s.meeting, 'I could not find enough code evidence to answer that reliably.');
+        await this.speakOrChat(sessionId, s.meeting, 'I could not find enough code evidence to answer that reliably.');
         return 'answered';
       }
       const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence, sessionId);
-      await this.speakOrChat(s.meeting, spoken);
+      await this.speakOrChat(sessionId, s.meeting, spoken);
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,
         label: 'Code reference',
@@ -131,15 +138,15 @@ export class NogitaEngine {
     }
     if (plan.kind === 'create_task') {
       if (!isExplicitCreateRequest(request) || !this.dependencies.policy.mayWriteTask(utterance.actor)) {
-        await this.speakOrChat(s.meeting, 'I need an explicit authorized request to create a task.');
+        await this.speakOrChat(sessionId, s.meeting, 'I need an explicit authorized request to create a task.');
         return 'denied';
       }
       if (!plan.title.trim() || plan.title.length > 200) {
-        await this.speakOrChat(s.meeting, 'Please give me a clear task title.');
+        await this.speakOrChat(sessionId, s.meeting, 'Please give me a clear task title.');
         return 'denied';
       }
       // One acknowledgement on a direct address; never speak again on completion.
-      await this.speakOrChat(s.meeting, 'I will create the task and post its link in the meeting chat.');
+      await this.speakOrChat(sessionId, s.meeting, 'I will create the task and post its link in the meeting chat.');
       const id = `${sessionId}:${utterance.eventId}`;
       let receipt = this.completed.get(id);
       if (!receipt) {
@@ -147,13 +154,14 @@ export class NogitaEngine {
           title: plan.title, description: plan.description, assigneeId: plan.assigneeId, requestId: id,
         });
         this.completed.set(id, receipt);
+        this.dependencies.usage?.recordExternalAction(sessionId, 'create_task');
       }
       await s.meeting.sendCompletion(receipt);
       return 'completed';
     }
     // No unsafe placeholder: draft PR remains intentionally denied.
     if (!isExplicitPRRequest(request) || !this.dependencies.policy.mayDraftPR(utterance.actor)) {
-      await this.speakOrChat(s.meeting, 'Draft pull requests are not enabled yet. I will not change code without an approved workflow.');
+      await this.speakOrChat(sessionId, s.meeting, 'Draft pull requests are not enabled yet. I will not change code without an approved workflow.');
       return 'not_supported';
     }
     return 'not_supported';
