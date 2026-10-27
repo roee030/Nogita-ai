@@ -5,5 +5,5 @@
 - [x] Add one exported maintained default and normalize blank overrides to it.
 - [x] Update readiness and operator documentation without adding credentials.
 - [x] Run the full test suite, typecheck, and diff validation.
-- [ ] Commit, push, and verify GitHub Actions.
-- [ ] Update KAN-10 while leaving credential/billing activation to the operator.
+- [x] Commit, push, and verify GitHub Actions.
+- [x] Update KAN-10 while leaving credential/billing activation to the operator.
