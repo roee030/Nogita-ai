@@ -18,7 +18,10 @@ test('Slack signatures: valid HMAC, tamper/replay refused', () => {
 });
 test('Jira Cloud issue body contains ADF and no guessed assignee', async () => {
   let request: Record<string, unknown> | undefined;
-  const mockFetch: typeof fetch = async (_url, options) => {
+  const mockFetch: typeof fetch = async (url, options) => {
+    if (String(url).endsWith('/rest/api/3/search/jql')) {
+      return new Response(JSON.stringify({ issues: [], nextPageToken: null }), { status: 200 });
+    }
     request = JSON.parse(String(options?.body)) as Record<string, unknown>;
     return new Response(JSON.stringify({ key: 'NG-42' }), { status: 201 });
   };
@@ -37,7 +40,10 @@ test('Jira rejects unknown assignee before network call', async () => {
 });
 test('Jira resolves an internal identity to the provider account ID', async () => {
   let request: Record<string, unknown> | undefined;
-  const mockFetch: typeof fetch = async (_url, options) => {
+  const mockFetch: typeof fetch = async (url, options) => {
+    if (String(url).endsWith('/rest/api/3/search/jql')) {
+      return new Response(JSON.stringify({ issues: [], nextPageToken: null }), { status: 200 });
+    }
     request = JSON.parse(String(options?.body)) as Record<string, unknown>;
     return new Response(JSON.stringify({ key: 'NG-43' }), { status: 201 });
   };
@@ -47,6 +53,86 @@ test('Jira resolves an internal identity to the provider account ID', async () =
   await jira.createTask({ ...issue, assigneeId: 'roee' });
   const fields = request?.fields as Record<string, unknown>;
   assert.deepEqual(fields.assignee, { accountId: 'jira-roee' });
+});
+test('Jira create stores only a hashed request marker', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const mockFetch: typeof fetch = async (url, options) => {
+    const call = { url: String(url), body: JSON.parse(String(options?.body)) as Record<string, unknown> };
+    calls.push(call);
+    if (call.url.endsWith('/rest/api/3/search/jql')) {
+      return new Response(JSON.stringify({ issues: [], nextPageToken: null }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ id: '10042', key: 'NG-42', self: call.url + '/10042' }), { status: 201 });
+  };
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task' }, mockFetch);
+  await jira.createTask({ ...issue, requestId: 'private-retry-id' });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.url, 'https://sample.atlassian.net/rest/api/3/search/jql');
+  assert.deepEqual(calls[0]!.body, {
+    jql: 'project = "NG" AND creator = currentUser() ORDER BY created DESC',
+    maxResults: 100,
+    fields: ['key'],
+    properties: ['com.nogita.request.v1'],
+  });
+  assert.equal(JSON.stringify(calls).includes('private-retry-id'), false);
+  assert.deepEqual(calls[1]!.body.properties, [{
+    key: 'com.nogita.request.v1',
+    value: { digest: '8fb365c1f764dcb1d6d35678ae3c9f2983b6b1b6b7f2430ec446b9960927c642' },
+  }]);
+});
+test('Jira retry recovers an existing issue without creating', async () => {
+  const calls: string[] = [];
+  const mockFetch: typeof fetch = async (url) => {
+    calls.push(String(url));
+    return new Response(JSON.stringify({ issues: [{
+      id: '10042', key: 'NG-42', self: 'https://sample.atlassian.net/rest/api/3/issue/10042',
+      properties: { 'com.nogita.request.v1': {
+        digest: '8fb365c1f764dcb1d6d35678ae3c9f2983b6b1b6b7f2430ec446b9960927c642',
+      } },
+    }], nextPageToken: null }), { status: 200 });
+  };
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task' }, mockFetch);
+  const receipt = await jira.createTask({ ...issue, requestId: 'private-retry-id' });
+
+  assert.equal(receipt.label, 'NG-42');
+  assert.equal(receipt.url, 'https://sample.atlassian.net/browse/NG-42');
+  assert.deepEqual(calls, ['https://sample.atlassian.net/rest/api/3/search/jql']);
+});
+test('Jira lookup failure prevents a possibly duplicate create', async () => {
+  let calls = 0;
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task' }, async () => {
+      calls++;
+      return new Response('', { status: 503 });
+    });
+  await assert.rejects(() => jira.createTask(issue), /Jira recovery search failed: HTTP 503/);
+  assert.equal(calls, 1);
+});
+test('Jira malformed recovery data fails closed', async () => {
+  let calls = 0;
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task' }, async () => {
+      calls++;
+      return new Response(JSON.stringify({ issues: 'not-an-array' }), { status: 200 });
+    });
+  await assert.rejects(() => jira.createTask(issue), /Jira recovery search returned invalid data/);
+  assert.equal(calls, 1);
+});
+test('Jira malformed recovery marker prevents a create', async () => {
+  let calls = 0;
+  const jira = new JiraBoard({ baseUrl: 'https://sample.atlassian.net', email: 'user@example.com',
+    token: 'test-token', projectKey: 'NG', issueType: 'Task' }, async () => {
+      calls++;
+      return new Response(JSON.stringify({ issues: [{
+        id: '10042', key: 'NG-42', self: 'https://sample.atlassian.net/rest/api/3/issue/10042',
+        properties: { 'com.nogita.request.v1': 'corrupt' },
+      }], nextPageToken: null }), { status: 200 });
+    });
+  await assert.rejects(() => jira.createTask(issue), /Jira recovery search returned invalid data/);
+  assert.equal(calls, 1);
 });
 test('Monday GraphQL returns verified item link, never guesses assignment', async () => {
   const mockFetch: typeof fetch = async () => new Response(JSON.stringify({
