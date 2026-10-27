@@ -86,7 +86,7 @@ The `.env.example` file documents environment variables. Never commit real secre
 
 - For Jira set `BOARD_PROVIDER=jira` and populate Jira Cloud variables. Task creation mutates the configured Jira project; test with a dedicated sandbox project and least-privilege account.
 - For monday.com set `BOARD_PROVIDER=monday` and corresponding token/board. Configure `MONDAY_DESCRIPTION_COLUMN_ID` with a verified Text column on the board. The adapter refuses to silently discard the task description. Assignee mapping and arbitrary custom fields still require development.
-- For GitHub set `REPO_PROVIDER=github` and a read-only fine-grained PAT restricted to a test repository.
+- For a public GitHub repository set `REPO_PROVIDER=github`, `GITHUB_PUBLIC_REPO=true`, and leave `GITHUB_TOKEN` empty; requests are then unauthenticated and read-only. Private repositories require a read-only fine-grained PAT restricted to that repository. Tokenless access is subject to GitHub's unauthenticated API limits.
 - For Anthropic set `NOGITA_MODE=live` plus `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. The text planner is functional against the documented API shape but has not been exercised with real credentials.
 - For a Recall join/chat API integration set `MEETING_PROVIDER=recall` and `RECALL_API_KEY`, and provide an allowed `meetingUrl` when creating a session. **Do not attempt a voice demo yet.** `speak()` intentionally rejects so we cannot misrepresent missing functionality.
 - For shared identities, set `IDENTITY_MAP_JSON` in local `.env` from `config/identities.example.json`, then authorize internal IDs such as `roee` in `AUTHORIZED_ACTOR_IDS`. Provider identifiers are never guessed; unknown users remain unauthorized.
@@ -112,7 +112,7 @@ Slack Socket Mode and signed Events API deliveries use the same bounded, hash-on
 
 ## Verified status
 
-- `npm test`: **65 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime/container guardrails, secret-safe readiness reporting including the HTTP startup gate, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, Anthropic/Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
+- `npm test`: **68 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime/container guardrails, secret-safe readiness reporting including the HTTP startup gate, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, authenticated and tokenless-public GitHub access, Anthropic/Jira/Monday/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.

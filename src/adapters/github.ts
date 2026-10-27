@@ -8,16 +8,21 @@ const stopWords = new Set(['the','and','for','how','does','this','that','what','
 export class GitHubCode implements CodePort {
   readonly name = 'github';
   private readonly api = 'https://api.github.com';
-  constructor(private readonly config: { token: string; owner: string; repo: string; ref: string },
+  constructor(private readonly config: { token?: string; publicRepo?: boolean; owner: string; repo: string; ref: string },
               private readonly http: typeof fetch = fetch) {
-    if (!config.token || !/^[a-zA-Z0-9_-]+$/.test(config.owner) || !/^[\w.-]+$/.test(config.repo) || !/^[\w./-]+$/.test(config.ref)) {
+    if ((!config.token && config.publicRepo !== true) || !/^[a-zA-Z0-9_-]+$/.test(config.owner) || !/^[\w.-]+$/.test(config.repo) || !/^[\w./-]+$/.test(config.ref)) {
       throw new Error('GitHub configuration invalid');
     }
   }
   private async get<T>(path: string): Promise<T> {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'Nogita-V1',
+    };
+    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
     const res = await this.http(`${this.api}${path}`, {
-      headers: { Authorization: `Bearer ${this.config.token}`, Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'Nogita-V1' },
+      headers,
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error(`GitHub API failed: HTTP ${res.status}`);

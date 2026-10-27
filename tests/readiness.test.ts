@@ -45,6 +45,18 @@ test('readiness returns actionable blockers for the current MVP requirements', (
   assert.ok(report.checks.every(check => !check.detail.includes('present')));
 });
 
+test('readiness accepts explicitly public GitHub repositories without a token', () => {
+  const publicRepository = {
+    ...completeEnv,
+    GITHUB_TOKEN: '',
+    GITHUB_PUBLIC_REPO: 'true',
+  };
+  const report = buildReadinessReport(publicRepository, new IdentityDirectory([{
+    id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
+  }]), '22.16.0');
+  assert.equal(report.checks.find(item => item.id === 'github')?.status, 'ready');
+});
+
 test('readiness mirrors the HTTP admin token startup gate without exposing the token', () => {
   for (const value of ['', 'too-short', 'replace-with-long-random-local-token']) {
     const report = buildReadinessReport({ ...completeEnv, NOGITA_ADMIN_TOKEN: value },

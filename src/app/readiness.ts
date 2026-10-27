@@ -64,10 +64,10 @@ export function buildReadinessReport(
       present(env, ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY']),
       'Jira is selected and its required configuration is present.',
       'Select Jira and configure its site, account email, API token, and project key.'),
-    check('github', env.REPO_PROVIDER === 'github' &&
-      present(env, ['GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPO']),
+    check('github', env.REPO_PROVIDER === 'github' && present(env, ['GITHUB_OWNER', 'GITHUB_REPO']) &&
+      (Boolean(env.GITHUB_TOKEN?.trim()) || env.GITHUB_PUBLIC_REPO === 'true'),
       'GitHub is selected and its required configuration is present.',
-      'Select GitHub and configure a repository-scoped read token, owner, and repository.'),
+      'Select GitHub, configure owner/repository, and provide either a repository-scoped read token or explicit public-repository mode.'),
     check('attendee', env.MEETING_PROVIDER === 'attendee' && present(env, ['ATTENDEE_API_KEY', 'ATTENDEE_WEBHOOK_SECRET']) &&
       env.ATTENDEE_PRIVACY_REVIEWED === 'true' && validHttpsUrl(env.ATTENDEE_WEBHOOK_URL) &&
       identities.hasAttendeeIdentity(),

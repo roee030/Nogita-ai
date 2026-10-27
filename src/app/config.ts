@@ -29,7 +29,7 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
     ? new MondayBoard(env.MONDAY_API_TOKEN ?? '', Number(env.MONDAY_BOARD_ID ?? NaN), env.MONDAY_DESCRIPTION_COLUMN_ID ?? '')
     : new DemoBoard();
   const code: CodePort = env.REPO_PROVIDER === 'github'
-    ? new GitHubCode({ token: env.GITHUB_TOKEN ?? '', owner: env.GITHUB_OWNER ?? '',
+    ? new GitHubCode({ token: env.GITHUB_TOKEN ?? '', publicRepo: env.GITHUB_PUBLIC_REPO === 'true', owner: env.GITHUB_OWNER ?? '',
         repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main' })
     : new DemoCode();
   const brain: BrainPort = env.NOGITA_MODE === 'live'

@@ -74,6 +74,27 @@ test('GitHub source lookup only shows discovered relevant source files', async (
   assert.equal(out[0]?.path, 'src/auth.ts');
   assert.match(out[0]?.url ?? '', /github.com\/example\/app/);
 });
+test('GitHub public source lookup omits credentials from every request', async () => {
+  const authorizationHeaders: Array<string | null> = [];
+  const fakeFetch: typeof fetch = async (url, options) => {
+    authorizationHeaders.push(new Headers(options?.headers).get('Authorization'));
+    const u = String(url);
+    if (u.includes('/git/trees/')) return new Response(JSON.stringify({ tree: [
+      { path: 'src/public.ts', type: 'blob', size: 100 },
+    ] }));
+    if (u.includes('/contents/src/public.ts')) return new Response(JSON.stringify({
+      encoding: 'base64', content: Buffer.from('export const publicRepository = true;').toString('base64'),
+    }));
+    throw new Error(`unexpected path ${u}`);
+  };
+  const git = new GitHubCode({ token: '', publicRepo: true, owner: 'example', repo: 'public-app', ref: 'main' }, fakeFetch);
+  const out = await git.findEvidence('public');
+  assert.equal(out[0]?.path, 'src/public.ts');
+  assert.deepEqual(authorizationHeaders, [null, null]);
+});
+test('GitHub source lookup rejects missing credentials unless public mode is explicit', () => {
+  assert.throws(() => new GitHubCode({ token: '', owner: 'example', repo: 'app', ref: 'main' }), /configuration invalid/);
+});
 test('Recall joins only approved host; sends actual chat receipt API request', async () => {
   const calls: Array<{url: string;body:unknown}> = [];
   const mockFetch: typeof fetch = async (url, opts) => {
