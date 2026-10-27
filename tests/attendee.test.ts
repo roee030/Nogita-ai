@@ -37,6 +37,10 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   ]);
   assert.ok(calls.every(x => x.auth === 'Token test-token'));
   assert.equal(calls[0]?.payload.debug_settings.create_debug_recording, false);
+  assert.deepEqual(calls[0]?.payload.automatic_leave_settings, {
+    silence_timeout_seconds: 180,
+    only_participant_in_meeting_timeout_seconds: 30,
+  });
   assert.deepEqual(calls[0]?.payload.metadata, { session_id: 'session' });
   assert.equal(calls[0]?.payload.bot_metadata, undefined);
   assert.deepEqual(calls[0]?.payload.webhooks, [{

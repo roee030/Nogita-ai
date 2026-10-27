@@ -69,6 +69,10 @@ export class AttendeeMeeting implements MeetingPort {
       bot_name: 'Nogita',
       deduplication_key: `nogita-${this.id}`,
       metadata: { session_id: this.id },
+      automatic_leave_settings: {
+        silence_timeout_seconds: 180,
+        only_participant_in_meeting_timeout_seconds: 30,
+      },
       ...(this.webhookUrl ? { webhooks: [{
         url: this.webhookUrl,
         triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
