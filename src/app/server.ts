@@ -11,6 +11,7 @@ import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscri
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
+import { InFlightWork } from './in-flight.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -42,6 +43,7 @@ const attendeeLedger = new FileEventLedger(stateDirectory);
 const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
 const slackThreads = new Set<string>();
+const slackWork = new InFlightWork();
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
   attendeeBotsBySession.delete(sessionId);
@@ -89,9 +91,10 @@ async function handleSlack(raw: string): Promise<{ status: number; response: unk
   if (!request || !env.SLACK_BOT_TOKEN) {
     return { status: 200, response: { ok: true } };
   }
+  if (!slackWork.accepting) return { status: 503, response: { error: 'service is shutting down' } };
   const ledger = await slackLedger.begin('slack', request.utterance.eventId);
   if (ledger.status !== 'started') return { status: 200, response: { ok: true } };
-  void finishEventClaim(ledger.claim, async () => {
+  slackWork.track(finishEventClaim(ledger.claim, async () => {
     if (!slackThreads.has(request.sessionId)) {
       await nogita.startSession(request.sessionId,
         new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
@@ -100,7 +103,7 @@ async function handleSlack(raw: string): Promise<{ status: number; response: unk
     await nogita.onUtterance(request.sessionId, request.utterance);
   }).catch(err => {
     console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
-  });
+  }));
   return { status: 200, response: { ok: true } };
 }
 
@@ -238,3 +241,30 @@ const server = createServer(async (req, res) => {
 const host = env.HOST ?? '127.0.0.1';
 const port = Number(env.PORT ?? '8787');
 server.listen(port, host, () => console.log(`Nogita dev server listening on http://${host}:${port}`));
+
+let shutdown: Promise<void> | undefined;
+function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shutdown) return shutdown;
+  shutdown = (async () => {
+    console.log(`shutdown_started signal=${signal}`);
+    const closed = new Promise<void>((resolveClose, rejectClose) => {
+      server.close(error => error ? rejectClose(error) : resolveClose());
+    });
+    const [drained] = await Promise.all([slackWork.drain(30_000), closed]);
+    if (!drained) {
+      process.exitCode = 1;
+      console.error('shutdown_slack_drain_timed_out');
+    } else {
+      console.log('shutdown_complete');
+    }
+  })();
+  return shutdown;
+}
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    void gracefulShutdown(signal).catch(error => {
+      process.exitCode = 1;
+      console.error('shutdown_failed', error instanceof Error ? error.message : 'unknown');
+    });
+  });
+}
