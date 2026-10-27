@@ -18,6 +18,7 @@ export class SlackThreadMeeting implements MeetingPort {
     private readonly http: typeof fetch = fetch) {}
   async join(): Promise<void> { /* Slack is not a voice meeting; invoked by explicit mention. */ }
   async speak(message: string): Promise<void> { await this.post(message); }
+  async sendStatus(message: string): Promise<void> { await this.post(message); }
   async raiseHand(): Promise<boolean> { return false; }
   async sendCompletion(receipt: ActionReceipt): Promise<void> { await this.post(`${receipt.label}: ${receipt.url}`); }
   async leave(): Promise<void> {}

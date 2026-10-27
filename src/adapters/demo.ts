@@ -6,9 +6,10 @@ export class DemoMeeting implements MeetingPort {
   constructor(readonly id: string) {}
   async join(): Promise<void> { this.events.push({ type: 'join' }); }
   async speak(message: string): Promise<void> { this.events.push({ type: 'speak', text: message }); }
+  async sendStatus(message: string): Promise<void> { this.events.push({ type: 'chat', text: message }); }
   async raiseHand(): Promise<boolean> { this.events.push({ type: 'raise_hand' }); return true; }
   async sendCompletion(receipt: ActionReceipt): Promise<void> {
-    this.events.push({ type: 'chat', text: `${receipt.label}: ${receipt.url}` });
+    await this.sendStatus(`${receipt.label}: ${receipt.url}`);
   }
   async leave(): Promise<void> { this.events.push({ type: 'leave' }); }
 }

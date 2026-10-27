@@ -27,6 +27,8 @@ export interface MeetingPort {
   join(meetingUrl?: string): Promise<void>;
   /** Called exclusively in response to an explicit direct address. */
   speak(message: string): Promise<void>;
+  /** Plain meeting-chat status or speech fallback; never carries secrets. */
+  sendStatus(message: string): Promise<void>;
   /** Returns false if native hand raise is not supported; no fallback speech/chat. */
   raiseHand(): Promise<boolean>;
   /** Only on completion of an explicitly requested task or information lookup. */

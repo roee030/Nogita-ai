@@ -67,6 +67,11 @@ export class NogitaEngine {
   }
   sessionCount(): number { return this.sessions.size; }
 
+  private async speakOrChat(meeting: MeetingPort, message: string): Promise<void> {
+    try { await meeting.speak(message); }
+    catch { await meeting.sendStatus(message); }
+  }
+
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
     const s = this.sessions.get(sessionId);
     if (!s || s.ending) throw new Error('unknown session');
@@ -103,21 +108,21 @@ export class NogitaEngine {
     const request = removeAddress(current);
     const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1));
     if (plan.kind === 'answer') {
-      await s.meeting.speak(plan.message);
+      await this.speakOrChat(s.meeting, plan.message);
       return 'answered';
     }
     if (plan.kind === 'inspect_code') {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
-        await s.meeting.speak('I cannot access restricted project code for this request.');
+        await this.speakOrChat(s.meeting, 'I cannot access restricted project code for this request.');
         return 'denied';
       }
       const evidence = await this.dependencies.code.findEvidence(plan.query);
       if (!evidence.length) {
-        await s.meeting.speak('I could not find enough code evidence to answer that reliably.');
+        await this.speakOrChat(s.meeting, 'I could not find enough code evidence to answer that reliably.');
         return 'answered';
       }
       const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence);
-      await s.meeting.speak(spoken);
+      await this.speakOrChat(s.meeting, spoken);
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,
         label: 'Code reference',
@@ -126,15 +131,15 @@ export class NogitaEngine {
     }
     if (plan.kind === 'create_task') {
       if (!isExplicitCreateRequest(request) || !this.dependencies.policy.mayWriteTask(utterance.actor)) {
-        await s.meeting.speak('I need an explicit authorized request to create a task.');
+        await this.speakOrChat(s.meeting, 'I need an explicit authorized request to create a task.');
         return 'denied';
       }
       if (!plan.title.trim() || plan.title.length > 200) {
-        await s.meeting.speak('Please give me a clear task title.');
+        await this.speakOrChat(s.meeting, 'Please give me a clear task title.');
         return 'denied';
       }
       // One acknowledgement on a direct address; never speak again on completion.
-      await s.meeting.speak('I will create the task and post its link in the meeting chat.');
+      await this.speakOrChat(s.meeting, 'I will create the task and post its link in the meeting chat.');
       const id = `${sessionId}:${utterance.eventId}`;
       let receipt = this.completed.get(id);
       if (!receipt) {
@@ -148,7 +153,7 @@ export class NogitaEngine {
     }
     // No unsafe placeholder: draft PR remains intentionally denied.
     if (!isExplicitPRRequest(request) || !this.dependencies.policy.mayDraftPR(utterance.actor)) {
-      await s.meeting.speak('Draft pull requests are not enabled yet. I will not change code without an approved workflow.');
+      await this.speakOrChat(s.meeting, 'Draft pull requests are not enabled yet. I will not change code without an approved workflow.');
       return 'not_supported';
     }
     return 'not_supported';

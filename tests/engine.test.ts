@@ -15,6 +15,10 @@ function fixture(brain: BrainPort = new DemoBrain()) {
   return { engine, meeting, board, utter };
 }
 
+class SpeechFailingMeeting extends DemoMeeting {
+  override async speak(_message: string): Promise<void> { throw new Error('tts unavailable'); }
+}
+
 test('activation: direct name address only', () => {
   for (const text of ['Nogita, hello', 'Hey Nogita, check', 'Nogita what do you think?']) assert.equal(directlyAddressesNogita(text), true);
   for (const text of ['We talked about Nogita', 'Rename Nogita today', 'NogitaBot', 'That is a great idea']) assert.equal(directlyAddressesNogita(text), false);
@@ -33,6 +37,25 @@ test('only explicitly addressed response may produce speech', async () => {
   assert.equal(await f.utter('Nogita, hello there', '1'), 'answered');
   assert.equal(f.meeting.events.filter(e => e.type === 'speak').length, 1);
   assert.equal(f.meeting.events.filter(e => e.type === 'chat').length, 0);
+});
+test('spoken answer falls back to meeting chat when TTS fails', async () => {
+  const meeting = new SpeechFailingMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead'])) });
+  await engine.startSession('s', meeting);
+  assert.equal(await engine.onUtterance('s', { text: 'Nogita, what time is it?', eventId: 'answer-fallback', actor: lead }), 'answered');
+  assert.deepEqual(meeting.events.filter(e => e.type === 'chat').map(e => e.text),
+    ["I'm here. You asked: what time is it?"]);
+});
+test('task acknowledgement falls back to chat and task is still created once', async () => {
+  const meeting = new SpeechFailingMeeting('m'); const board = new DemoBoard();
+  const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead'])) });
+  await engine.startSession('s', meeting);
+  assert.equal(await engine.onUtterance('s', { text: 'Nogita, create a task to fix voice', eventId: 'task-fallback', actor: lead }), 'completed');
+  assert.equal(board.tasks.length, 1);
+  assert.match(meeting.events.filter(e => e.type === 'chat')[0]?.text ?? '', /I will create the task/);
+  assert.match(meeting.events.filter(e => e.type === 'chat')[1]?.text ?? '', /DEMO-1/);
 });
 test('create task -> short spoken acknowledgement and completed chat receipt', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);
@@ -141,6 +164,7 @@ test('failed event processing can be retried instead of being silently discarded
     if (attempts === 1) throw new Error('temporary speech failure');
     return originalSpeak(text);
   };
+  f.meeting.sendStatus = async () => { throw new Error('temporary speech failure'); };
   await assert.rejects(() => f.engine.onUtterance('retryable', {
     eventId: 'retry-event', actor: { id: 'lead', displayName: 'Lead', verified: true }, text: 'Nogita, hello',
   }), /temporary speech failure/);
@@ -176,6 +200,7 @@ test('utterances in one session are serialized so a failed rollback cannot erase
     }
     return originalSpeak(text);
   };
+  f.meeting.sendStatus = async () => { throw new Error('first event failed'); };
   const first = f.engine.onUtterance('serialized', {
     eventId: 'first', actor: lead, text: 'Nogita, first',
   });

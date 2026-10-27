@@ -38,10 +38,13 @@ export class RecallMeeting implements MeetingPort {
   async speak(_message: string): Promise<void> {
     throw new Error('Realtime voice not wired; cannot claim voice works');
   }
+  async sendStatus(message: string): Promise<void> {
+    if (!this.botId) throw new Error('not joined');
+    await this.post(`${this.botId}/send_chat_message/`, { to: 'everyone', message });
+  }
   async raiseHand(): Promise<boolean> { return false; }
   async sendCompletion(receipt: ActionReceipt): Promise<void> {
-    if (!this.botId) throw new Error('not joined');
-    await this.post(`${this.botId}/send_chat_message/`, { to: 'everyone', message: `${receipt.label}: ${receipt.url}` });
+    await this.sendStatus(`${receipt.label}: ${receipt.url}`);
   }
   async leave(): Promise<void> {
     // Best effort: calls leave endpoint; not critical to replay in tests.

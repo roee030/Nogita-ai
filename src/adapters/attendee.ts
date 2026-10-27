@@ -95,15 +95,17 @@ export class AttendeeMeeting implements MeetingPort {
     });
   }
 
+  async sendStatus(message: string): Promise<void> {
+    if (!this.botId) throw new Error('not joined');
+    if (!message.trim()) throw new Error('empty chat message');
+    await this.request(`/${this.botId}/send_chat_message`, { to: 'everyone', message });
+  }
+
   /** No documented native hand raise API. NEVER replace a hand raise with speech. */
   async raiseHand(): Promise<boolean> { return false; }
 
   async sendCompletion(receipt: ActionReceipt): Promise<void> {
-    if (!this.botId) throw new Error('not joined');
-    await this.request(`/${this.botId}/send_chat_message`, {
-      to: 'everyone',
-      message: `${receipt.label}: ${receipt.url}`,
-    });
+    await this.sendStatus(`${receipt.label}: ${receipt.url}`);
   }
 
   async leave(): Promise<void> {
