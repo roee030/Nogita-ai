@@ -14,6 +14,7 @@ export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed'
 
 export class NogitaEngine {
   private readonly sessions = new Map<string, Session>();
+  private readonly startingSessions = new Set<string>();
   private readonly completed = new Map<string, ActionReceipt>(); // Process-local; durable idempotency is TODO.
   constructor(private readonly dependencies: {
     board: BoardPort;
@@ -22,9 +23,12 @@ export class NogitaEngine {
     policy: PolicyPort;
   }) {}
 
-  private addSession(sessionId: string, meeting: MeetingPort): void {
-    if (this.sessions.has(sessionId)) throw new Error('session already exists');
+  private validateSessionId(sessionId: string): void {
     if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
+  }
+
+  private addSession(sessionId: string, meeting: MeetingPort): void {
+    this.validateSessionId(sessionId);
     this.sessions.set(sessionId, {
       meeting, history: [], eventIds: new Set(), raised: false, mutedUntil: 0,
       processing: Promise.resolve(), ending: false,
@@ -32,12 +36,20 @@ export class NogitaEngine {
   }
 
   async startSession(sessionId: string, meeting: MeetingPort, meetingUrl?: string): Promise<void> {
-    if (this.sessions.has(sessionId)) throw new Error('session already exists');
-    if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
-    await meeting.join(meetingUrl);
+    this.validateSessionId(sessionId);
+    if (this.sessions.has(sessionId) || this.startingSessions.has(sessionId)) throw new Error('session already exists');
+    this.startingSessions.add(sessionId);
+    try {
+      await meeting.join(meetingUrl);
+      this.addSession(sessionId, meeting);
+    } finally {
+      this.startingSessions.delete(sessionId);
+    }
+  }
+  restoreSession(sessionId: string, meeting: MeetingPort): void {
+    if (this.sessions.has(sessionId) || this.startingSessions.has(sessionId)) throw new Error('session already exists');
     this.addSession(sessionId, meeting);
   }
-  restoreSession(sessionId: string, meeting: MeetingPort): void { this.addSession(sessionId, meeting); }
   hasSession(sessionId: string): boolean { return this.sessions.has(sessionId); }
   async endSession(sessionId: string, leaveProvider = true): Promise<void> {
     const session = this.sessions.get(sessionId);

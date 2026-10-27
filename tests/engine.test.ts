@@ -100,6 +100,37 @@ test('restored session accepts events without joining the provider again', async
   assert.throws(() => f.engine.restoreSession('s', f.meeting), /already exists/);
 });
 
+test('concurrent starts reserve a session before provider join completes', async () => {
+  const f = fixture();
+  const second = new DemoMeeting('second');
+  let releaseJoin!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const gate = new Promise<void>(resolve => { releaseJoin = resolve; });
+  const originalJoin = f.meeting.join.bind(f.meeting);
+  f.meeting.join = async () => {
+    markStarted();
+    await gate;
+    await originalJoin();
+  };
+  const first = f.engine.startSession('same-session', f.meeting);
+  await started;
+  await assert.rejects(() => f.engine.startSession('same-session', second), /already exists/);
+  assert.equal(second.events.some(event => event.type === 'join'), false);
+  releaseJoin();
+  await first;
+  assert.equal(f.engine.sessionCount(), 1);
+});
+
+test('failed provider join releases the session reservation for retry', async () => {
+  const f = fixture();
+  f.meeting.join = async () => { throw new Error('provider unavailable'); };
+  await assert.rejects(() => f.engine.startSession('retry-start', f.meeting), /provider unavailable/);
+  const replacement = new DemoMeeting('replacement');
+  await f.engine.startSession('retry-start', replacement);
+  assert.equal(f.engine.sessionCount(), 1);
+});
+
 test('failed event processing can be retried instead of being silently discarded', async () => {
   const f = fixture();
   await f.engine.startSession('retryable', f.meeting);
