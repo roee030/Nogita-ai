@@ -71,7 +71,10 @@ const attendeeCommands = new AttendeeCommandRouter(
     onLeave: async sessionId => {
       const meeting = attendeeMeetingsBySession.get(sessionId);
       const botId = meeting?.botIdentifier;
-      if (meeting) await meeting.sendStatus('Okay, I am leaving the call now.');
+      if (meeting) {
+        try { await meeting.sendStatus('Okay, I am leaving the call now.'); }
+        catch { console.error('leave_acknowledgement_failed'); }
+      }
       await nogita.endSession(sessionId);
       sessionUsage.end(sessionId);
       await forgetAttendeeSession(sessionId, botId);

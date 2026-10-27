@@ -115,8 +115,11 @@ export class AttendeeCommandRouter {
       }
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {
-      for (const waiter of entry.waiters) waiter.reject(error);
-      throw error;
+      this.onError(error);
+      try {
+        await this.sendStatus(sessionId, 'I could not complete that request. Please try again; you can still ask me to leave.');
+      } catch { /* A failed status must not replay the command indefinitely. */ }
+      for (const waiter of entry.waiters) waiter.resolve();
     }
   }
 
