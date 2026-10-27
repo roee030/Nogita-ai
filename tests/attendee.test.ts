@@ -53,6 +53,23 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   assert.deepEqual(calls[3]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
 });
 
+test('Attendee: verification prompt is queued for delivery after the bot joins', async () => {
+  let createPayload: any;
+  const mock: typeof fetch = async (_url, options) => {
+    createPayload = JSON.parse(String(options?.body));
+    return new Response(JSON.stringify(bot), { status: 201 });
+  };
+  const meeting = new AttendeeMeeting('session', 'test-token', true, mock,
+    'https://nogita.example/webhooks/attendee', 'To verify, say: Nogita verify 123456');
+
+  await meeting.join(meetingUrl);
+
+  assert.deepEqual(createPayload.bot_chat_message, {
+    to: 'everyone',
+    message: 'To verify, say: Nogita verify 123456',
+  });
+});
+
 test('Attendee: restored bot can speak without creating a replacement bot', async () => {
   const paths: string[] = [];
   const mock: typeof fetch = async url => {

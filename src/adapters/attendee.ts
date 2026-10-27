@@ -18,6 +18,7 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly privacyReviewed: boolean,
     private readonly http: typeof fetch = fetch,
     private readonly webhookUrl?: string,
+    private readonly initialChatMessage?: string,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
     if (webhookUrl) {
@@ -77,6 +78,9 @@ export class AttendeeMeeting implements MeetingPort {
         url: this.webhookUrl,
         triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
       }] } : {}),
+      ...(this.initialChatMessage?.trim() ? {
+        bot_chat_message: { to: 'everyone', message: this.initialChatMessage },
+      } : {}),
       debug_settings: { create_debug_recording: false },
     }) as { id?: string } | undefined;
     if (!data?.id || !/^bot_[a-zA-Z0-9_-]+$/.test(data.id)) {

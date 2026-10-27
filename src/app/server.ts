@@ -259,13 +259,23 @@ const server = createServer(async (req, res) => {
       if (payload.ownerActorId && (!owner || !dependencies.policy.mayWriteTask(owner))) {
         respond(res, 403, { error: 'authorized meeting owner required' }); return;
       }
+      const attendeeChallenge = provider === 'attendee'
+        ? attendeeCommands.beginSession(payload.id, owner)
+        : undefined;
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
         ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true',
-            fetch, env.ATTENDEE_WEBHOOK_URL)
+            fetch, env.ATTENDEE_WEBHOOK_URL, attendeeChallenge
+              ? `To verify your identity for this meeting, please say: ${attendeeChallenge}`
+              : undefined)
         : new DemoMeeting(payload.id);
-      await nogita.startSession(payload.id, meeting, payload.meetingUrl);
+      try {
+        await nogita.startSession(payload.id, meeting, payload.meetingUrl);
+      } catch (error) {
+        if (provider === 'attendee') attendeeCommands.endSession(payload.id);
+        throw error;
+      }
       sessionUsage.start(payload.id, provider);
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
       if (meeting instanceof AttendeeMeeting) {
@@ -275,10 +285,6 @@ const server = createServer(async (req, res) => {
           await attendeeBindings.register(payload.id, botId);
           attendeeBotsBySession.set(payload.id, botId);
           attendeeMeetingsBySession.set(payload.id, meeting);
-          const challenge = attendeeCommands.beginSession(payload.id, owner);
-          if (challenge) {
-            await meeting.sendStatus(`To verify your identity for this meeting, please say: ${challenge}`);
-          }
         } catch (error) {
           await nogita.endSession(payload.id);
           sessionUsage.end(payload.id);
