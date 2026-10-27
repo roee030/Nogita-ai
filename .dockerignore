@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+.nogita-state
+node_modules
+tests
+docs
+coverage
+npm-debug.log*
+Dockerfile*
+README.md

@@ -31,6 +31,8 @@ jobs:
         run: npm test
       - name: Run TypeScript checks
         run: npm run typecheck
+      - name: Build production container
+        run: docker build --pull=false --tag nogita-ci:${{ github.sha }} .
       - name: Reject tracked local environment files
         shell: bash
         run: |

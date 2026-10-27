@@ -31,3 +31,18 @@ test('local secrets and runtime state are excluded from source control', () => {
   });
   assert.deepEqual(sensitive, []);
 });
+
+test('production container is non-root, health-checked, secret-safe, and built in CI', () => {
+  const dockerfile = readFileSync('Dockerfile', 'utf8');
+  const dockerignore = readFileSync('.dockerignore', 'utf8');
+  const workflow = readFileSync('.github/workflows/verify.yml', 'utf8');
+  assert.match(dockerfile, /^FROM node:22\.16\.0-bookworm-slim/m);
+  assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts/);
+  assert.match(dockerfile, /^USER node$/m);
+  assert.match(dockerfile, /^HEALTHCHECK /m);
+  assert.doesNotMatch(dockerfile, /COPY\s+\.\s+\./);
+  for (const entry of ['.env', '.env.*', '.nogita-state', '.git', 'node_modules']) {
+    assert.ok(dockerignore.split(/\r?\n/).includes(entry), `missing ${entry} from .dockerignore`);
+  }
+  assert.match(workflow, /docker build --pull=false --tag nogita-ci:\$\{\{ github\.sha \}\} \./);
+});

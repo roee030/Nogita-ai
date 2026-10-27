@@ -112,7 +112,7 @@ Slack Socket Mode and signed Events API deliveries use the same bounded, hash-on
 
 ## Verified status
 
-- `npm test`: **63 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime guardrails, secret-safe readiness reporting, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, Anthropic/Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
+- `npm test`: **64 passing tests** for activation behavior, identity mapping, non-interruption, permissions, request guards, repository/runtime/container guardrails, secret-safe readiness reporting, durable privacy-safe Attendee/Slack replay suppression, Attendee restart restoration, Slack verification and Socket Mode, Anthropic/Jira/Monday/GitHub/Recall/Attendee HTTP contracts, signed transcript ingestion, bounded model plans, ordered retry behavior, race-safe session startup, and session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
 - Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.
@@ -148,3 +148,7 @@ Before testing with a real meeting: deploy the webhook behind stable HTTPS, revi
 4. Run `npm install` and `npm run slack`, invite the app to a test channel (`/invite @Nogita`), then say `@Nogita hello` or send it a DM saying `Nogita, hello`. The reply stays in the originating thread. DMs without an explicit name are ignored.
 
 `MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. A real spoken-meeting test still requires stable HTTPS, privacy acceptance, enrolled Attendee speaker UUIDs, and live provider validation. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.
+
+### Production container
+
+`Dockerfile` builds the HTTP service on the pinned Node 22.16 runtime with production dependencies only and runs it as the unprivileged `node` user. Inject configuration through the hosting platform's secret store; the image does not contain `.env`, Git metadata, tests, docs, or local runtime state. Mount a persistent volume at `/var/lib/nogita` for the hash-only replay ledger. The container exposes port 8787 and includes a `/health` check. CI builds the image on every pull request; publishing and selecting a public HTTPS host remain part of KAN-9.
