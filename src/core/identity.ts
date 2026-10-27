@@ -77,6 +77,7 @@ export class IdentityDirectory {
   fromSlack(teamId: string, userId: string): IdentityRecord | undefined {
     return this.bySlack.get(`${teamId}:${userId}`);
   }
+  fromId(id: string): IdentityRecord | undefined { return this.byId.get(id); }
   fromJira(accountId: string): IdentityRecord | undefined { return this.byJira.get(accountId); }
   fromGitHub(username: string): IdentityRecord | undefined { return this.byGitHub.get(username.toLowerCase()); }
   fromAttendee(userUuid: string): IdentityRecord | undefined { return this.byAttendee.get(userUuid); }

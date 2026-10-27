@@ -27,6 +27,7 @@ test('one internal identity resolves from Slack, Jira, and GitHub identifiers', 
   assert.equal(directory.fromJira('jira-roee')?.id, 'roee');
   assert.equal(directory.fromGitHub('ROEE030')?.id, 'roee');
   assert.equal(directory.fromAttendee('meet-roee')?.id, 'roee');
+  assert.equal(directory.fromId('roee')?.displayName, 'Roee Angel');
   assert.equal(directory.jiraAccountIdFor('roee'), 'jira-roee');
 });
 

@@ -30,6 +30,7 @@ export function verifyAttendeeWebhookSignature(secretB64: string, payload: unkno
 export interface AttendeeTranscriptRequest {
   sessionId: string;
   botId: string;
+  speakerUuid: string;
   attendeeUserUuid?: string;
   utterance: Utterance;
 }
@@ -68,6 +69,7 @@ export function parseAttendeeTranscript(payload: unknown, identities: IdentityDi
   return {
     sessionId: envelope.sessionId,
     botId: envelope.botId,
+    speakerUuid,
     ...(userUuid ? { attendeeUserUuid: userUuid } : {}),
     utterance: {
       eventId: envelope.eventId,

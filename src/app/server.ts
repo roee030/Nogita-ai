@@ -13,6 +13,7 @@ import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
 import { InFlightWork } from './in-flight.ts';
 import { AttendeeEnrollmentCandidates } from './attendee-enrollment.ts';
+import { AttendeeCommandRouter } from './attendee-command-router.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -43,11 +44,23 @@ const slackLedger = new FileEventLedger(stateDirectory);
 const attendeeLedger = new FileEventLedger(stateDirectory);
 const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
+const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
+const attendeeCommands = new AttendeeCommandRouter(
+  async (sessionId, utterance) => { await nogita.onUtterance(sessionId, utterance); },
+  async (sessionId, message) => {
+    const meeting = attendeeMeetingsBySession.get(sessionId);
+    if (!meeting) throw new Error('unknown Attendee meeting');
+    await meeting.sendStatus(message);
+  },
+  { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown') },
+);
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
+  attendeeCommands.endSession(sessionId);
+  attendeeMeetingsBySession.delete(sessionId);
   attendeeBotsBySession.delete(sessionId);
   if (botId) await attendeeBindings.remove(sessionId, botId);
 }
@@ -58,6 +71,8 @@ function restoreAttendeeSession(sessionId: string, botId: string): void {
     env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
+  attendeeMeetingsBySession.set(sessionId, meeting);
+  attendeeCommands.beginSession(sessionId);
 }
 
 function safeToken(auth: string | undefined): boolean {
@@ -147,7 +162,7 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
           attendeeEnrollment.observe(transcript.attendeeUserUuid);
         }
         restoreAttendeeSession(transcript.sessionId, envelope.botId);
-        await nogita.onUtterance(transcript.sessionId, transcript.utterance);
+        attendeeCommands.accept(transcript);
       }
     }
     await claim.complete();
@@ -191,11 +206,20 @@ const server = createServer(async (req, res) => {
     }
     if (!providerConfigValid) { respond(res, 503, { error: 'provider configuration invalid' }); return; }
     if (req.method === 'POST' && pathname === '/api/sessions') {
-      const payload = JSON.parse(await readRaw(req)) as { id?: string; meetingUrl?: string; provider?: string };
+      const payload = JSON.parse(await readRaw(req)) as {
+        id?: string; meetingUrl?: string; provider?: string; ownerActorId?: string;
+      };
       if (typeof payload.id !== 'string' || !payload.id) { respond(res, 400, { error: 'session id required' }); return; }
       const provider = payload.provider ?? env.MEETING_PROVIDER ?? 'demo';
       if (provider !== 'recall' && provider !== 'attendee' && provider !== 'demo') {
         respond(res, 400, { error: 'unsupported meeting provider' }); return;
+      }
+      const ownerRecord = payload.ownerActorId ? dependencies.identities.fromId(payload.ownerActorId) : undefined;
+      const owner = ownerRecord
+        ? { id: ownerRecord.id, displayName: ownerRecord.displayName, verified: true }
+        : undefined;
+      if (payload.ownerActorId && (!owner || !dependencies.policy.mayWriteTask(owner))) {
+        respond(res, 403, { error: 'authorized meeting owner required' }); return;
       }
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
@@ -211,12 +235,19 @@ const server = createServer(async (req, res) => {
         try {
           await attendeeBindings.register(payload.id, botId);
           attendeeBotsBySession.set(payload.id, botId);
+          attendeeMeetingsBySession.set(payload.id, meeting);
+          const challenge = attendeeCommands.beginSession(payload.id, owner);
+          if (challenge) {
+            await meeting.sendStatus(`To verify your identity for this meeting, please say: ${challenge}`);
+          }
         } catch (error) {
           await nogita.endSession(payload.id);
+          await forgetAttendeeSession(payload.id, botId);
           throw error;
         }
       }
-      respond(res, 201, { sessionId: payload.id, provider, capabilities: [...meeting.capabilities] }); return;
+      respond(res, 201, { sessionId: payload.id, provider, capabilities: [...meeting.capabilities],
+        enrollmentRequired: provider === 'attendee' && Boolean(owner) }); return;
     }
     if (req.method === 'POST' && pathname === '/api/utterances') {
       // DEVELOPMENT INGESTION ONLY: not a live meeting audio bridge.

@@ -35,6 +35,7 @@ test('Attendee transcript maps provider speaker to shared internal identity', ()
   assert.equal(parsed?.utterance.eventId, transcriptPayload.idempotency_key);
   assert.deepEqual(parsed?.utterance.actor, { id: 'roee', displayName: 'Roee Angel', verified: true });
   assert.equal(parsed?.attendeeUserUuid, 'meet-roee');
+  assert.equal(parsed?.speakerUuid, 'participant-1');
   assert.equal(parsed?.utterance.text, 'Nogita, explain the authentication code');
 });
 
