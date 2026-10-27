@@ -4,7 +4,7 @@ import type { BoardPort, BrainPort, CodePort, PolicyPort } from '../core/contrac
 import { AllowlistPolicy } from '../core/policy.ts';
 import { IdentityDirectory, parseIdentityRecords } from '../core/identity.ts';
 import { DemoBoard, DemoBrain, DemoCode } from '../adapters/demo.ts';
-import { AnthropicBrain } from '../adapters/anthropic.ts';
+import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
 import { JiraBoard } from '../adapters/jira.ts';
 import { MondayBoard } from '../adapters/monday.ts';
 import { GitHubCode } from '../adapters/github.ts';
@@ -33,7 +33,7 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
         repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main' })
     : new DemoCode();
   const brain: BrainPort = env.NOGITA_MODE === 'live'
-    ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? '')
+    ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL)
     : new DemoBrain();
   const authorized = new Set((env.AUTHORIZED_ACTOR_IDS ?? 'demo-lead').split(',').map(s => s.trim()).filter(Boolean));
   return { board, code, brain, policy: new AllowlistPolicy(authorized), identities };

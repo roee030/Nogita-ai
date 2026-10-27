@@ -1,5 +1,8 @@
 import type { BrainPort, Evidence, Plan } from '../core/contracts.ts';
 
+/** Maintained low-cost model for latency-sensitive Nogita conversations. */
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
+
 function text(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 }
@@ -16,8 +19,11 @@ function isPlan(value: unknown): value is Plan {
 }
 
 export class AnthropicBrain implements BrainPort {
-  constructor(private readonly key: string, private readonly model: string, private readonly http: typeof fetch = fetch) {
-    if (!key || !model) throw new Error('Anthropic key/model required in live mode');
+  private readonly model: string;
+
+  constructor(private readonly key: string, model = DEFAULT_ANTHROPIC_MODEL, private readonly http: typeof fetch = fetch) {
+    if (!key) throw new Error('Anthropic key required in live mode');
+    this.model = model.trim() || DEFAULT_ANTHROPIC_MODEL;
   }
   private async ask(system: string, user: string, maxTokens: number): Promise<string> {
     const res = await this.http('https://api.anthropic.com/v1/messages', {

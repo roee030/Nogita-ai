@@ -73,9 +73,9 @@ export function buildReadinessReport(
       identities.hasAttendeeIdentity(),
       'Attendee webhook, privacy gate, and at least one stable speaker identity are configured.',
       'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and speaker identity enrollment.'),
-    check('reasoning', env.NOGITA_MODE === 'live' && present(env, ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL']),
+    check('reasoning', env.NOGITA_MODE === 'live' && present(env, ['ANTHROPIC_API_KEY']),
       'The live reasoning provider is configured.',
-      'Enable live mode and configure the reasoning provider key and model.'),
+      'Enable live mode and configure the reasoning provider key; the model has a maintained low-cost default.'),
   ];
   const blockers = checks.filter(item => item.status === 'blocked').map(item => item.id);
   return { ok: blockers.length === 0, checks, blockers };

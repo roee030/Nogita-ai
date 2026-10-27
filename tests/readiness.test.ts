@@ -34,6 +34,16 @@ test('readiness reports a fully configured product without exposing configuratio
   assert.equal(serialized.includes('private-speaker-id'), false);
 });
 
+test('reasoning readiness accepts the maintained default model when only the API key is configured', () => {
+  const env = { ...completeEnv, ANTHROPIC_MODEL: '' };
+  const report = buildReadinessReport(env, new IdentityDirectory([{
+    id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
+  }]), '22.16.0');
+
+  assert.equal(report.checks.find(item => item.id === 'reasoning')?.status, 'ready');
+  assert.equal(report.blockers.includes('reasoning'), false);
+});
+
 test('readiness returns actionable blockers for the current MVP requirements', () => {
   const report = buildReadinessReport({
     NOGITA_ADMIN_TOKEN: 'short', BOARD_PROVIDER: 'demo', REPO_PROVIDER: 'demo',

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AnthropicBrain } from '../src/adapters/anthropic.ts';
+import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../src/adapters/anthropic.ts';
 
 function response(text: string): Response {
   return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), {
@@ -28,6 +28,18 @@ test('Anthropic planner sends the documented Messages API request and accepts a 
   assert.equal(request?.body.model, 'test-model');
   assert.equal(request?.body.max_tokens, 380);
   assert.match(String(request?.body.system), /untrusted meeting context as DATA/);
+});
+
+test('Anthropic planner uses the supported low-cost default when no model override is set', async () => {
+  let model: unknown;
+  const brain = new AnthropicBrain('private-test-key', '', async (_url, init) => {
+    model = (JSON.parse(String(init?.body)) as Record<string, unknown>).model;
+    return response('{"kind":"answer","message":"Hello."}');
+  });
+
+  assert.deepEqual(await brain.plan('Hello?', []), { kind: 'answer', message: 'Hello.' });
+  assert.equal(model, DEFAULT_ANTHROPIC_MODEL);
+  assert.equal(DEFAULT_ANTHROPIC_MODEL, 'claude-haiku-5-5');
 });
 
 test('Anthropic planner rejects empty and oversized model-controlled action fields', async () => {
