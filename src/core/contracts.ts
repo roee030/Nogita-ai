@@ -58,6 +58,7 @@ export interface AiUsage {
   estimatedUsd: number;
 }
 export interface UsagePort {
+  recordResponse?(sessionId: string, durationMs: number): void;
   recordTts(sessionId: string, success: boolean): void;
   recordExternalAction(sessionId: string, action: 'create_task' | 'code_lookup'): void;
 }

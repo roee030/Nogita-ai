@@ -81,6 +81,7 @@ export class NogitaEngine {
   }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
+    const processingStartedAt = performance.now();
     const s = this.sessions.get(sessionId);
     if (!s || s.ending) throw new Error('unknown session');
     if (!utterance.actor.verified || !utterance.eventId || !utterance.text.trim()) return 'ignored';
@@ -201,6 +202,7 @@ export class NogitaEngine {
       throw error;
     }
     } finally {
+      this.dependencies.usage?.recordResponse?.(sessionId, performance.now() - processingStartedAt);
       release();
     }
   }

@@ -24,7 +24,16 @@ test('session usage estimates Attendee bot time and combines meeting-scoped AI u
     externalActions: { create_task: 1, code_lookup: 0 },
     ai: { model: 'claude-haiku-5-5', modelCalls: 1, inputTokens: 1_000, outputTokens: 100, estimatedUsd: 0.00015 },
     totalEstimatedUsd: 0.083483,
+    processingLatency: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
   });
+});
+
+test('processing latency reports percentiles and ignores invalid samples', () => {
+  const usage = new SessionUsageRegistry();
+  usage.start('s', 'attendee');
+  for (const duration of [100, 400, 200, 300, NaN, -1]) usage.recordResponse('s', duration);
+  assert.deepEqual(usage.report('s')?.processingLatency,
+    { samples: 4, p50Ms: 200, p95Ms: 400, maxMs: 400 });
 });
 
 test('session usage distinguishes estimate from free credits and rejects unknown sessions', () => {
