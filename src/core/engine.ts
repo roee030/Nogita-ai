@@ -22,15 +22,23 @@ export class NogitaEngine {
     policy: PolicyPort;
   }) {}
 
-  async startSession(sessionId: string, meeting: MeetingPort, meetingUrl?: string): Promise<void> {
+  private addSession(sessionId: string, meeting: MeetingPort): void {
     if (this.sessions.has(sessionId)) throw new Error('session already exists');
     if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
-    await meeting.join(meetingUrl);
     this.sessions.set(sessionId, {
       meeting, history: [], eventIds: new Set(), raised: false, mutedUntil: 0,
       processing: Promise.resolve(), ending: false,
     });
   }
+
+  async startSession(sessionId: string, meeting: MeetingPort, meetingUrl?: string): Promise<void> {
+    if (this.sessions.has(sessionId)) throw new Error('session already exists');
+    if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
+    await meeting.join(meetingUrl);
+    this.addSession(sessionId, meeting);
+  }
+  restoreSession(sessionId: string, meeting: MeetingPort): void { this.addSession(sessionId, meeting); }
+  hasSession(sessionId: string): boolean { return this.sessions.has(sessionId); }
   async endSession(sessionId: string, leaveProvider = true): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;

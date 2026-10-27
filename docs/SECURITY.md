@@ -22,7 +22,7 @@
 1. **Authenticating meeting participants:** Attendee stable user UUIDs can be enrolled into the shared identity directory, but the workspace's identity provenance and enrollment procedure still require live validation. Self-asserted names are never trusted.
 2. **Audience-level authorization:** a verified questioner may still be in a meeting with unauthorized listeners. Sensitive GitHub/Jira answers must account for all attendees.
 3. **Real-time media disclosure and provider data retention:** verify actual Recall, speech provider and AI processor settings, consent requirements, regional storage and logs.
-4. **Persistent idempotency:** current deduplication lives in process memory; network retries after restart could create duplicate external writes.
+4. **Persistent idempotency:** Attendee persists only hashed delivery IDs and bot/session bindings with bounded retention, suppressing completed replays and allowing restart restoration. Delivery is still at-least-once across the crash window between an external effect and ledger completion. Slack replay tracking and external-write reconciliation still require a durable privacy-safe queue before production.
 5. **Real-time media:** Attendee signed transcript ingestion and provider TTS are implemented; direct realtime audio streaming is not. Recall still joins/sends chat only.
 6. **Raise-hand limitation:** no native Recall raise-hand API was confirmed. No fallback chat or speech to violate product rules.
 7. **Work completion jobs:** a durable queue and cancellation semantics are required for long-running operations and tool errors.

@@ -91,6 +91,15 @@ test('provider-ended meeting purges state without sending a redundant leave comm
   assert.equal(f.meeting.events.filter(e => e.type === 'leave').length, 0);
 });
 
+test('restored session accepts events without joining the provider again', async () => {
+  const f = fixture();
+  f.engine.restoreSession('s', f.meeting);
+  assert.equal(f.engine.hasSession('s'), true);
+  assert.equal(f.meeting.events.some(event => event.type === 'join'), false);
+  assert.equal(await f.utter('Nogita, hello again', 'restored-event'), 'answered');
+  assert.throws(() => f.engine.restoreSession('s', f.meeting), /already exists/);
+});
+
 test('failed event processing can be retried instead of being silently discarded', async () => {
   const f = fixture();
   await f.engine.startSession('retryable', f.meeting);

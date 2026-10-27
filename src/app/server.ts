@@ -9,6 +9,7 @@ import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport } from './readiness.ts';
+import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -35,13 +36,23 @@ const nogita = new NogitaEngine(dependencies);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const seenSlackEvents = new Set<string>();
-const seenAttendeeEvents = new Set<string>();
-const activeAttendeeEvents = new Set<string>();
+const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+const attendeeLedger = new FileEventLedger(stateDirectory);
+const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
 const slackThreads = new Set<string>();
 
-function forgetAttendeeSession(sessionId: string): void {
+async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
   attendeeBotsBySession.delete(sessionId);
+  if (botId) await attendeeBindings.remove(sessionId, botId);
+}
+
+function restoreAttendeeSession(sessionId: string, botId: string): void {
+  if (nogita.hasSession(sessionId)) return;
+  const meeting = new AttendeeMeeting(sessionId, env.ATTENDEE_API_KEY ?? '',
+    env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL);
+  meeting.attach(botId);
+  nogita.restoreSession(sessionId, meeting);
 }
 
 function safeToken(auth: string | undefined): boolean {
@@ -97,32 +108,43 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
   }
   if (!providerConfigValid) return { status: 503, response: { error: 'provider configuration invalid' } };
   const envelope = parseAttendeeEnvelope(payload);
-  if (!envelope || attendeeBotsBySession.get(envelope.sessionId) !== envelope.botId) {
+  if (!envelope) {
     return { status: 200, response: { ok: true } };
   }
-  if (seenAttendeeEvents.has(envelope.eventId)) return { status: 200, response: { ok: true } };
-  if (activeAttendeeEvents.has(envelope.eventId)) {
+  const activeBot = attendeeBotsBySession.get(envelope.sessionId);
+  if (activeBot && activeBot !== envelope.botId) return { status: 200, response: { ok: true } };
+  if (!activeBot) {
+    if (!await attendeeBindings.has(envelope.sessionId, envelope.botId)) {
+      return { status: 200, response: { ok: true } };
+    }
+    attendeeBotsBySession.set(envelope.sessionId, envelope.botId);
+  }
+  const ledger = await attendeeLedger.begin('attendee', envelope.eventId);
+  if (ledger.status === 'completed') return { status: 200, response: { ok: true } };
+  if (ledger.status === 'active') {
     return { status: 503, response: { error: 'Attendee event is still processing' } };
   }
-  activeAttendeeEvents.add(envelope.eventId);
+  if (ledger.status !== 'started') throw new Error('unexpected Attendee ledger state');
+  const claim = ledger.claim;
 
   try {
     const endedSession = parseAttendeeEndedSession(payload);
     if (endedSession) {
       await nogita.endSession(endedSession, false);
-      forgetAttendeeSession(endedSession);
+      await forgetAttendeeSession(endedSession, envelope.botId);
     } else {
       const transcript = parseAttendeeTranscript(payload, dependencies.identities);
-      if (transcript) await nogita.onUtterance(transcript.sessionId, transcript.utterance);
+      if (transcript) {
+        restoreAttendeeSession(transcript.sessionId, envelope.botId);
+        await nogita.onUtterance(transcript.sessionId, transcript.utterance);
+      }
     }
-    seenAttendeeEvents.add(envelope.eventId);
-    if (seenAttendeeEvents.size > 2000) seenAttendeeEvents.delete(seenAttendeeEvents.values().next().value!);
+    await claim.complete();
     return { status: 200, response: { ok: true } };
   } catch (error) {
+    try { await claim.abandon(); } catch { console.error('attendee_ledger_release_failed'); }
     console.error('attendee_event_failed', error instanceof Error ? error.message : 'unknown');
     return { status: 503, response: { error: 'Attendee event processing failed' } };
-  } finally {
-    activeAttendeeEvents.delete(envelope.eventId);
   }
 }
 
@@ -172,7 +194,13 @@ const server = createServer(async (req, res) => {
       if (meeting instanceof AttendeeMeeting) {
         const botId = meeting.botIdentifier;
         if (!botId) throw new Error('Attendee did not return a bot ID');
-        attendeeBotsBySession.set(payload.id, botId);
+        try {
+          await attendeeBindings.register(payload.id, botId);
+          attendeeBotsBySession.set(payload.id, botId);
+        } catch (error) {
+          await nogita.endSession(payload.id);
+          throw error;
+        }
       }
       respond(res, 201, { sessionId: payload.id, provider, capabilities: [...meeting.capabilities] }); return;
     }
@@ -189,11 +217,12 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'DELETE' && pathname.startsWith('/api/sessions/')) {
       const id = decodeURIComponent(pathname.slice('/api/sessions/'.length));
+      const attendeeBotId = attendeeBotsBySession.get(id);
       try {
         await nogita.endSession(id);
       } finally {
         meetingHandles.delete(id);
-        forgetAttendeeSession(id);
+        await forgetAttendeeSession(id, attendeeBotId);
       }
       respond(res, 200, { ended: id }); return;
     }

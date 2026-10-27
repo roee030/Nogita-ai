@@ -29,6 +29,13 @@ export class AttendeeMeeting implements MeetingPort {
 
   get botIdentifier(): string | undefined { return this.botId; }
 
+  /** Reconnect local control to a bot that this service created before a restart. */
+  attach(botId: string): void {
+    if (this.botId) throw new Error('Attendee bot is already joining/joined');
+    if (!/^bot_[a-zA-Z0-9_-]+$/.test(botId)) throw new Error('Attendee bot ID is not a valid ID');
+    this.botId = botId;
+  }
+
   private async request(path: string, body?: unknown): Promise<unknown> {
     const response = await this.http(`${this.endpoint}${path}`, {
       method: 'POST',

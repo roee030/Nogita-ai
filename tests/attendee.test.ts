@@ -46,3 +46,18 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   assert.equal(calls[1]?.payload.text, 'Hello.');
   assert.deepEqual(calls[2]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
 });
+
+test('Attendee: restored bot can speak without creating a replacement bot', async () => {
+  const paths: string[] = [];
+  const mock: typeof fetch = async url => {
+    paths.push(new URL(String(url)).pathname);
+    return new Response(null, { status: 204 });
+  };
+  const meeting = new AttendeeMeeting('restored-session', 'test-token', true, mock,
+    'https://nogita.example/webhooks/attendee');
+  meeting.attach('bot_restored123');
+  await meeting.speak('Back online.');
+  assert.deepEqual(paths, ['/api/v1/bots/bot_restored123/speech']);
+  assert.throws(() => meeting.attach('bot_second'), /already joining/);
+  assert.throws(() => new AttendeeMeeting('s', 'key', true, mock).attach('../bad'), /valid ID/);
+});
