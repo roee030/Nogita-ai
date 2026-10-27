@@ -10,10 +10,12 @@ function fixture() {
   jobs.length = 0;
   const emitted: Array<{ sessionId: string; utterance: Utterance }> = [];
   const statuses: string[] = [];
+  const leaves: string[] = [];
   const router = new AttendeeCommandRouter(
     async (sessionId, utterance) => { emitted.push({ sessionId, utterance }); },
     async (_sessionId, message) => { statuses.push(message); },
-    { randomCode: () => '482731', schedule: work => { jobs.push(work); return work; }, cancel: handle => {
+    { randomCode: () => '482731', onLeave: async sessionId => { leaves.push(sessionId); },
+      schedule: work => { jobs.push(work); return work; }, cancel: handle => {
       const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1);
     } },
   );
@@ -22,7 +24,7 @@ function fixture() {
   }): AttendeeTranscriptRequest => ({ sessionId: 's', botId: 'bot_1', speakerUuid,
     utterance: { eventId, actor, text } });
   const flush = async () => { while (jobs.length) await jobs.shift()!(); };
-  return { router, emitted, statuses, request, flush };
+  return { router, emitted, statuses, leaves, request, flush };
 }
 
 test('assembles adjacent fragments from one speaker into one utterance', async () => {
@@ -93,4 +95,14 @@ test('same-speaker fragments are ordered by provider timestamp', async () => {
   f.router.accept(later); f.router.accept(earlier);
   await f.flush();
   assert.equal(f.emitted[0]?.utterance.text, 'Nogita, first second');
+});
+
+test('verified owner leave request exits the meeting without asking the model', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Nogita verify 482731', 'verify-1'));
+  await f.flush();
+  f.router.accept(f.request('speaker-a', 'Nogita, you can leave', 'leave-1'));
+  await f.flush();
+  assert.deepEqual(f.leaves, ['s']);
+  assert.equal(f.emitted.length, 0);
 });

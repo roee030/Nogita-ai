@@ -7,7 +7,10 @@ ENV NODE_ENV=production \
     NOGITA_STATE_DIR=/var/lib/nogita
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends espeak-ng ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm ci --omit=dev --ignore-scripts \
     && npm cache clean --force \
     && mkdir -p /var/lib/nogita \
     && chown node:node /var/lib/nogita

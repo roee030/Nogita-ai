@@ -70,6 +70,30 @@ test('Attendee: verification prompt is queued for delivery after the bot joins',
   });
 });
 
+test('Attendee: local speech is uploaded as MP3 audio instead of relying on provider TTS', async () => {
+  const calls: Array<{ path: string; payload: any }> = [];
+  const mock: typeof fetch = async (url, options) => {
+    calls.push({ path: new URL(String(url)).pathname,
+      payload: options?.body ? JSON.parse(String(options.body)) : undefined });
+    if (String(url).endsWith('/api/v1/bots')) return new Response(JSON.stringify(bot), { status: 201 });
+    return new Response(null, { status: 200 });
+  };
+  const meeting = new AttendeeMeeting('session', 'test-token', true, mock, undefined, undefined,
+    async text => Buffer.from(`mp3:${text}`));
+
+  await meeting.join(meetingUrl);
+  await meeting.speak('Hello from Nogita.');
+
+  assert.deepEqual(calls.map(call => call.path), [
+    '/api/v1/bots',
+    '/api/v1/bots/bot_weIAju4OXNZkDTpZ/send_chat_message',
+    '/api/v1/bots/bot_weIAju4OXNZkDTpZ/output_audio',
+  ]);
+  assert.deepEqual(calls[2]?.payload, {
+    type: 'audio/mp3', data: Buffer.from('mp3:Hello from Nogita.').toString('base64'),
+  });
+});
+
 test('Attendee: restored bot can speak without creating a replacement bot', async () => {
   const paths: string[] = [];
   const mock: typeof fetch = async url => {

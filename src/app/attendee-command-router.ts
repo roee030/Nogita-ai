@@ -1,6 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import type { Actor, Utterance } from '../core/contracts.ts';
-import { directlyAddressesNogita } from '../core/policy.ts';
+import { directlyAddressesNogita, isExplicitLeaveRequest, removeAddress } from '../core/policy.ts';
 import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 
 type ScheduledWork = () => void | Promise<void>;
@@ -22,6 +22,7 @@ export interface AttendeeCommandRouterOptions {
   schedule?: (work: ScheduledWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   onError?: (error: unknown) => void;
+  onLeave?: (sessionId: string) => Promise<void>;
 }
 
 function normalized(value: string): string {
@@ -35,6 +36,7 @@ export class AttendeeCommandRouter {
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly onLeave?: (sessionId: string) => Promise<void>;
   private sequence = 0;
 
   constructor(
@@ -47,6 +49,7 @@ export class AttendeeCommandRouter {
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.onError = options.onError ?? (() => {});
+    this.onLeave = options.onLeave;
   }
 
   beginSession(sessionId: string, owner?: Actor): string | undefined {
@@ -104,7 +107,11 @@ export class AttendeeCommandRouter {
       } else {
         const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
         const at = ordered.find(fragment => fragment.at !== undefined)?.at;
-        await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
+        if (directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave) {
+          await this.onLeave(sessionId);
+        } else {
+          await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
+        }
       }
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {

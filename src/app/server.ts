@@ -18,6 +18,7 @@ import { SessionUsageRegistry } from './session-usage.ts';
 import { EncryptedFileEventQueue } from './durable-event-queue.ts';
 import { EventWorker } from './event-worker.ts';
 import type { Utterance } from '../core/contracts.ts';
+import { synthesizeLocalMp3 } from './local-tts.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -66,7 +67,15 @@ const attendeeCommands = new AttendeeCommandRouter(
     if (!meeting) throw new Error('unknown Attendee meeting');
     await meeting.sendStatus(message);
   },
-  { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown') },
+  { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown'),
+    onLeave: async sessionId => {
+      const meeting = attendeeMeetingsBySession.get(sessionId);
+      const botId = meeting?.botIdentifier;
+      if (meeting) await meeting.sendStatus('Okay, I am leaving the call now.');
+      await nogita.endSession(sessionId);
+      sessionUsage.end(sessionId);
+      await forgetAttendeeSession(sessionId, botId);
+    } },
 );
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
@@ -79,7 +88,7 @@ async function forgetAttendeeSession(sessionId: string, botId?: string): Promise
 function restoreAttendeeSession(sessionId: string, botId: string): void {
   if (nogita.hasSession(sessionId)) return;
   const meeting = new AttendeeMeeting(sessionId, env.ATTENDEE_API_KEY ?? '',
-    env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL);
+    env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL, undefined, synthesizeLocalMp3);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
   sessionUsage.start(sessionId, 'attendee');
@@ -268,7 +277,7 @@ const server = createServer(async (req, res) => {
         ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true',
             fetch, env.ATTENDEE_WEBHOOK_URL, attendeeChallenge
               ? `To verify your identity for this meeting, please say: ${attendeeChallenge}`
-              : undefined)
+              : undefined, synthesizeLocalMp3)
         : new DemoMeeting(payload.id);
       try {
         await nogita.startSession(payload.id, meeting, payload.meetingUrl);

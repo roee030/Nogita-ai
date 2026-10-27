@@ -19,6 +19,7 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly http: typeof fetch = fetch,
     private readonly webhookUrl?: string,
     private readonly initialChatMessage?: string,
+    private readonly synthesizeSpeech?: (text: string) => Promise<Buffer>,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
     if (webhookUrl) {
@@ -97,10 +98,15 @@ export class AttendeeMeeting implements MeetingPort {
     // Mirror first so muted/delayed speech never hides the answer or intended action.
     await this.sendStatus(message);
     try {
-      await this.request(`/${this.botId}/speech`, {
-        text: message,
-        text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
-      });
+      if (this.synthesizeSpeech) {
+        const audio = await this.synthesizeSpeech(message);
+        await this.request(`/${this.botId}/output_audio`, { type: 'audio/mp3', data: audio.toString('base64') });
+      } else {
+        await this.request(`/${this.botId}/speech`, {
+          text: message,
+          text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
+        });
+      }
     } catch {
       throw new SpeechFallbackSentError();
     }

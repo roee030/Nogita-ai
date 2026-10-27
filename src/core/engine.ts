@@ -1,6 +1,7 @@
 import { SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort,
   type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
-import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest, removeAddress } from './policy.ts';
+import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest,
+  isRepositoryConnectionQuestion, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
@@ -113,6 +114,25 @@ export class NogitaEngine {
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
     const request = removeAddress(current);
+    if (isRepositoryConnectionQuestion(request)) {
+      if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
+        await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
+        return 'denied';
+      }
+      const evidence = await this.dependencies.code.findEvidence('README package.json');
+      this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
+      if (!evidence.length) {
+        await this.speakOrChat(sessionId, s.meeting, 'I could not verify a live repository connection.');
+        return 'answered';
+      }
+      await this.speakOrChat(sessionId, s.meeting,
+        'Yes. I have live read-only access to the configured GitHub repository.');
+      await s.meeting.sendCompletion({
+        provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,
+        label: 'Code reference',
+      });
+      return 'completed';
+    }
     const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1), sessionId);
     if (plan.kind === 'answer') {
       await this.speakOrChat(sessionId, s.meeting, plan.message);

@@ -18,6 +18,17 @@ export function isExplicitPRRequest(current: string): boolean {
   return /\b(create|open|prepare|draft|make)\b.{0,90}\b(pr|pull request)\b/i.test(current);
 }
 
+export function isRepositoryConnectionQuestion(current: string): boolean {
+  return /\b(?:connected|connect|access)\b.{0,50}\b(?:repo|repository|github)\b/i.test(current)
+    || /\b(?:repo|repository|github)\b.{0,50}\b(?:connected|connect|access)\b/i.test(current);
+}
+
+export function isExplicitLeaveRequest(current: string): boolean {
+  const text = current.trim().toLowerCase();
+  return /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:leave|exit|disconnect)(?:\b|$)/.test(text)
+    || /\b(?:leave|exit|disconnect|end)\s+(?:this|the)\s+(?:call|meeting)\b/.test(text);
+}
+
 /** Prevent simple third-person name mentions from activating the bot. */
 export function directlyAddressesNogita(text: string): boolean {
   const s = text.trim();

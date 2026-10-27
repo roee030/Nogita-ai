@@ -122,6 +122,16 @@ test('code evidence returns spoken grounded answer plus reference receipt', asyn
   assert.equal(f.meeting.events.filter(e => e.type === 'speak').length, 1);
   assert.equal(f.meeting.events.filter(e => e.type === 'chat').length, 1);
 });
+test('repository connection question performs a live code lookup instead of letting the model guess', async () => {
+  const brain: BrainPort = {
+    plan: async () => { throw new Error('planner must not answer repository connectivity'); },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain); await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, are you connected to our repository?', 'repo-status'), 'completed');
+  assert.match(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /read-only access/i);
+  assert.match(f.meeting.events.find(event => event.type === 'chat')?.text ?? '', /Code reference/i);
+});
 test('draft PR has an explicit not-supported response; never modifies repo', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);
   assert.equal(await f.utter('Nogita, create a draft PR for that bug', '1'), 'not_supported');
