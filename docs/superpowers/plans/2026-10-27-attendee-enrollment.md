@@ -6,4 +6,4 @@
 - [x] Record only signed, bound, unmapped transcript candidates.
 - [x] Add a protected read endpoint and privacy documentation.
 - [x] Run full tests, typecheck, diff validation, and authenticated/unauthenticated endpoint probes.
-- [ ] Commit, push, verify CI, and update KAN-20/PR.
+- [x] Commit, push, verify CI, and update KAN-20/PR.
