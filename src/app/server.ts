@@ -10,6 +10,7 @@ import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
+import { finishEventClaim } from './claimed-event.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -35,8 +36,8 @@ try {
 const nogita = new NogitaEngine(dependencies);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
-const seenSlackEvents = new Set<string>();
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+const slackLedger = new FileEventLedger(stateDirectory);
 const attendeeLedger = new FileEventLedger(stateDirectory);
 const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
@@ -85,17 +86,19 @@ async function handleSlack(raw: string): Promise<{ status: number; response: unk
   if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
     env.SLACK_BOT_USER_ID, dependencies.identities);
-  if (!request || seenSlackEvents.has(request.utterance.eventId) || !env.SLACK_BOT_TOKEN) {
+  if (!request || !env.SLACK_BOT_TOKEN) {
     return { status: 200, response: { ok: true } };
   }
-  seenSlackEvents.add(request.utterance.eventId);
-  if (seenSlackEvents.size > 2000) seenSlackEvents.delete(seenSlackEvents.values().next().value!);
-  if (!slackThreads.has(request.sessionId)) {
-    await nogita.startSession(request.sessionId,
-      new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN, request.channel, request.threadTs));
-    slackThreads.add(request.sessionId);
-  }
-  void nogita.onUtterance(request.sessionId, request.utterance).catch(err => {
+  const ledger = await slackLedger.begin('slack', request.utterance.eventId);
+  if (ledger.status !== 'started') return { status: 200, response: { ok: true } };
+  void finishEventClaim(ledger.claim, async () => {
+    if (!slackThreads.has(request.sessionId)) {
+      await nogita.startSession(request.sessionId,
+        new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
+      slackThreads.add(request.sessionId);
+    }
+    await nogita.onUtterance(request.sessionId, request.utterance);
+  }).catch(err => {
     console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
   });
   return { status: 200, response: { ok: true } };

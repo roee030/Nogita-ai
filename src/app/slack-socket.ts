@@ -4,6 +4,8 @@ import { SlackThreadMeeting } from '../adapters/slack.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { registerSlackEventHandlers } from './slack-socket-events.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
+import { FileEventLedger } from './event-ledger.ts';
+import { runClaimedEvent } from './claimed-event.ts';
 
 loadDotEnv();
 const token = process.env.SLACK_BOT_TOKEN;
@@ -16,22 +18,22 @@ const dependencies = createDependencies();
 const engine = new NogitaEngine(dependencies);
 const client = new SocketModeClient({ appToken });
 const sessions = new Set<string>();
-const seen = new Set<string>();
+const slackLedger = new FileEventLedger(process.env.NOGITA_STATE_DIR ?? '.nogita-state');
 
 registerSlackEventHandlers(client, async ({ body, ack }) => {
   // Acknowledge promptly; processing may include slow model and tool calls.
   await ack();
   const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
-  if (!request || seen.has(request.utterance.eventId)) return;
-  seen.add(request.utterance.eventId);
-  if (seen.size > 2000) seen.delete(seen.values().next().value!);
+  if (!request) return;
   try {
-    if (!sessions.has(request.sessionId)) {
-      await engine.startSession(request.sessionId,
-        new SlackThreadMeeting(request.sessionId, token, request.channel, request.threadTs));
-      sessions.add(request.sessionId);
-    }
-    await engine.onUtterance(request.sessionId, request.utterance);
+    await runClaimedEvent(slackLedger, 'slack', request.utterance.eventId, async () => {
+      if (!sessions.has(request.sessionId)) {
+        await engine.startSession(request.sessionId,
+          new SlackThreadMeeting(request.sessionId, token, request.channel, request.threadTs));
+        sessions.add(request.sessionId);
+      }
+      await engine.onUtterance(request.sessionId, request.utterance);
+    });
   } catch (err) {
     console.error('slack_event_failed', err instanceof Error ? err.message : 'unknown');
   }
