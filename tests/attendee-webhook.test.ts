@@ -34,6 +34,7 @@ test('Attendee transcript maps provider speaker to shared internal identity', ()
   assert.equal(parsed?.sessionId, 'meeting-1');
   assert.equal(parsed?.utterance.eventId, transcriptPayload.idempotency_key);
   assert.deepEqual(parsed?.utterance.actor, { id: 'roee', displayName: 'Roee Angel', verified: true });
+  assert.equal(parsed?.attendeeUserUuid, 'meet-roee');
   assert.equal(parsed?.utterance.text, 'Nogita, explain the authentication code');
 });
 
@@ -50,6 +51,7 @@ test('Attendee envelope binds the delivery to both internal session and provider
 test('unknown Attendee speaker remains unverified and malformed payloads are ignored', () => {
   const parsed = parseAttendeeTranscript(transcriptPayload, new IdentityDirectory([]));
   assert.equal(parsed?.utterance.actor.verified, false);
+  assert.equal(parsed?.attendeeUserUuid, 'meet-roee');
   assert.equal(parseAttendeeTranscript({ ...transcriptPayload, trigger: 'bot.state_change' }, new IdentityDirectory([])), null);
   assert.equal(parseAttendeeTranscript({ ...transcriptPayload, bot_metadata: {} }, new IdentityDirectory([])), null);
 });

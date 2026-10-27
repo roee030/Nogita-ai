@@ -72,7 +72,7 @@ export function buildReadinessReport(
       env.ATTENDEE_PRIVACY_REVIEWED === 'true' && validHttpsUrl(env.ATTENDEE_WEBHOOK_URL) &&
       identities.hasAttendeeIdentity(),
       'Attendee webhook, privacy gate, and at least one stable speaker identity are configured.',
-      'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and speaker identity enrollment.'),
+      'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and speaker identity enrollment. Unmapped stable UUIDs are available temporarily from the protected enrollment-candidates endpoint.'),
     check('reasoning', env.NOGITA_MODE === 'live' && present(env, ['ANTHROPIC_API_KEY']),
       'The live reasoning provider is configured.',
       'Enable live mode and configure the reasoning provider key; the model has a maintained low-cost default.'),

@@ -12,6 +12,7 @@ import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
 import { InFlightWork } from './in-flight.ts';
+import { AttendeeEnrollmentCandidates } from './attendee-enrollment.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -44,6 +45,7 @@ const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
+const attendeeEnrollment = new AttendeeEnrollmentCandidates();
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
   attendeeBotsBySession.delete(sessionId);
@@ -141,6 +143,9 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
     } else {
       const transcript = parseAttendeeTranscript(payload, dependencies.identities);
       if (transcript) {
+        if (!transcript.utterance.actor.verified && transcript.attendeeUserUuid) {
+          attendeeEnrollment.observe(transcript.attendeeUserUuid);
+        }
         restoreAttendeeSession(transcript.sessionId, envelope.botId);
         await nogita.onUtterance(transcript.sessionId, transcript.utterance);
       }
@@ -180,6 +185,9 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/readiness') {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node, providerConfigValid);
       respond(res, report.ok ? 200 : 503, report); return;
+    }
+    if (req.method === 'GET' && pathname === '/api/attendee/enrollment-candidates') {
+      respond(res, 200, { candidates: attendeeEnrollment.list(), retentionSeconds: 3600 }); return;
     }
     if (!providerConfigValid) { respond(res, 503, { error: 'provider configuration invalid' }); return; }
     if (req.method === 'POST' && pathname === '/api/sessions') {
