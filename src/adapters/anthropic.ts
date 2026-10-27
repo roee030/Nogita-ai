@@ -1,13 +1,17 @@
 import type { BrainPort, Evidence, Plan } from '../core/contracts.ts';
 
+function text(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+}
+
 function isPlan(value: unknown): value is Plan {
   if (!value || typeof value !== 'object') return false;
   const p = value as Record<string, unknown>;
-  if (p.kind === 'answer') return typeof p.message === 'string';
-  if (p.kind === 'inspect_code') return typeof p.query === 'string';
-  if (p.kind === 'create_task') return typeof p.title === 'string' && typeof p.description === 'string'
-    && (p.assigneeId === undefined || typeof p.assigneeId === 'string');
-  if (p.kind === 'draft_pr') return typeof p.instruction === 'string';
+  if (p.kind === 'answer') return text(p.message, 2000);
+  if (p.kind === 'inspect_code') return text(p.query, 500);
+  if (p.kind === 'create_task') return text(p.title, 200) && text(p.description, 4000)
+    && (p.assigneeId === undefined || text(p.assigneeId, 100));
+  if (p.kind === 'draft_pr') return text(p.instruction, 4000);
   return false;
 }
 
