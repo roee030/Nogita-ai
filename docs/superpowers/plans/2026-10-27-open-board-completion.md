@@ -44,10 +44,10 @@
 **Interfaces:**
 - Produces: per-session model calls, token cost, transcription mode, TTS attempts/failures, external action counts.
 
-- [ ] Add failing tests for configurable Claude prices, model call count, TTS failure accounting, action accounting, and session isolation.
-- [ ] Extend the usage interfaces and registry without retaining prompts or transcript text.
-- [ ] Pass usage events from the engine and configured prices from environment.
-- [ ] Run focused tests, full tests, typecheck, and commit.
+- [x] Add failing tests for configurable Claude prices, model call count, TTS failure accounting, action accounting, and session isolation.
+- [x] Extend the usage interfaces and registry without retaining prompts or transcript text.
+- [x] Pass usage events from the engine and configured prices from environment.
+- [x] Run focused tests, full tests, typecheck, and commit.
 
 ### Task 2: Complete KAN-11 encrypted durable queue
 
@@ -65,11 +65,11 @@
 - Produces: `EncryptedFileEventQueue.enqueue`, `claimNext`, `complete`, `retry`, and a bounded worker.
 - Consumes: existing provider parsers and hash-only event ledger.
 
-- [ ] Add failing tests for encrypted-at-rest content, restart recovery, exclusive claims, retry, tamper rejection, and bounded retention.
-- [ ] Implement AES-256-GCM atomic queue records and rename-based leases under `NOGITA_STATE_DIR`.
-- [ ] Route accepted HTTP and Socket Mode events through enqueue before acknowledgement and process them with the existing idempotent handlers.
-- [ ] Add readiness validation for the deployment-only encryption key.
-- [ ] Run focused tests, full tests, typecheck, container build, and commit.
+- [x] Add failing tests for encrypted-at-rest content, restart recovery, exclusive claims, retry, tamper rejection, and bounded retention.
+- [x] Implement AES-256-GCM atomic queue records and exclusive leases under `NOGITA_STATE_DIR`.
+- [x] Route accepted HTTP and Socket Mode events through enqueue before acknowledgement and process them with the existing idempotent handlers.
+- [x] Add readiness validation for the deployment-only encryption key.
+- [x] Run focused tests, full tests, typecheck, and commit. (Container build is delegated to CI because Docker is unavailable on this host.)
 
 ### Task 3: Documentation and branch verification
 
@@ -78,9 +78,9 @@
 - Modify: `docs/SECURITY.md`
 - Modify: this plan
 
-- [ ] Document queue recovery, one-instance boundary, key rotation consequence, and complete usage response.
-- [ ] Run the full suite, typecheck, demo, container build, secret scan, and diff check.
-- [ ] Review the whole branch and fix Critical/Important findings with regression tests.
+- [x] Document queue recovery, one-instance boundary, key rotation consequence, and complete usage response.
+- [x] Run the full suite, typecheck, demo, secret scan, and diff check. (Container build is delegated to CI because Docker is unavailable on this host.)
+- [x] Review the whole branch and fix Critical/Important findings with regression tests.
 - [ ] Commit final documentation.
 
 ### Task 4: Deploy and reconcile Jira

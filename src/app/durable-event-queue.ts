@@ -8,6 +8,7 @@ export interface QueuedProviderEvent {
   payload: string;
   attempts: number;
   createdAt: number;
+  availableAt?: number;
 }
 export interface QueueClaim {
   item: QueuedProviderEvent;
@@ -19,6 +20,8 @@ interface QueueOptions {
   maxCompleted?: number;
   maxQueued?: number;
   maxAttempts?: number;
+  retryBaseMs?: number;
+  now?: () => number;
 }
 interface EncryptedRecord { v: 1; iv: string; tag: string; ciphertext: string }
 
@@ -37,6 +40,8 @@ export class EncryptedFileEventQueue {
   private readonly maxCompleted: number;
   private readonly maxQueued: number;
   private readonly maxAttempts: number;
+  private readonly retryBaseMs: number;
+  private readonly now: () => number;
 
   constructor(root: string, keyBase64: string, options: QueueOptions = {}) {
     if (!root.trim()) throw new Error('event queue root is required');
@@ -47,6 +52,8 @@ export class EncryptedFileEventQueue {
     this.maxCompleted = Math.max(1, options.maxCompleted ?? 5000);
     this.maxQueued = Math.max(1, options.maxQueued ?? 1000);
     this.maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+    this.retryBaseMs = Math.max(0, options.retryBaseMs ?? 1000);
+    this.now = options.now ?? Date.now;
   }
 
   private digest(namespace: QueueNamespace, eventId: string): string {
@@ -73,7 +80,8 @@ export class EncryptedFileEventQueue {
       const plaintext = Buffer.concat([decipher.update(Buffer.from(record.ciphertext, 'base64')), decipher.final()]);
       const item = JSON.parse(plaintext.toString('utf8')) as QueuedProviderEvent;
       if ((item.namespace !== 'slack' && item.namespace !== 'attendee') || typeof item.payload !== 'string' ||
-          !Number.isSafeInteger(item.attempts) || item.attempts < 0 || !Number.isFinite(item.createdAt)) {
+          !Number.isSafeInteger(item.attempts) || item.attempts < 0 || !Number.isFinite(item.createdAt) ||
+          (item.availableAt !== undefined && !Number.isFinite(item.availableAt))) {
         throw new Error('invalid record');
       }
       return item;
@@ -94,7 +102,9 @@ export class EncryptedFileEventQueue {
     if (names.includes(`${digest}.record`) || names.includes(`${digest}.done`)) return 'duplicate';
     if (names.filter(name => name.endsWith('.record')).length >= this.maxQueued) throw new Error('event queue is full');
     const tempPath = join(this.directory, `${digest}.${randomBytes(8).toString('hex')}.tmp`);
-    await writeFile(tempPath, this.encrypt({ namespace, payload, attempts: 0, createdAt: Date.now() }, digest), { flag: 'wx' });
+    const createdAt = this.now();
+    await writeFile(tempPath, this.encrypt({ namespace, payload, attempts: 0, createdAt, availableAt: createdAt }, digest),
+      { flag: 'wx', flush: true });
     try {
       try { await link(tempPath, recordPath); }
       catch (error) { if (exists(error)) return 'duplicate'; throw error; }
@@ -109,22 +119,36 @@ export class EncryptedFileEventQueue {
   async claimNext(): Promise<QueueClaim | null> {
     await mkdir(this.directory, { recursive: true });
     await this.recoverStaleLeases();
-    const records = (await readdir(this.directory)).filter(name => /^[0-9a-f]{64}\.record$/.test(name)).sort();
+    const records = (await readdir(this.directory)).filter(name => /^[0-9a-f]{64}\.record$/.test(name));
+    const candidates: Array<{ name: string; digest: string; item: QueuedProviderEvent }> = [];
     for (const name of records) {
       const digest = name.slice(0, 64);
+      const recordPath = join(this.directory, name);
+      const leasePath = join(this.directory, `${digest}.lease`);
+      try { candidates.push({ name, digest, item: this.decrypt(await readFile(recordPath, 'utf8'), digest) }); }
+      catch (error) {
+        let quarantine;
+        try { quarantine = await open(leasePath, 'wx'); }
+        catch (leaseError) { if (exists(leaseError)) continue; throw leaseError; }
+        await quarantine.close();
+        try { await rename(recordPath, join(this.directory, `${digest}.dead`)); }
+        catch (moveError) { if (!absent(moveError)) throw moveError; }
+        try { await unlink(leasePath); } catch (removeError) { if (!absent(removeError)) throw removeError; }
+        throw error;
+      }
+    }
+    const now = this.now();
+    candidates.sort((a, b) => (a.item.availableAt ?? a.item.createdAt) - (b.item.availableAt ?? b.item.createdAt) ||
+      a.item.createdAt - b.item.createdAt || a.digest.localeCompare(b.digest));
+    for (const candidate of candidates) {
+      const { name, digest, item } = candidate;
+      if ((item.availableAt ?? item.createdAt) > now) continue;
       const recordPath = join(this.directory, name);
       const leasePath = join(this.directory, `${digest}.lease`);
       let handle;
       try { handle = await open(leasePath, 'wx'); }
       catch (error) { if (exists(error)) continue; throw error; }
       await handle.close();
-      let item: QueuedProviderEvent;
-      try { item = this.decrypt(await readFile(recordPath, 'utf8'), digest); }
-      catch (error) {
-        try { await rename(recordPath, join(this.directory, `${digest}.dead`)); } catch (moveError) { if (!absent(moveError)) throw moveError; }
-        try { await unlink(leasePath); } catch (removeError) { if (!absent(removeError)) throw removeError; }
-        throw error;
-      }
       let settled = false;
       return {
         item,
@@ -144,7 +168,9 @@ export class EncryptedFileEventQueue {
             return;
           }
           const tempPath = join(this.directory, `${digest}.${randomBytes(8).toString('hex')}.tmp`);
-          await writeFile(tempPath, this.encrypt({ ...item, attempts }, digest), { flag: 'wx' });
+          const delay = Math.min(60_000, this.retryBaseMs * 2 ** item.attempts);
+          await writeFile(tempPath, this.encrypt({ ...item, attempts, availableAt: this.now() + delay }, digest),
+            { flag: 'wx', flush: true });
           try { await rename(tempPath, recordPath); }
           finally {
             try { await unlink(tempPath); } catch (error) { if (!absent(error)) throw error; }
@@ -157,7 +183,7 @@ export class EncryptedFileEventQueue {
   }
 
   private async recoverStaleLeases(): Promise<void> {
-    const now = Date.now();
+    const now = this.now();
     for (const name of (await readdir(this.directory)).filter(name => /^[0-9a-f]{64}\.lease$/.test(name))) {
       const path = join(this.directory, name);
       try { if (now - (await stat(path)).mtimeMs > this.leaseMs) await unlink(path); }
@@ -177,7 +203,7 @@ export class EncryptedFileEventQueue {
         try { await unlink(join(this.directory, entry.name)); } catch (error) { if (!absent(error)) throw error; }
       }
     }
-    const cutoff = Date.now() - 24 * 60 * 60_000;
+    const cutoff = this.now() - 24 * 60 * 60_000;
     for (const name of names.filter(name => name.endsWith('.tmp'))) {
       const path = join(this.directory, name);
       try { if ((await stat(path)).mtimeMs < cutoff) await unlink(path); }

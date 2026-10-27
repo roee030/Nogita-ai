@@ -16,22 +16,24 @@
 - Draft PR deliberately rejected until a trusted isolated code runner and policy exist.
 - API secret strings are environment variables and never written into demo output.
 - The authenticated readiness report exposes only fixed status messages; it never returns configured values, identifiers, URLs, or secrets.
+- Accepted Slack and Attendee payloads are encrypted with AES-256-GCM before atomic persistence; keyed filenames, exclusive leases, bounded retries/retention, and hash-only completion markers support restart recovery without plaintext at rest.
+- Meeting-scoped random challenge verification binds an authorized internal owner to one provider speaker without trusting display names or durably storing the challenge/speaker binding.
 
 ## Known blockers before real teams use it
 
-1. **Authenticating meeting participants:** Attendee stable user UUIDs can be enrolled into the shared identity directory, but the workspace's identity provenance and enrollment procedure still require live validation. Self-asserted names are never trusted.
+1. **Authenticating meeting participants:** stable provider UUID enrollment and the replacement session-scoped challenge are implemented, but the updated challenge flow still requires final live validation. Self-asserted names are never trusted.
 2. **Audience-level authorization:** a verified questioner may still be in a meeting with unauthorized listeners. Sensitive GitHub/Jira answers must account for all attendees.
 3. **Real-time media disclosure and provider data retention:** verify actual Recall, speech provider and AI processor settings, consent requirements, regional storage and logs.
-4. **Persistent idempotency:** Attendee and Slack persist only hashed delivery IDs (plus hashed Attendee bot/session bindings) with bounded retention, suppressing completed replays and allowing Attendee restart restoration. Delivery is still at-least-once across the crash window between an external effect and ledger completion. Slack acknowledges before slow processing, so unfinished-job recovery and external-write reconciliation still require an encrypted durable queue before production.
+4. **Distributed deployment boundary:** encrypted queue recovery and atomic leases work for the current single instance or processes sharing one persistent filesystem. Active/active hosts without shared storage need PostgreSQL or another shared queue. Delivery remains at-least-once; Jira's request marker reconciles its external-write crash window.
 5. **Real-time media:** Attendee signed transcript ingestion and provider TTS are implemented; direct realtime audio streaming is not. Recall still joins/sends chat only.
 6. **Raise-hand limitation:** no native Recall raise-hand API was confirmed. No fallback chat or speech to violate product rules.
-7. **Work completion jobs:** a durable queue and cancellation semantics are required for long-running operations and tool errors.
-8. **Slack resilience:** incoming events are acked before background work completes, with no durable queue and no verified Slack workspace OAuth installation.
+7. **Work completion jobs:** provider deliveries are durable, but arbitrary future long-running code/PR jobs still need cancellation semantics and a shared job queue before enablement.
+8. **Slack distribution:** Socket Mode and signed Events API delivery are durable; Marketplace OAuth installation and per-workspace lifecycle are not implemented.
 9. **monday.com mapping:** item description now requires an explicitly mapped Text column; assignee mapping is still absent.
 10. **Jira specifics:** issue types/required fields vary per project; check create metadata. Generic v3 payload is not a guarantee for every Jira board.
 11. **Prompt injection:** retrieved code and documents are marked untrusted, but live defensive tests, more robust schema validation and tool result boundary rules are still necessary.
 12. **Project secrecy:** logs must avoid API response bodies, PII, meeting URLs (which may contain join secrets) and raw transcripts.
-13. **Privacy lifecycle:** cleanup is memory-only; include temporary network buffers, crash handling and all subprocess/provider retention before claiming ZDR.
+13. **Privacy lifecycle:** queued payloads are encrypted and deleted after success, but provider-side, temporary network, dead-letter, backup, and key-retirement policies must be included before claiming ZDR.
 14. **DDoS / replay / abuse:** add rate limits, durable replay ledger, quotas, outbound API circuit breakers and request tracing with redaction.
 
 ## Recommended staging procedure

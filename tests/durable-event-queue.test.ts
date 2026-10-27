@@ -32,7 +32,7 @@ test('queued provider payload is encrypted at rest and survives a new queue inst
 test('duplicate enqueue is suppressed and two workers cannot claim one event', async t => {
   const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const queue = new EncryptedFileEventQueue(root, key);
+  const queue = new EncryptedFileEventQueue(root, key, { retryBaseMs: 0 });
   assert.equal(await queue.enqueue('attendee', 'same-event', '{}'), 'queued');
   assert.equal(await queue.enqueue('attendee', 'same-event', '{}'), 'duplicate');
   const [one, two] = await Promise.all([queue.claimNext(), new EncryptedFileEventQueue(root, key).claimNext()]);
@@ -40,10 +40,25 @@ test('duplicate enqueue is suppressed and two workers cannot claim one event', a
   await (one ?? two)?.complete();
 });
 
+test('events are claimed in durable acceptance order rather than hash filename order', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let now = 100;
+  const queue = new EncryptedFileEventQueue(root, key, { now: () => now++ });
+  await queue.enqueue('attendee', 'first-event', '{"order":1}');
+  await queue.enqueue('attendee', 'second-event', '{"order":2}');
+  const first = await queue.claimNext();
+  assert.equal(first?.item.payload, '{"order":1}');
+  await first?.complete();
+  const second = await queue.claimNext();
+  assert.equal(second?.item.payload, '{"order":2}');
+  await second?.complete();
+});
+
 test('failed work is retried and stale leases recover after restart', async t => {
   const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const queue = new EncryptedFileEventQueue(root, key, { leaseMs: 20 });
+  const queue = new EncryptedFileEventQueue(root, key, { leaseMs: 20, retryBaseMs: 0 });
   await queue.enqueue('slack', 'retry-event', '{"retry":true}');
   const first = await queue.claimNext();
   assert.ok(first);
@@ -58,10 +73,22 @@ test('failed work is retried and stale leases recover after restart', async t =>
   await recovered?.complete();
 });
 
+test('retry uses backoff instead of exhausting all attempts during a short outage', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let now = 1_000;
+  const queue = new EncryptedFileEventQueue(root, key, { now: () => now, retryBaseMs: 1_000 });
+  await queue.enqueue('slack', 'backoff-event', '{}');
+  await (await queue.claimNext())?.retry();
+  assert.equal(await queue.claimNext(), null);
+  now += 1_000;
+  assert.equal((await queue.claimNext())?.item.attempts, 1);
+});
+
 test('tampered ciphertext is rejected without exposing its contents', async t => {
   const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const queue = new EncryptedFileEventQueue(root, key);
+  const queue = new EncryptedFileEventQueue(root, key, { retryBaseMs: 0 });
   await queue.enqueue('slack', 'tampered', '{"secret":"not-for-logs"}');
   const directory = join(root, 'event-queue');
   const name = (await readdir(directory))[0]!;
@@ -107,7 +134,7 @@ test('dead-letter retention is bounded after repeated authenticated-record failu
 test('worker retries failed processing and completes it on the next pass', async t => {
   const root = await mkdtemp(join(tmpdir(), 'nogita-queue-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const queue = new EncryptedFileEventQueue(root, key);
+  const queue = new EncryptedFileEventQueue(root, key, { retryBaseMs: 0 });
   await queue.enqueue('slack', 'worker-event', '{"ok":true}');
   let calls = 0;
   const worker = new EventWorker(queue, async item => {

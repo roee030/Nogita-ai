@@ -30,7 +30,8 @@ const queue = process.env.NOGITA_QUEUE_ENCRYPTION_KEY
 async function processBody(raw: string): Promise<void> {
   const body = JSON.parse(raw) as SlackEnvelope;
   const request = parseSlackRequest(body, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
-  if (!request || !inFlight.accepting) return;
+  if (!request) return;
+  if (!inFlight.accepting) throw new Error('service is shutting down');
   const work = runClaimedEvent(slackLedger, 'slack', request.utterance.eventId, async () => {
     if (!sessions.has(request.sessionId)) {
       await engine.startSession(request.sessionId,
