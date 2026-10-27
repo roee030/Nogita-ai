@@ -36,10 +36,10 @@
 **Interfaces:**
 - Produces: Attendee create body with `automatic_leave_settings`.
 
-- [ ] Add a failing adapter test for 180-second silence and 30-second only-participant timeouts.
-- [ ] Run the focused test and confirm the fields are absent.
-- [ ] Add the two settings to the create request.
-- [ ] Run adapter tests and the full suite.
+- [x] Add a failing adapter test for 180-second silence and 30-second only-participant timeouts.
+- [x] Run the focused test and confirm the fields are absent.
+- [x] Add the two settings to the create request.
+- [x] Run adapter tests and the full suite.
 
 ### Task 2: Generic chat status and speech fallback
 
@@ -56,10 +56,10 @@
 **Interfaces:**
 - Produces: `MeetingPort.sendStatus(message: string): Promise<void>` and engine speech fallback.
 
-- [ ] Add failing tests showing answers and action acknowledgements fall back to chat exactly once when speech rejects.
-- [ ] Add `sendStatus` to the port and adapters.
-- [ ] Centralize engine output through speech-first/chat-fallback behavior.
-- [ ] Run focused and full tests.
+- [x] Add failing tests showing answers and action acknowledgements fall back to chat exactly once when speech rejects.
+- [x] Add `sendStatus` to the port and adapters.
+- [x] Centralize engine output through speech-first/chat-fallback behavior.
+- [x] Run focused and full tests.
 
 ### Task 3: Meeting-scoped verification and transcript assembly
 
@@ -74,12 +74,12 @@
 - Produces: `AttendeeCommandRouter` accepting transcript fragments, authorized owner enrollment, and session cleanup.
 - Consumes: `MeetingPort.sendStatus` from Task 2 and existing `NogitaEngine.onUtterance`.
 
-- [ ] Add failing tests for same-speaker assembly, interleaved isolation, wrong challenge, successful challenge, replay safety, and cleanup.
-- [ ] Expose the meeting-scoped speaker UUID separately from the parsed actor.
-- [ ] Implement the bounded router with injectable clock/timers and cryptographic challenge generation.
-- [ ] Extend session creation with optional `ownerActorId`; require it to be allowlisted and post the challenge in meeting chat.
-- [ ] Route signed transcripts through the assembler and clear it on every session end.
-- [ ] Run focused and full tests.
+- [x] Add failing tests for same-speaker assembly, interleaved isolation, wrong challenge, successful challenge, replay safety, and cleanup.
+- [x] Expose the meeting-scoped speaker UUID separately from the parsed actor.
+- [x] Implement the bounded router with injectable clock/timers and cryptographic challenge generation.
+- [x] Extend session creation with optional `ownerActorId`; require it to be allowlisted and post the challenge in meeting chat.
+- [x] Route signed transcripts through the assembler and clear it on every session end.
+- [x] Run focused and full tests.
 
 ### Task 4: Documentation, readiness, and operational proof
 
@@ -92,7 +92,22 @@
 **Interfaces:**
 - Documents the live flow and remaining external TTS credential requirement.
 
-- [ ] Add failing readiness/documentation assertions for the secure owner-enrollment flow and voice fallback.
-- [ ] Document the session request, verification phrase, auto-leave rules, and TTS prerequisite.
-- [ ] Run typecheck and the full test suite.
+- [x] Add failing readiness/documentation assertions for the secure owner-enrollment flow and voice fallback.
+- [x] Document the session request, verification phrase, auto-leave rules, and TTS prerequisite.
+- [x] Run typecheck and the full test suite.
 
+### Task 5: Per-session usage estimate
+
+**Files:**
+- Modify: `src/adapters/anthropic.ts`
+- Modify: `src/core/contracts.ts`
+- Modify: `src/core/engine.ts`
+- Create: `src/app/session-usage.ts`
+- Modify: `src/app/server.ts`
+- Test: `tests/anthropic.test.ts`
+- Test: `tests/session-usage.test.ts`
+
+- [x] Attribute provider-reported Claude token counts to the current session without retaining prompts.
+- [x] Track Attendee session duration and estimate bot-time cost at a configurable hourly rate.
+- [x] Expose an admin-authenticated per-session usage endpoint that remains available after session end.
+- [x] Run typecheck and the full test suite.

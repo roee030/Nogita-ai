@@ -45,6 +45,8 @@ export function buildReadinessReport(
   nodeVersion = process.versions.node,
   providerConfigValid = true,
 ): ReadinessReport {
+  const hasAuthorizedOwner = (env.AUTHORIZED_ACTOR_IDS ?? '').split(',')
+    .map(id => id.trim()).filter(Boolean).some(id => Boolean(identities.fromId(id)));
   const slackCommon = Boolean(env.SLACK_BOT_TOKEN?.startsWith('xoxb-')) &&
     present(env, ['SLACK_ALLOWED_TEAM_IDS', 'SLACK_BOT_USER_ID']);
   const slackSocketMode = slackCommon && Boolean(env.SLACK_APP_TOKEN?.startsWith('xapp-'));
@@ -70,9 +72,9 @@ export function buildReadinessReport(
       'Select GitHub, configure owner/repository, and provide either a repository-scoped read token or explicit public-repository mode.'),
     check('attendee', env.MEETING_PROVIDER === 'attendee' && present(env, ['ATTENDEE_API_KEY', 'ATTENDEE_WEBHOOK_SECRET']) &&
       env.ATTENDEE_PRIVACY_REVIEWED === 'true' && validHttpsUrl(env.ATTENDEE_WEBHOOK_URL) &&
-      identities.hasAttendeeIdentity(),
-      'Attendee webhook, privacy gate, and at least one stable speaker identity are configured.',
-      'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and speaker identity enrollment. Unmapped stable UUIDs are available temporarily from the protected enrollment-candidates endpoint.'),
+      (identities.hasAttendeeIdentity() || hasAuthorizedOwner),
+      'Attendee webhook, privacy gate, and an authorized meeting identity are configured.',
+      'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and configure an authorized internal meeting owner or a stable speaker identity.'),
     check('reasoning', env.NOGITA_MODE === 'live' && present(env, ['ANTHROPIC_API_KEY']),
       'The live reasoning provider is configured.',
       'Enable live mode and configure the reasoning provider key; the model has a maintained low-cost default.'),

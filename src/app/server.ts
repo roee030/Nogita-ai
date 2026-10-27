@@ -14,6 +14,7 @@ import { finishEventClaim } from './claimed-event.ts';
 import { InFlightWork } from './in-flight.ts';
 import { AttendeeEnrollmentCandidates } from './attendee-enrollment.ts';
 import { AttendeeCommandRouter } from './attendee-command-router.ts';
+import { SessionUsageRegistry } from './session-usage.ts';
 import type { Utterance } from '../core/contracts.ts';
 
 loadDotEnv();
@@ -48,6 +49,8 @@ const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
+const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
+const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice);
 const attendeeCommands = new AttendeeCommandRouter(
   async (sessionId, utterance) => { await nogita.onUtterance(sessionId, utterance); },
   async (sessionId, message) => {
@@ -71,6 +74,7 @@ function restoreAttendeeSession(sessionId: string, botId: string): void {
     env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
+  sessionUsage.start(sessionId, 'attendee');
   attendeeMeetingsBySession.set(sessionId, meeting);
   attendeeCommands.beginSession(sessionId);
 }
@@ -154,6 +158,7 @@ async function handleAttendee(raw: string, signature: string | undefined): Promi
     const endedSession = parseAttendeeEndedSession(payload);
     if (endedSession) {
       await nogita.endSession(endedSession, false);
+      sessionUsage.end(endedSession);
       await forgetAttendeeSession(endedSession, envelope.botId);
     } else {
       const transcript = parseAttendeeTranscript(payload, dependencies.identities);
@@ -201,6 +206,13 @@ const server = createServer(async (req, res) => {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node, providerConfigValid);
       respond(res, report.ok ? 200 : 503, report); return;
     }
+    const usageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/usage$/);
+    if (req.method === 'GET' && usageMatch) {
+      const sessionId = decodeURIComponent(usageMatch[1]!);
+      const ai = dependencies.brain.usageFor?.(sessionId);
+      const report = sessionUsage.report(sessionId, ai);
+      respond(res, report ? 200 : 404, report ?? { error: 'unknown session usage' }); return;
+    }
     if (req.method === 'GET' && pathname === '/api/attendee/enrollment-candidates') {
       respond(res, 200, { candidates: attendeeEnrollment.list(), retentionSeconds: 3600 }); return;
     }
@@ -228,6 +240,7 @@ const server = createServer(async (req, res) => {
             fetch, env.ATTENDEE_WEBHOOK_URL)
         : new DemoMeeting(payload.id);
       await nogita.startSession(payload.id, meeting, payload.meetingUrl);
+      sessionUsage.start(payload.id, provider);
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
       if (meeting instanceof AttendeeMeeting) {
         const botId = meeting.botIdentifier;
@@ -242,6 +255,7 @@ const server = createServer(async (req, res) => {
           }
         } catch (error) {
           await nogita.endSession(payload.id);
+          sessionUsage.end(payload.id);
           await forgetAttendeeSession(payload.id, botId);
           throw error;
         }
@@ -267,6 +281,7 @@ const server = createServer(async (req, res) => {
         await nogita.endSession(id);
       } finally {
         meetingHandles.delete(id);
+        sessionUsage.end(id);
         await forgetAttendeeSession(id, attendeeBotId);
       }
       respond(res, 200, { ended: id }); return;

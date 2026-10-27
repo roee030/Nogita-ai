@@ -12,6 +12,7 @@ Make Nogita safe and useful in a real Google Meet: it must understand commands s
 - Deliver every directly addressed answer or action status through speech, with chat as the automatic fallback when speech fails.
 - Configure Attendee to leave after 180 seconds of silence and after 30 seconds as the only remaining participant.
 - Keep transcript text, speaker UUIDs, challenges, and credentials out of durable state and logs.
+- Report a bounded in-memory per-session estimate for Attendee time and Claude token usage without retaining prompts.
 
 ## Non-goals
 
@@ -33,4 +34,3 @@ Alternatives rejected: trusting the visible Google Meet name is insecure; requir
 - A meeting-scoped binding expires when the session ends.
 - Adjacent fragments from different speakers must never be combined.
 - Existing webhook signature verification, replay suppression, and Jira idempotency remain intact.
-

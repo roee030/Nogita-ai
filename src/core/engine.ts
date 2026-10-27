@@ -106,7 +106,7 @@ export class NogitaEngine {
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
     const request = removeAddress(current);
-    const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1));
+    const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1), sessionId);
     if (plan.kind === 'answer') {
       await this.speakOrChat(s.meeting, plan.message);
       return 'answered';
@@ -121,7 +121,7 @@ export class NogitaEngine {
         await this.speakOrChat(s.meeting, 'I could not find enough code evidence to answer that reliably.');
         return 'answered';
       }
-      const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence);
+      const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence, sessionId);
       await this.speakOrChat(s.meeting, spoken);
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,

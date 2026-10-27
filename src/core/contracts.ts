@@ -46,6 +46,12 @@ export interface BoardPort {
   createTask(input: CreateTask): Promise<ActionReceipt>;
 }
 export interface Evidence { path: string; url: string; excerpt: string; }
+export interface AiUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedUsd: number;
+}
 export interface CodePort {
   readonly name: string;
   findEvidence(query: string): Promise<Evidence[]>;
@@ -56,8 +62,9 @@ export type Plan =
   | { kind: 'create_task'; title: string; description: string; assigneeId?: string }
   | { kind: 'draft_pr'; instruction: string };
 export interface BrainPort {
-  plan(current: string, ephemeralContext: readonly string[]): Promise<Plan>;
-  answerWithEvidence(question: string, evidence: readonly Evidence[]): Promise<string>;
+  plan(current: string, ephemeralContext: readonly string[], usageContext?: string): Promise<Plan>;
+  answerWithEvidence(question: string, evidence: readonly Evidence[], usageContext?: string): Promise<string>;
+  usageFor?(usageContext: string): AiUsage;
   /** Assesses silent participation; must not trigger any mutating action. */
   suggestContribution(context: readonly string[]): Promise<boolean>;
 }

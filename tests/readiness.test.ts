@@ -44,6 +44,15 @@ test('reasoning readiness accepts the maintained default model when only the API
   assert.equal(report.blockers.includes('reasoning'), false);
 });
 
+test('Attendee readiness accepts an authorized internal owner without a durable speaker UUID', () => {
+  const env = { ...completeEnv, AUTHORIZED_ACTOR_IDS: 'lead' };
+  const report = buildReadinessReport(env, new IdentityDirectory([{
+    id: 'lead', displayName: 'Lead',
+  }]), '22.16.0');
+
+  assert.equal(report.checks.find(item => item.id === 'attendee')?.status, 'ready');
+});
+
 test('readiness returns actionable blockers for the current MVP requirements', () => {
   const report = buildReadinessReport({
     NOGITA_ADMIN_TOKEN: 'short', BOARD_PROVIDER: 'demo', REPO_PROVIDER: 'demo',
