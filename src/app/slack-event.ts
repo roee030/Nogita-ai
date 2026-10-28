@@ -31,6 +31,8 @@ export function parseSlackRequest(
   allowedTeams: ReadonlySet<string>,
   botUserId?: string,
   identities?: IdentityDirectory,
+  /** True for threads Nogita is already part of: replies there reach her without a mention. */
+  activeThread?: (sessionId: string) => boolean,
 ): SlackRequest | null {
   const e = body.event;
   const team = body.team_id ?? '';
@@ -40,7 +42,11 @@ export function parseSlackRequest(
 
   const mentioned = e.type === 'app_mention';
   const dm = e.type === 'message' && e.channel_type === 'im';
-  if (!mentioned && !dm) return null;
+  const threadSession = e.thread_ts ? `slack:${team}:${e.channel}:${e.thread_ts}` : '';
+  // A plain thread reply where Nogita is active. Mentions arrive separately as app_mention, so skip those here.
+  const threadReply = e.type === 'message' && !dm && Boolean(threadSession) && activeThread?.(threadSession) === true &&
+    !(botUserId && e.text.includes(`<@${botUserId}`));
+  if (!mentioned && !dm && !threadReply) return null;
 
   let text = e.text.trim();
   if (mentioned) {
@@ -54,9 +60,9 @@ export function parseSlackRequest(
     }
     // The verified Slack app mention is the explicit equivalent of addressing "Nogita".
     text = 'Nogita, ' + text;
-  } else if (!directlyAddressesNogita(text)) {
-    // Direct-message channel is not enough to override Nogita's name-only policy.
-    return null;
+  } else if (dm && !directlyAddressesNogita(text)) {
+    // A direct message is addressed to Nogita by definition.
+    text = 'Nogita, ' + text;
   }
   if (!text.trim()) return null;
 

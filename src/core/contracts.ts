@@ -42,6 +42,8 @@ export interface MeetingPort {
   /** Only on completion of an explicitly requested task or information lookup. */
   sendCompletion(receipt: ActionReceipt): Promise<void>;
   leave(): Promise<void>;
+  /** Recent messages of a text conversation (a Slack thread), oldest first, as "Name: text". */
+  recentContext?(): Promise<string[]>;
 }
 export interface CreateTask {
   title: string;
@@ -84,6 +86,8 @@ export interface ChatPort {
   listChannels(): Promise<ChatChannel[]>;
   readChannel(channel: string, limit?: number): Promise<ChatMessage[]>;
   searchMessages?(query: string, limit?: number): Promise<ChatMessage[]>;
+  /** A thread as "Name: text" lines, oldest first (conversation context for a thread Nogita is in). */
+  readThread?(channelId: string, threadTs: string, limit?: number): Promise<string[]>;
   postMessage(channel: string, text: string): Promise<ActionReceipt>;
 }
 export interface Evidence { path: string; url: string; excerpt: string; }

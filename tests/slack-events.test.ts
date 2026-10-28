@@ -34,8 +34,18 @@ test('cross-workspace events and bot replies are ignored', () => {
   assert.equal(parseSlackRequest({ ...common, team_id: 'OTHER' }, teams, 'U999'), null);
   assert.equal(parseSlackRequest({ ...common, event: { ...common.event, bot_id:'B123' } }, teams, 'U999'), null);
 });
-test('DM must address Nogita by name; replies use originating thread', () => {
+test('a DM is addressed to Nogita without her name; replies use originating thread', () => {
   const event = { ...common.event, type:'message', channel_type:'im', channel:'D123', text:'Nogita, hello', thread_ts:'100.000' };
   assert.equal(parseSlackRequest({ ...common, event }, teams, 'U999')?.threadTs, '100.000');
-  assert.equal(parseSlackRequest({ ...common, event:{ ...event,text:'hello' } }, teams, 'U999'),null);
+  assert.equal(parseSlackRequest({ ...common, event:{ ...event,text:'hello' } }, teams, 'U999')?.utterance.text, 'Nogita, hello');
+});
+test('plain thread replies reach Nogita only in threads she is active in, and never double a mention', () => {
+  const reply = { ...common.event, type:'message', channel_type:'channel', channel:'C1', text:'Moshe Levi', thread_ts:'100.000', ts:'101.000' };
+  const session = `slack:${common.team_id}:C1:100.000`;
+  assert.equal(parseSlackRequest({ ...common, event: reply }, teams, 'U999'), null);
+  assert.equal(parseSlackRequest({ ...common, event: reply }, teams, 'U999', undefined, id => id === 'other'), null);
+  const parsed = parseSlackRequest({ ...common, event: reply }, teams, 'U999', undefined, id => id === session);
+  assert.equal(parsed?.utterance.text, 'Moshe Levi');
+  assert.equal(parsed?.sessionId, session);
+  assert.equal(parseSlackRequest({ ...common, event: { ...reply, text: '<@U999> again' } }, teams, 'U999', undefined, () => true), null);
 });

@@ -97,6 +97,19 @@ export class SlackWorkspace implements ChatPort {
     return out;
   }
 
+  /** A thread Nogita was mentioned in, oldest first, as "Name: text" lines for conversation context. */
+  async readThread(channelId: string, threadTs: string, limit = 40): Promise<string[]> {
+    const result = await this.call('conversations.replies', { channel: channelId, ts: threadTs, limit: Math.min(limit, 100) });
+    const messages = (result.messages as Array<{ user?: string; text?: string; bot_id?: string; subtype?: string }> | undefined) ?? [];
+    const lines: string[] = [];
+    for (const message of messages.slice(-limit)) {
+      if (!message.text || (message.subtype && message.subtype !== 'thread_broadcast')) continue;
+      const author = message.bot_id && !message.user ? 'Nogita' : await this.userName(message.user);
+      lines.push(`${author}: ${(await this.plain(message.text)).slice(0, 1500)}`);
+    }
+    return lines;
+  }
+
   async searchMessages(query: string, limit = 15): Promise<ChatMessage[]> {
     if (!this.userToken) throw new Error('Slack search needs SLACK_USER_TOKEN with search:read');
     const result = await this.call('search.messages', { query: query.slice(0, 300), count: Math.min(limit, 30), sort: 'timestamp' }, this.userToken);

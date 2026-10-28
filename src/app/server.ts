@@ -81,6 +81,8 @@ if (realtimeAudioEnabled && (!env.ATTENDEE_AUDIO_WEBSOCKET_URL || !env.DEEPGRAM_
   console.error('realtime_audio_configuration_incomplete');
 }
 const slackThreads = new Set<string>();
+const slackThreadReader = dependencies.chat?.readThread
+  ? (channel: string, threadTs: string) => dependencies.chat!.readThread!(channel, threadTs) : undefined;
 const slackWork = new InFlightWork();
 const slackSocketClient = env.SLACK_APP_TOKEN?.startsWith('xapp-') && env.SLACK_BOT_TOKEN?.startsWith('xoxb-')
   ? new SocketModeClient({ appToken: env.SLACK_APP_TOKEN }) : undefined;
@@ -203,7 +205,7 @@ async function processSlack(raw: string): Promise<void> {
   const payload = JSON.parse(raw) as Record<string, unknown>;
   if (payload.type !== 'event_callback') return;
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
-    env.SLACK_BOT_USER_ID, dependencies.identities);
+    env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
   if (!request || !env.SLACK_BOT_TOKEN) return;
   const lease = slackConversations.enter(request.sessionId);
   try {
@@ -219,7 +221,7 @@ async function processSlack(raw: string): Promise<void> {
           return;
         }
         await nogita.startSession(request.sessionId,
-          new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
+          new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs, fetch, slackThreadReader));
       }
       await nogita.onUtterance(request.sessionId, request.utterance);
     });
@@ -332,7 +334,7 @@ async function acceptSlack(raw: string): Promise<{ status: number; response: unk
   }
   if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
-    env.SLACK_BOT_USER_ID, dependencies.identities);
+    env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
   if (!request || !env.SLACK_BOT_TOKEN) return { status: 200, response: { ok: true } };
   if (providerQueue) await providerQueue.enqueue('slack', request.utterance.eventId, raw);
   else await processSlack(raw);
@@ -356,7 +358,7 @@ if (slackSocketClient) {
   type SocketPayload = { body: unknown; ack: () => Promise<void> };
   registerSlackEventHandlers<SocketPayload>(slackSocketClient, async ({ body, ack }) => {
     const request = parseSlackRequest(body as SlackEnvelope, allowedSlackTeams,
-      env.SLACK_BOT_USER_ID, dependencies.identities);
+      env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
     if (!request || !providerConfigValid || !slackWork.accepting) { await ack(); return; }
     try {
       const raw = JSON.stringify(body);

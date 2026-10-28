@@ -29,13 +29,14 @@ const queue = process.env.NOGITA_QUEUE_ENCRYPTION_KEY
 
 async function processBody(raw: string): Promise<void> {
   const body = JSON.parse(raw) as SlackEnvelope;
-  const request = parseSlackRequest(body, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
+  const request = parseSlackRequest(body, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities, id => sessions.has(id));
   if (!request) return;
   if (!inFlight.accepting) throw new Error('service is shutting down');
   const work = runClaimedEvent(slackLedger, 'slack', request.utterance.eventId, async () => {
     if (!sessions.has(request.sessionId)) {
       await engine.startSession(request.sessionId,
-        new SlackThreadMeeting(request.sessionId, token!, request.channel, request.threadTs));
+        new SlackThreadMeeting(request.sessionId, token!, request.channel, request.threadTs, fetch,
+          dependencies.chat?.readThread ? (c, t) => dependencies.chat!.readThread!(c, t) : undefined));
       sessions.add(request.sessionId);
     }
     await engine.onUtterance(request.sessionId, request.utterance);
@@ -51,7 +52,7 @@ const queueWorker = queue ? new EventWorker(queue, async item => {
 queueWorker?.start();
 
 registerSlackEventHandlers(client, async ({ body, ack }) => {
-  const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities);
+  const request = parseSlackRequest(body as SlackEnvelope, teams, process.env.SLACK_BOT_USER_ID, dependencies.identities, id => sessions.has(id));
   if (!request || !inFlight.accepting) { await ack(); return; }
   try {
     const raw = JSON.stringify(body);

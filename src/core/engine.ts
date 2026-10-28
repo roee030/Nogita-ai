@@ -305,6 +305,13 @@ export class NogitaEngine {
       onReceipt: receipt => s.meeting.sendCompletion(receipt),
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
     });
+    // A text thread carries its own history (including messages that never addressed Nogita).
+    let transcript = s.history.slice(0, -1).map(turn => turn.text);
+    if (s.meeting.recentContext) {
+      const thread = await Promise.race([s.meeting.recentContext().catch(() => [] as string[]),
+        new Promise<string[]>(resolve => setTimeout(() => resolve([]), 2_000))]);
+      if (thread.length) transcript = thread.slice(0, -1);
+    }
     let spoke = false;
     let speech = Promise.resolve();
     let spokenWords = 0;
@@ -352,7 +359,7 @@ export class NogitaEngine {
           boardName: authorized ? this.dependencies.board.name : undefined,
           chatName: authorized ? this.dependencies.chat?.name : undefined }),
         turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined }),
-        messages: [{ role: 'user', content: agentUserMessage(s.history.slice(0, -1).map(turn => turn.text), speaker, userText) }],
+        messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: voice, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
       }));

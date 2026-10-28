@@ -15,7 +15,11 @@ export class SlackThreadMeeting implements MeetingPort {
   readonly capabilities: ReadonlySet<Capability> = new Set(['chat_receipt']);
   constructor(readonly id: string, private readonly token: string,
     private readonly channel: string, private readonly threadTs: string,
-    private readonly http: typeof fetch = fetch) {}
+    private readonly http: typeof fetch = fetch,
+    private readonly readThread?: (channel: string, threadTs: string) => Promise<string[]>) {}
+  async recentContext(): Promise<string[]> {
+    return this.readThread ? this.readThread(this.channel, this.threadTs) : [];
+  }
   async join(): Promise<void> { /* Slack is not a voice meeting; invoked by explicit mention. */ }
   async speak(message: string): Promise<void> { await this.post(message); }
   async sendStatus(message: string): Promise<void> { await this.post(message); }
