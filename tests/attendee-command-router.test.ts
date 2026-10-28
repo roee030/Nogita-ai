@@ -108,6 +108,14 @@ test('a provider-final utterance waits for the quiet window and keeps verificati
   assert.match(f.statuses.at(-1) ?? '', /verified/i);
   assert.equal(f.emitted.length, 0);
 });
+test('a semantic completed turn is processed without another quiet-window delay', async () => {
+  const f = fixture(); f.router.beginSession('s');
+  const request = f.request('speaker-a', 'Nogita, what time is it?', 'flux-turn', owner);
+  const accepted = f.router.acceptCompletedTurn(request);
+  await accepted;
+  assert.equal(f.emitted.length, 1);
+  assert.equal(jobs.length, 0);
+});
 test('resumed interim speech resets the quiet timer without adding transcript text', async () => {
   const f = fixture(); f.router.beginSession('s');
   const accepted = f.router.acceptFinal(f.request('speaker-a', 'Nogita, tell me about the', 'final-a', owner));
@@ -154,6 +162,81 @@ test('verified owner leave request exits the meeting without asking the model', 
   await f.flush();
   assert.deepEqual(f.leaves, ['s']);
   assert.equal(f.emitted.length, 0);
+});
+test('transcript-derived drop meeting command leaves without reaching the model', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Nogita drop this meeting.', 'drop-meeting', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, ['s']);
+  assert.equal(f.emitted.length, 0);
+});
+test('explicit end this meeting command still leaves without reaching the model', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Nogita, end this meeting.', 'end-meeting', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, ['s']);
+  assert.equal(f.emitted.length, 0);
+});
+test('sentence-later direct request reaches the engine after fragment assembly', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Let’s do them both.', 'preface', owner));
+  f.router.accept(f.request('speaker-a', 'Nogita, what is the project about?', 'request', owner));
+  await f.flush();
+  assert.equal(f.emitted.length, 1);
+  assert.match(f.statuses.at(-1) ?? '', /checking/i);
+});
+test('negated or calendar drop is never interpreted as a meeting leave command', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', "Nogita, don't drop this meeting yet.", 'dont-drop', owner));
+  await f.flush();
+  f.router.accept(f.request('speaker-a', 'Nogita, should we drop this meeting from the calendar?', 'calendar-drop', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, []);
+  assert.equal(f.emitted.length, 2);
+});
+test('a question about leaving is not a command, but an explicit can-you request is', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Nogita, leave this meeting?', 'leave-question', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, []);
+  f.router.accept(f.request('speaker-a', 'Nogita, can you leave this meeting?', 'can-you-leave', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, ['s']);
+});
+test('a prior clause about dropping a meeting does not turn the later addressed request into leave', async () => {
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', "I'll drop this meeting. Nogita, explain the plan.", 'clause-drop', owner));
+  await f.flush();
+  assert.deepEqual(f.leaves, []);
+  assert.equal(f.emitted.length, 1);
+});
+test('verified direct request gets a chat acknowledgement before slow processing starts', async () => {
+  jobs.length = 0;
+  const order: string[] = [];
+  const router = new AttendeeCommandRouter(async () => { order.push('process'); },
+    async (_sessionId, message) => { order.push(`chat:${message}`); }, { quietMs: 0,
+      schedule: work => { jobs.push(work); return work; }, cancel: () => {} });
+  router.beginSession('s', owner);
+  const accepted = router.accept({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-1',
+    utterance: { eventId: 'ack-1', actor: owner, text: 'Nogita, what did we push to main?' } });
+  await jobs.shift()!();
+  await accepted;
+  assert.deepEqual(order, ['chat:I heard you. I’m checking that now.', 'process']);
+});
+test('acknowledgement failure does not suppress a verified request', async () => {
+  jobs.length = 0;
+  let processed = false;
+  const errors: unknown[] = [];
+  const router = new AttendeeCommandRouter(async () => { processed = true; },
+    async () => { throw new Error('chat unavailable'); }, { quietMs: 0, onError: error => errors.push(error),
+      schedule: work => { jobs.push(work); return work; }, cancel: () => {} });
+  router.beginSession('s', owner);
+  const accepted = router.accept({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-1',
+    utterance: { eventId: 'ack-2', actor: owner, text: 'Nogita, what is in the repo?' } });
+  await jobs.shift()!();
+  await accepted;
+  assert.equal(processed, true);
+  assert.equal(errors.length, 1);
 });
 
 test('failed command processing is released for a bounded provider retry', async () => {

@@ -1,0 +1,14 @@
+[
+  { "question": "How are authorized meeting speakers checked before a Jira task is created?", "expectedPaths": ["src/core/engine.ts", "src/adapters/jira.ts"] },
+  { "question": "How does Nogita verify a speaker after the meeting starts?", "expectedPaths": ["src/app/attendee-command-router.ts"] },
+  { "question": "How is a Slack mention converted into a Nogita request?", "expectedPaths": ["src/app/slack-event.ts"] },
+  { "question": "Where are GitHub repository questions searched for source evidence?", "expectedPaths": ["src/adapters/github.ts"] },
+  { "question": "How is realtime participant audio transcribed and sent to the command router?", "expectedPaths": ["src/app/attendee-realtime-audio.ts", "src/app/server.ts"] },
+  { "question": "How is webhook signature verification performed for Attendee?", "expectedPaths": ["src/app/attendee-webhook.ts"] },
+  { "question": "How are provider event retries stored durably?", "expectedPaths": ["src/app/durable-event-queue.ts"] },
+  { "question": "How are individual meeting usage costs estimated?", "expectedPaths": ["src/app/session-usage.ts"] },
+  { "question": "How are repository and board providers selected from environment configuration?", "expectedPaths": ["src/app/config.ts"] },
+  { "question": "How does Nogita prevent repeated processing of a Slack thread?", "expectedPaths": ["src/app/slack-conversations.ts", "src/app/slack-event.ts"] },
+  { "question": "How does Nogita integrate with Salesforce CRM?", "expectedPaths": [], "answerable": false },
+  { "question": "What happens when the meeting provider reports a fatal error?", "expectedPaths": ["src/app/server.ts", "src/app/attendee-webhook.ts"] }
+]

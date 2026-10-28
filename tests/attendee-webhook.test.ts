@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { IdentityDirectory } from '../src/core/identity.ts';
-import { canonicalJson, parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from '../src/app/attendee-webhook.ts';
+import { canonicalJson, parseAttendeeBotLog, parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from '../src/app/attendee-webhook.ts';
 
 const secret = Buffer.from('webhook-secret').toString('base64');
 const transcriptPayload = {
@@ -65,6 +65,20 @@ test('Attendee meeting-ended state resolves the internal session', () => {
   };
   assert.equal(parseAttendeeEndedSession(payload), 'meeting-1');
   assert.equal(parseAttendeeEndedSession({ ...payload, data: { new_state: 'joined_recording' } }), null);
+});
+
+test('Attendee fatal state and error log expose only safe event metadata', () => {
+  const fatalPayload = { trigger: 'bot.state_change', idempotency_key: 'fatal-1', bot_id: 'bot_123',
+    bot_metadata: { session_id: 'meeting-1' },
+    data: { new_state: 'fatal_error', old_state: 'joined_recording', event_type: 'fatal_error' } };
+  const logPayload = { trigger: 'bot_logs.update', idempotency_key: 'log-1', bot_id: 'bot_123',
+    bot_metadata: { session_id: 'meeting-1' },
+    data: { level: 'error', entry_type: 'could_not_enable_closed_captions', message: 'sensitive raw details' } };
+  assert.deepEqual(parseAttendeeBotLog(logPayload), { sessionId: 'meeting-1', botId: 'bot_123', level: 'error' });
+  assert.equal(parseAttendeeBotLog({ ...logPayload, data: { ...logPayload.data, level: 'info' } }), null);
+  assert.deepEqual(parseAttendeeLifecycleEvent(fatalPayload), {
+    kind: 'fatal', sessionId: 'meeting-1', botId: 'bot_123', eventType: 'fatal_error',
+  });
 });
 
 test('Attendee join/leave events expose stable UUIDs for audio-speaker binding, never identity by name', () => {

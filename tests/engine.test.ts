@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NogitaEngine, type NogitaEngineOptions } from '../src/core/engine.ts';
-import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest } from '../src/core/policy.ts';
+import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest, removeAddress } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
-import { SpeechFallbackSentError, type BrainPort, type CodePort, type Plan, type UsagePort } from '../src/core/contracts.ts';
+import { CodeLookupRateLimitError, SpeechFallbackSentError, type BrainPort, type CodePort, type Plan, type UsagePort } from '../src/core/contracts.ts';
 
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const engineer = { id: 'engineer', displayName: 'Engineer', verified: true };
@@ -29,6 +29,18 @@ test('activation: direct name address only', () => {
   for (const text of ['Nogita, hello', 'Hey Nogita, check', 'Nogita what do you think?']) assert.equal(directlyAddressesNogita(text), true);
   for (const text of ['We talked about Nogita', 'Rename Nogita today', 'NogitaBot', 'That is a great idea']) assert.equal(directlyAddressesNogita(text), false);
 });
+test('sentence-later and second-person vocatives wake Nogita without waking third-person mentions', () => {
+  assert.equal(directlyAddressesNogita('Let’s do them both. Nogita, explain the repository.'), true);
+  assert.equal(removeAddress('Let’s do them both. Nogita, explain the repository.'),
+    'explain the repository.');
+  assert.equal(directlyAddressesNogita('How are you Nogita today?'), true);
+  assert.equal(directlyAddressesNogita('I told you Nogita was in the meeting.'), false);
+  assert.equal(directlyAddressesNogita('We talked about Nogita. She helped.'), false);
+  assert.equal(directlyAddressesNogita('We finished. Nogita was helpful today.'), false);
+  assert.equal(directlyAddressesNogita('Nogita was helpful today.'), false);
+  assert.equal(removeAddress('We finished. Nogita was helpful. Nogita, explain this.'), 'explain this.');
+  assert.equal(directlyAddressesNogita('How are you, Nogita, today?'), true);
+});
 test('no speech without name; relevant concern only raises hand', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);
   assert.equal(await f.utter('The release is tomorrow.', '1'), 'ignored');
@@ -43,6 +55,119 @@ test('only explicitly addressed response may produce speech', async () => {
   assert.equal(await f.utter('Nogita, hello there', '1'), 'answered');
   assert.equal(f.meeting.events.filter(e => e.type === 'speak').length, 1);
   assert.equal(f.meeting.events.filter(e => e.type === 'chat').length, 0);
+});
+test('verified affirmative follow-up continues Nogita’s recent read-only question once', async () => {
+  const calls: Array<{ current: string; context: readonly string[] }> = [];
+  const brain: BrainPort = {
+    plan: async (current, context): Promise<Plan> => {
+      calls.push({ current, context: [...context] });
+      return calls.length === 1
+        ? { kind: 'answer', message: 'Would you like the detailed answer?' }
+        : { kind: 'answer', message: 'The detailed answer is available now.' };
+    },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain); await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, explain the plan', 'first'), 'answered');
+  assert.equal(await f.utter('Yes, please.', 'reply'), 'answered');
+  assert.match(f.meeting.events.filter(event => event.type === 'chat').at(-1)?.text ?? '',
+    /heard your reply.*continuing/i);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.current, 'Yes, please.');
+  assert.ok(calls[1]?.context.some(line => line.includes('Nogita: Would you like the detailed answer?')));
+  assert.equal(await f.utter('Yes, please.', 'repeat'), 'ignored');
+  assert.equal(calls.length, 2);
+});
+test('read-only repository follow-up resumes the original question instead of losing its search', async () => {
+  const queries: string[] = [];
+  const code: CodePort = { name: 'github', findEvidence: async query => {
+    queries.push(query);
+    return [{ path: 'README.md', url: 'https://github.com/example/app/blob/main/README.md', excerpt: 'Nogita is a virtual teammate.' }];
+  } };
+  let calls = 0;
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => {
+      calls++;
+      return calls === 1 ? { kind: 'answer', message: 'Should I check the repository?' }
+        : { kind: 'answer', message: 'Nogita is a virtual teammate.', evidence: {
+          path: 'README.md', url: 'https://github.com/example/app/blob/main/README.md', excerpt: 'Nogita is a virtual teammate.',
+        }, evidenceQuote: 'Nogita is a virtual teammate.' };
+    },
+    answerWithEvidence: async () => 'Nogita is a virtual teammate.', suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what is the project about?', 'repo-first');
+  assert.equal(await f.utter('Yes, please.', 'repo-yes'), 'completed');
+  assert.equal(queries.length, 1);
+  assert.match(queries[0] ?? '', /project about.*repository/i);
+});
+test('a different speaker, stale answer, and task confirmation cannot inherit pending permission', async () => {
+  let time = 1000;
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'Would you like me to continue?' }),
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain, { now: () => time }); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, explain this', 'question');
+  assert.equal(await f.utter('Yes, please.', 'other-speaker', engineer), 'ignored');
+  time += 90_000;
+  assert.equal(await f.utter('Yes, please.', 'stale'), 'ignored');
+  await f.utter('Nogita, create a task for this', 'task-question');
+  assert.equal(await f.utter('Yes, please.', 'task-yes'), 'ignored');
+  assert.equal(f.board.tasks.length, 0);
+});
+test('a same-speaker decline cancels the pending question instead of leaving a stale yes trigger', async () => {
+  let calls = 0;
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => {
+      calls++;
+      return { kind: 'answer', message: 'Would you like me to continue?' };
+    },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, explain this', 'question');
+  assert.equal(await f.utter('No, thanks.', 'decline'), 'ignored');
+  assert.equal(await f.utter('Yes, please.', 'later-yes'), 'ignored');
+  assert.equal(calls, 1);
+});
+test('speech queued before Nogita asks cannot become an answer to her later question', async () => {
+  let releaseFirst!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const gate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let calls = 0;
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => {
+      calls++;
+      if (calls === 1) { markStarted(); await gate; }
+      return { kind: 'answer', message: 'Would you like me to continue?' };
+    },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain); await f.engine.startSession('s', f.meeting);
+  const first = f.utter('Nogita, explain this', 'first');
+  await started;
+  const prematureYes = f.utter('Yes, please.', 'before-question');
+  releaseFirst();
+  assert.equal(await first, 'answered');
+  assert.equal(await prematureYes, 'ignored');
+  assert.equal(calls, 1);
+});
+test('verified participant named Nogita remains a user in model context', async () => {
+  let roles: string[] = [];
+  const brain: BrainPort = {
+    plan: async (_current, _history, _usage, _evidence, conversation): Promise<Plan> => {
+      roles = conversation?.map(turn => turn.role) ?? [];
+      return { kind: 'answer', message: 'Okay.' };
+    },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain); await f.engine.startSession('s', f.meeting);
+  const sameName = { id: 'lead', displayName: 'Nogita', verified: true };
+  await f.utter('Nogita, first question', 'first', sameName);
+  await f.utter('Nogita, second question', 'second', sameName);
+  assert.deepEqual(roles, ['user', 'assistant']);
 });
 test('spoken answer falls back to meeting chat when TTS fails', async () => {
   const meeting = new SpeechFailingMeeting('m');
@@ -122,6 +247,173 @@ test('code evidence returns spoken grounded answer plus reference receipt', asyn
   assert.equal(f.meeting.events.filter(e => e.type === 'speak').length, 1);
   assert.equal(f.meeting.events.filter(e => e.type === 'chat').length, 1);
 });
+test('repository evidence is supplied before planning so grounded code answers use one model call', async () => {
+  const order: string[] = [];
+  const evidence = [{ path: 'src/session.ts', url: 'https://github.com/example/app/blob/main/src/session.ts',
+    excerpt: 'session.refresh() runs before expiration.' }];
+  const code: CodePort = { name: 'github', findEvidence: async () => { order.push('lookup'); return evidence; } };
+  const brain: BrainPort = {
+    plan: async (_current, _history, _usageContext, suppliedEvidence): Promise<Plan> => {
+      order.push('plan');
+      assert.deepEqual(suppliedEvidence, evidence);
+      return { kind: 'answer', message: 'src/session.ts refreshes the session before expiration.',
+        evidence: evidence[0], evidenceQuote: 'session.refresh() runs before expiration.' };
+    },
+    answerWithEvidence: async () => { throw new Error('grounded answer should not need a second model call'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code); await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, when does the session refresh in the repo?', 'one-call-repo-answer'), 'completed');
+  assert.deepEqual(order, ['lookup', 'plan']);
+  assert.equal(f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text,
+    'src/session.ts refreshes the session before expiration.');
+  assert.match(f.meeting.events.filter(event => event.type === 'chat').at(-1)?.text ?? '', /Code reference/);
+});
+test('a repository answer without cited evidence is not spoken as a verified code fact', async () => {
+  const code: CodePort = { name: 'github', findEvidence: async () => [] };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'The repository definitely uses Salesforce.' }),
+    answerWithEvidence: async () => { throw new Error('no evidence to answer from'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, does our repository integrate with Salesforce?', 'uncited-repo');
+  const spoken = f.meeting.events.filter(event => event.type === 'speak').map(event => event.text);
+  assert.equal(spoken.some(line => line?.includes('definitely uses Salesforce')), false);
+  assert.match(spoken.at(-1) ?? '', /could not find enough code evidence/i);
+});
+test('a repository miss discloses when large source files were not searched', async () => {
+  const code: CodePort = { name: 'github', findEvidence: async () => [],
+    getCoverage: () => ({ indexedFiles: 3, skippedLargeFiles: 2 }) };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'I searched the whole repository and found nothing.' }),
+    answerWithEvidence: async () => { throw new Error('no evidence to answer from'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, is the billing handler in our repository?', 'incomplete-index');
+  const spoken = f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '';
+  assert.match(spoken, /could not find enough code evidence/i);
+  assert.match(spoken, /2 large files were not searched/i);
+  assert.doesNotMatch(spoken, /whole repository/i);
+});
+test('a grounded repository answer discloses large files outside its indexed evidence', async () => {
+  const evidence = { path: 'src/small.ts', url: 'https://github.com/example/app/blob/main/src/small.ts',
+    excerpt: 'The small module calls runTask() after authorization.' };
+  const code: CodePort = { name: 'github', findEvidence: async () => [evidence],
+    getCoverage: () => ({ indexedFiles: 3, skippedLargeFiles: 2 }) };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'The small module runs tasks after authorization.',
+      evidence, evidenceQuote: 'calls runTask() after authorization' }),
+    answerWithEvidence: async () => { throw new Error('grounded answer should be direct'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, how do tasks run in our repository?', 'partial-grounded'), 'completed');
+  assert.match(f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '',
+    /2 large files were not searched/i);
+});
+test('a GitHub rate limit gets a clear spoken status without asking the model to guess', async () => {
+  let plans = 0;
+  const code: CodePort = { name: 'github', findEvidence: async () => {
+    throw new CodeLookupRateLimitError();
+  } };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => { plans++; return { kind: 'answer', message: 'I know the whole repository.' }; },
+    answerWithEvidence: async () => { throw new Error('no evidence to answer from'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, how does authentication work in our repository?', 'rate-limited-code');
+  assert.equal(plans, 0);
+  assert.match(f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '', /GitHub.*rate limit/i);
+});
+test('a planner-requested code lookup reports a rate limit instead of failing silently', async () => {
+  const code: CodePort = { name: 'github', findEvidence: async () => {
+    throw new CodeLookupRateLimitError();
+  } };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'session refresh' }),
+    answerWithEvidence: async () => { throw new Error('no evidence to answer from'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, when does my session refresh?', 'rate-limited-inspection'), 'answered');
+  assert.match(f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '', /GitHub.*rate limit/i);
+});
+test('a planner-requested code lookup reports an unexpected provider failure safely', async () => {
+  const code: CodePort = { name: 'github', findEvidence: async () => {
+    throw new Error('PRIVATE-RESPONSE-BODY-EXAMPLE');
+  } };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'session refresh' }),
+    answerWithEvidence: async () => { throw new Error('no evidence to answer from'); },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, when does my session refresh?', 'provider-lookup-error'), 'answered');
+  const spoken = f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '';
+  assert.match(spoken, /could not check the repository/i);
+  assert.doesNotMatch(spoken, /PRIVATE-RESPONSE-BODY/);
+});
+test('an unrelated citation cannot turn a fabricated repository answer into a verified fact', async () => {
+  const evidence = [{ path: 'src/auth.ts', url: 'https://github.com/example/app/blob/main/src/auth.ts',
+    excerpt: 'export const authenticationEnabled = true;' }];
+  const code: CodePort = { name: 'github', findEvidence: async () => evidence };
+  let evidenceAnswers = 0;
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'The repository uses Salesforce.',
+      evidence: evidence[0], evidenceQuote: 'not present in source' }),
+    answerWithEvidence: async () => { evidenceAnswers++; return 'I could not verify Salesforce from src/auth.ts.'; },
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, does the repository use Salesforce?', 'wrong-citation');
+  const spoken = f.meeting.events.filter(event => event.type === 'speak').map(event => event.text);
+  assert.equal(spoken.includes('The repository uses Salesforce.'), false);
+  assert.equal(evidenceAnswers, 1);
+});
+test('repository prefetch never reads code for a speaker without repository permission', async () => {
+  let lookups = 0;
+  const code: CodePort = { name: 'github', findEvidence: async () => { lookups++; return []; } };
+  const f = fixture(new DemoBrain(), {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, how does authentication work in the repo?', 'unauthorized-read', engineer);
+  assert.equal(lookups, 0);
+});
+test('implicit project questions require code evidence and permission', async () => {
+  let lookups = 0;
+  let plans = 0;
+  const code: CodePort = { name: 'github', findEvidence: async () => { lookups++; return []; } };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => { plans++; return { kind: 'answer', message: 'Authentication uses Salesforce.' }; },
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code);
+  await f.engine.startSession('s', f.meeting);
+  assert.equal(await f.utter('Nogita, how does authentication work?', 'implicit-authorized'), 'answered');
+  assert.equal(lookups, 1);
+  assert.equal(f.meeting.events.some(event => event.text?.includes('uses Salesforce')), false);
+  assert.equal(await f.utter('Nogita, how does authentication work?', 'implicit-unauthorized', engineer), 'denied');
+  assert.equal(await f.utter('Nogita, how does login work?', 'implicit-login-unauthorized', engineer), 'denied');
+  assert.equal(lookups, 1);
+  assert.equal(plans, 1);
+});
+test('ordinary questions do not wait for a GitHub repository lookup', async () => {
+  let lookups = 0;
+  const code: CodePort = { name: 'github', findEvidence: async () => { lookups++; return []; } };
+  const f = fixture(new DemoBrain(), {}, code);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what time is it?', 'ordinary-question');
+  assert.equal(lookups, 0);
+});
 test('repository lookup combines the speaker question with planner-selected search terms', async () => {
   let searched = '';
   const code = { name: 'github', findEvidence: async (query: string) => {
@@ -141,7 +433,7 @@ test('repository lookup combines the speaker question with planner-selected sear
 test('fast code answers cancel the progress timer and only speak the answer', async () => {
   const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
   const timing = {
-    progressDelayMs: 900,
+    progressDelayMs: 4_500,
     schedule: (work: () => void | Promise<void>, delay: number) => {
       const timer = { work, delay, canceled: false };
       scheduled.push(timer);
@@ -157,7 +449,7 @@ test('fast code answers cancel the progress timer and only speak the answer', as
   };
   const f = fixture(brain, timing); await f.engine.startSession('s', f.meeting);
   await f.utter('Nogita, how does the repo refresh a session?', 'fast-code');
-  assert.equal(scheduled[0]?.delay, 900);
+  assert.equal(scheduled[0]?.delay, 4_500);
   assert.equal(scheduled[0]?.canceled, true);
   assert.deepEqual(f.meeting.events.filter(event => event.type === 'speak').map(event => event.text),
     ['The session refreshes before it expires.']);
@@ -165,7 +457,7 @@ test('fast code answers cancel the progress timer and only speak the answer', as
 test('slow code lookup says one varied progress phrase before its final answer', async () => {
   const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
   const timing = {
-    progressDelayMs: 900,
+    progressDelayMs: 4_500,
     schedule: (work: () => void | Promise<void>, delay: number) => {
       const timer = { work, delay, canceled: false };
       scheduled.push(timer);
@@ -188,7 +480,7 @@ test('slow code lookup says one varied progress phrase before its final answer',
   const f = fixture(brain, timing); await f.engine.startSession('s', f.meeting);
   const pending = f.utter('Nogita, how does the repo refresh a session?', 'slow-code');
   await started;
-  assert.equal(scheduled[0]?.delay, 900);
+  assert.equal(scheduled[0]?.delay, 4_500);
   await scheduled[0]!.work();
   releaseAnswer('The session refreshes before it expires.');
   await pending;
@@ -200,7 +492,7 @@ test('slow code lookup says one varied progress phrase before its final answer',
 test('consecutive slow requests in one meeting do not repeat the same progress phrase', async () => {
   const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
   const timing = {
-    progressDelayMs: 900,
+    progressDelayMs: 4_500,
     schedule: (work: () => void | Promise<void>, delay: number) => {
       const timer = { work, delay, canceled: false };
       scheduled.push(timer);

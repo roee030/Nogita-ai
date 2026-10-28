@@ -46,11 +46,53 @@ test('Attendee: join, English speech, receipt and leave hit documented paths', a
   assert.equal(calls[0]?.payload.bot_metadata, undefined);
   assert.deepEqual(calls[0]?.payload.webhooks, [{
     url: 'https://nogita.example/webhooks/attendee',
-    triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
+    triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave', 'bot_logs.update'],
   }]);
   assert.deepEqual(calls[1]?.payload, { to: 'everyone', message: 'Hello.' });
   assert.equal(calls[2]?.payload.text, 'Hello.');
   assert.deepEqual(calls[3]?.payload, { to: 'everyone', message: 'NG-1: https://example.atlassian.net/browse/NG-1' });
+});
+
+test('Attendee chat failure does not block the audio response', async () => {
+  const paths: string[] = [];
+  const mock: typeof fetch = async url => {
+    const path = new URL(String(url)).pathname;
+    paths.push(path);
+    if (path === '/api/v1/bots') return new Response(JSON.stringify(bot), { status: 201 });
+    if (path.endsWith('/send_chat_message')) return new Response('unavailable', { status: 503 });
+    return new Response(null, { status: 204 });
+  };
+  const meeting = new AttendeeMeeting('session', 'test-token', true, mock);
+  await meeting.join(meetingUrl);
+  await meeting.speak('The answer is ready.');
+  assert.deepEqual(paths, [
+    '/api/v1/bots',
+    `/api/v1/bots/${bot.id}/send_chat_message`,
+    `/api/v1/bots/${bot.id}/speech`,
+  ]);
+});
+
+test('Attendee starts speech while the chat mirror is still pending', async () => {
+  let finishChat!: () => void;
+  const chatPending = new Promise<void>(resolve => { finishChat = resolve; });
+  let speechStarted = false;
+  const mock: typeof fetch = async url => {
+    const path = new URL(String(url)).pathname;
+    if (path === '/api/v1/bots') return new Response(JSON.stringify(bot), { status: 201 });
+    if (path.endsWith('/send_chat_message')) {
+      await chatPending;
+      return new Response(null, { status: 204 });
+    }
+    if (path.endsWith('/speech')) speechStarted = true;
+    return new Response(null, { status: 204 });
+  };
+  const meeting = new AttendeeMeeting('session', 'test-token', true, mock);
+  await meeting.join(meetingUrl);
+  const pending = meeting.speak('Answer.');
+  await Promise.resolve();
+  assert.equal(speechStarted, true);
+  finishChat();
+  await pending;
 });
 
 test('Attendee: verification prompt is queued for delivery after the bot joins', async () => {

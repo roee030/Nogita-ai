@@ -1,11 +1,14 @@
-import { SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort,
+import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest,
-  isRepositoryConnectionQuestion, removeAddress } from './policy.ts';
+  isRepositoryConnectionQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
-  history: string[]; // ephemeral: purged when session ends
+  history: ConversationTurn[]; // ephemeral: purged when session ends
+  pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number };
+  activeRequest?: { actorId: string; request: string };
+  lastArrivalSequence: number;
   eventIds: Set<string>;
   raised: boolean;
   mutedUntil: number;
@@ -22,20 +25,36 @@ export interface NogitaEngineOptions {
   schedule?: (work: ProgressWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   random?: () => number;
+  now?: () => number;
+}
+
+function isAffirmativeFollowUp(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[,]+/g, '').replace(/[.!?]+$/, '').replace(/\s+/g, ' ');
+  return /^(?:yes|yes please|yeah|yeah please|sure|sure please|please do|go ahead|i want to know(?: the answer(?: to (?:that|the question))?)?|i would like to know(?: the answer)?)$/.test(normalized);
 }
 
 const progressPhrases = [
-  'Let me check that in the code.',
-  'One second—I want to trace where that happens.',
-  'Hmm, let me connect the pieces.',
-  'Give me a moment; I’m checking the implementation.',
-  'I’m looking at the relevant files now.',
-  'Let me verify this against the repository.',
-  'Just a sec—I want to be precise.',
-  'Let me follow that through the code.',
-  'I’m checking how those parts fit together.',
+  'Let me think for a moment.',
+  'One second, I’m checking that.',
+  'Hmm, I want to get this right.',
+  'Give me a moment to work through it.',
+  'I’m on it; just checking the details.',
+  'Just a sec, I’m putting that together.',
+  'Let me make sure I understand.',
+  'I’m checking the relevant details now.',
   'Hang on a moment; I’ll make sure I have this right.',
 ];
+function missingCodeEvidenceMessage(code: CodePort): string {
+  const skipped = code.getCoverage?.()?.skippedLargeFiles ?? 0;
+  return 'I could not find enough code evidence to answer that reliably.' +
+    codeCoverageNotice(skipped);
+}
+function codeCoverageNotice(skipped: number): string {
+  return skipped > 0 ? ` ${skipped} large ${skipped === 1 ? 'file was' : 'files were'} not searched.` : '';
+}
+function withCodeCoverageNotice(code: CodePort, message: string): string {
+  return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
+}
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
 export class NogitaEngine {
@@ -46,6 +65,7 @@ export class NogitaEngine {
   private readonly schedule: (work: ProgressWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private readonly random: () => number;
+  private readonly now: () => number;
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
@@ -53,10 +73,11 @@ export class NogitaEngine {
     policy: PolicyPort;
     usage?: UsagePort;
   }, options: NogitaEngineOptions = {}) {
-    this.progressDelayMs = options.progressDelayMs ?? 900;
+    this.progressDelayMs = options.progressDelayMs ?? 4_500;
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
+    this.now = options.now ?? Date.now;
   }
 
   private validateSessionId(sessionId: string): void {
@@ -66,7 +87,7 @@ export class NogitaEngine {
   private addSession(sessionId: string, meeting: MeetingPort): void {
     this.validateSessionId(sessionId);
     this.sessions.set(sessionId, {
-      meeting, history: [], eventIds: new Set(), raised: false, mutedUntil: 0,
+      meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       processing: Promise.resolve(), ending: false,
     });
   }
@@ -101,6 +122,8 @@ export class NogitaEngine {
       if (this.sessions.get(sessionId) !== session) return;
       this.sessions.delete(sessionId);
       session.history.length = 0;
+      session.pendingFollowUp = undefined;
+      session.activeRequest = undefined;
       session.eventIds.clear();
       for (const key of this.completed.keys()) {
         if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
@@ -122,6 +145,16 @@ export class NogitaEngine {
       if (session.progressSpeech) await session.progressSpeech;
     }
     await this.deliverSpeech(sessionId, meeting, message);
+    if (session) {
+      session.history.push({ role: 'assistant', text: `Nogita: ${message}` });
+      if (session.history.length > 24) session.history.shift();
+      const active = session.activeRequest;
+      if (active && message.trim().endsWith('?') && !isExplicitCreateRequest(active.request) &&
+          !isExplicitPRRequest(active.request)) {
+        session.pendingFollowUp = { ...active, question: message, expiresAt: this.now() + 60_000,
+          afterSequence: session.lastArrivalSequence };
+      }
+    }
   }
 
   private async deliverSpeech(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
@@ -159,6 +192,7 @@ export class NogitaEngine {
     const s = this.sessions.get(sessionId);
     if (!s || s.ending) throw new Error('unknown session');
     if (!utterance.actor.verified || !utterance.eventId || !utterance.text.trim()) return 'ignored';
+    const arrivalSequence = ++s.lastArrivalSequence;
     const previous = s.processing;
     let release!: () => void;
     s.processing = new Promise<void>(resolve => { release = resolve; });
@@ -168,18 +202,26 @@ export class NogitaEngine {
     if (s.eventIds.has(utterance.eventId)) return 'ignored';
     s.eventIds.add(utterance.eventId);
     const historyBefore = s.history.slice();
+    const pendingBefore = s.pendingFollowUp;
     const raisedBefore = s.raised;
     const mutedUntilBefore = s.mutedUntil;
     try {
     // Prevent unbounded in-memory event metadata or transcript retention.
     if (s.eventIds.size > 2000) s.eventIds.delete(s.eventIds.values().next().value!);
     const current = utterance.text.trim().slice(0, 4000);
-    s.history.push(`${utterance.actor.displayName}: ${current}`);
+    s.history.push({ role: 'user', text: `${utterance.actor.displayName}: ${current}` });
     if (s.history.length > 24) s.history.shift();
 
-    if (!directlyAddressesNogita(current)) {
+    const directlyAddressed = directlyAddressesNogita(current);
+    const pending = s.pendingFollowUp;
+    const continuation = !directlyAddressed && pending !== undefined &&
+      pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
+      this.now() <= pending.expiresAt &&
+      isAffirmativeFollowUp(current);
+    if (!directlyAddressed && !continuation) {
+      if (pending?.actorId === utterance.actor.id) s.pendingFollowUp = undefined;
       if (!s.raised && Date.now() > s.mutedUntil && s.history.length > 1 &&
-          await this.dependencies.brain.suggestContribution(s.history)) {
+          await this.dependencies.brain.suggestContribution(s.history.map(turn => turn.text))) {
         const supported = await s.meeting.raiseHand();
         if (supported) { s.raised = true; s.mutedUntil = Date.now() + 5 * 60_000; return 'raised_hand'; }
       }
@@ -188,8 +230,16 @@ export class NogitaEngine {
 
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
+    s.pendingFollowUp = undefined;
+    if (continuation) {
+      try { await s.meeting.sendStatus('I heard your reply. I’m continuing that question.'); }
+      catch { /* Chat is best effort; spoken answer still proceeds. */ }
+    }
     this.beginProgressAcknowledgment(sessionId, s);
-    const request = removeAddress(current);
+    const request = directlyAddressed ? removeAddress(current)
+      : pending && /\b(?:repo|repository|github|code)\b/i.test(pending.question)
+        ? `${pending.request} repository` : current;
+    s.activeRequest = { actorId: utterance.actor.id, request };
     if (isRepositoryConnectionQuestion(request)) {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
         await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
@@ -216,9 +266,53 @@ export class NogitaEngine {
       });
       return 'completed';
     }
-    const plan = await this.dependencies.brain.plan(request, s.history.slice(0, -1), sessionId);
+    let initialEvidence: Evidence[] = [];
+    if (this.dependencies.code.name === 'github' && isRepositoryQuestion(request) &&
+        !this.dependencies.policy.mayReadCode(utterance.actor)) {
+      await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
+      return 'denied';
+    }
+    try {
+      if (this.dependencies.code.name === 'github' && this.dependencies.policy.mayReadCode(utterance.actor) &&
+          isRepositoryQuestion(request) && !isExplicitCreateRequest(request) && !isExplicitPRRequest(request)) {
+        initialEvidence = await this.dependencies.code.findEvidence(request);
+      }
+    }
+    catch (error) {
+      if (error instanceof CodeLookupRateLimitError) {
+        await this.speakOrChat(sessionId, s.meeting,
+          'GitHub has reached its rate limit. I cannot check the repository right now; please try again later.');
+        return 'answered';
+      }
+      /* Let ordinary questions proceed; an explicit code-inspection plan retries with expanded terms below. */
+    }
+    if (initialEvidence.length) this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
+    const conversation = continuation ? s.history.slice() : s.history.slice(0, -1);
+    const plan = await this.dependencies.brain.plan(request, conversation.map(turn => turn.text),
+      sessionId, initialEvidence, conversation);
     if (plan.kind === 'answer') {
-      await this.speakOrChat(sessionId, s.meeting, plan.message);
+      const grounded = plan.evidence && plan.evidenceQuote && plan.evidenceQuote.length >= 12 &&
+        plan.evidence.excerpt.includes(plan.evidenceQuote) &&
+        initialEvidence.some(item => item.path === plan.evidence?.path && item.url === plan.evidence?.url &&
+          item.excerpt === plan.evidence?.excerpt);
+      if (this.dependencies.code.name === 'github' && isRepositoryQuestion(request) && !grounded) {
+        if (!initialEvidence.length) {
+          await this.speakOrChat(sessionId, s.meeting, missingCodeEvidenceMessage(this.dependencies.code));
+          return 'answered';
+        }
+        const spoken = await this.dependencies.brain.answerWithEvidence(request, initialEvidence, sessionId);
+        await this.speakOrChat(sessionId, s.meeting, withCodeCoverageNotice(this.dependencies.code, spoken));
+        await s.meeting.sendCompletion({ provider: this.dependencies.code.name, kind: 'code_lookup',
+          url: initialEvidence[0]!.url, label: 'Code reference' });
+        return 'completed';
+      }
+      await this.speakOrChat(sessionId, s.meeting,
+        grounded && plan.evidence ? withCodeCoverageNotice(this.dependencies.code, plan.message) : plan.message);
+      if (grounded && plan.evidence) {
+        await s.meeting.sendCompletion({ provider: this.dependencies.code.name, kind: 'code_lookup',
+          url: plan.evidence.url, label: 'Code reference' });
+        return 'completed';
+      }
       return 'answered';
     }
     if (plan.kind === 'inspect_code') {
@@ -226,14 +320,22 @@ export class NogitaEngine {
         await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
         return 'denied';
       }
-      const evidence = await this.dependencies.code.findEvidence(`${request}\n${plan.query}`);
+      let evidence: Evidence[];
+      try { evidence = await this.dependencies.code.findEvidence(`${request}\n${plan.query}`); }
+      catch (error) {
+        await this.speakOrChat(sessionId, s.meeting,
+          error instanceof CodeLookupRateLimitError
+            ? 'GitHub has reached its rate limit. I cannot check the repository right now; please try again later.'
+            : 'I could not check the repository right now. The connection needs attention; please try again later.');
+        return 'answered';
+      }
       this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
       if (!evidence.length) {
-        await this.speakOrChat(sessionId, s.meeting, 'I could not find enough code evidence to answer that reliably.');
+        await this.speakOrChat(sessionId, s.meeting, missingCodeEvidenceMessage(this.dependencies.code));
         return 'answered';
       }
       const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence, sessionId);
-      await this.speakOrChat(sessionId, s.meeting, spoken);
+      await this.speakOrChat(sessionId, s.meeting, withCodeCoverageNotice(this.dependencies.code, spoken));
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,
         label: 'Code reference',
@@ -272,6 +374,7 @@ export class NogitaEngine {
     } catch (error) {
       s.eventIds.delete(utterance.eventId);
       s.history.splice(0, s.history.length, ...historyBefore);
+      s.pendingFollowUp = pendingBefore;
       s.raised = raisedBefore;
       s.mutedUntil = mutedUntilBefore;
       throw error;
@@ -279,6 +382,7 @@ export class NogitaEngine {
     } finally {
       this.clearProgressTimer(s);
       if (s.progressSpeech) await s.progressSpeech;
+      s.activeRequest = undefined;
       this.dependencies.usage?.recordResponse?.(sessionId, performance.now() - processingStartedAt);
       release();
     }

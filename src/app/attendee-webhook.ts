@@ -48,6 +48,43 @@ export interface AttendeeParticipantEvent extends AttendeeEnvelope {
   eventType: 'join' | 'leave';
 }
 
+export interface AttendeeBotLogEvent {
+  sessionId: string;
+  botId: string;
+  level: 'error';
+}
+
+export type AttendeeLifecycleEvent =
+  | { kind: 'ended'; sessionId: string; botId: string; eventType: string }
+  | { kind: 'fatal'; sessionId: string; botId: string; eventType: string };
+
+export function parseAttendeeBotLog(payload: unknown): AttendeeBotLogEvent | null {
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || !payload || typeof payload !== 'object') return null;
+  const root = payload as Record<string, unknown>;
+  if (root.trigger !== 'bot_logs.update' || !root.data || typeof root.data !== 'object') return null;
+  const data = root.data as Record<string, unknown>;
+  return data.level === 'error' ? { sessionId: envelope.sessionId, botId: envelope.botId, level: 'error' } : null;
+}
+
+export function parseAttendeeLifecycleEvent(payload: unknown): AttendeeLifecycleEvent | null {
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || !payload || typeof payload !== 'object') return null;
+  const root = payload as Record<string, unknown>;
+  if (root.trigger !== 'bot.state_change' || !root.data || typeof root.data !== 'object') return null;
+  const data = root.data as Record<string, unknown>;
+  const newState = typeof data.new_state === 'string' ? data.new_state : '';
+  const eventType = typeof data.event_type === 'string' ? data.event_type : '';
+  if (newState === 'fatal_error' || eventType === 'fatal_error') {
+    return { kind: 'fatal', sessionId: envelope.sessionId, botId: envelope.botId, eventType: 'fatal_error' };
+  }
+  if (eventType === 'meeting_ended' || eventType === 'post_processing_completed' || newState === 'ended') {
+    return { kind: 'ended', sessionId: envelope.sessionId, botId: envelope.botId,
+      eventType: eventType || 'ended' };
+  }
+  return null;
+}
+
 export function parseAttendeeParticipantEvent(payload: unknown): AttendeeParticipantEvent | null {
   const envelope = parseAttendeeEnvelope(payload);
   if (!envelope || !payload || typeof payload !== 'object') return null;
@@ -107,11 +144,6 @@ export function parseAttendeeTranscript(payload: unknown, identities: IdentityDi
 }
 
 export function parseAttendeeEndedSession(payload: unknown): string | null {
-  const envelope = parseAttendeeEnvelope(payload);
-  if (!envelope || !payload || typeof payload !== 'object') return null;
-  const root = payload as Record<string, unknown>;
-  if (root.trigger !== 'bot.state_change' || !root.data || typeof root.data !== 'object') return null;
-  const data = root.data as Record<string, unknown>;
-  const ended = data.event_type === 'meeting_ended' || data.event_type === 'post_processing_completed' || data.new_state === 'ended';
-  return ended ? envelope.sessionId : null;
+  const event = parseAttendeeLifecycleEvent(payload);
+  return event?.kind === 'ended' ? event.sessionId : null;
 }

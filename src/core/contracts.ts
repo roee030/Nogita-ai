@@ -30,10 +30,10 @@ export interface MeetingPort {
   readonly capabilities: ReadonlySet<Capability>;
   /** Only call for a user-invited meeting. */
   join(meetingUrl?: string): Promise<void>;
-  /** Called exclusively in response to an explicit direct address. */
+  /** Called only for an explicit direct address or a verified reply to Nogita's own recent question. */
   speak(message: string): Promise<void>;
   /** Plain meeting-chat status or speech fallback; never carries secrets. */
-  sendStatus(message: string): Promise<void>;
+  sendStatus(message: string, timeoutMs?: number): Promise<void>;
   /** Returns false if native hand raise is not supported; no fallback speech/chat. */
   raiseHand(): Promise<boolean>;
   /** Only on completion of an explicitly requested task or information lookup. */
@@ -51,6 +51,10 @@ export interface BoardPort {
   createTask(input: CreateTask): Promise<ActionReceipt>;
 }
 export interface Evidence { path: string; url: string; excerpt: string; }
+export interface ConversationTurn { role: 'user' | 'assistant'; text: string; }
+export class CodeLookupRateLimitError extends Error {
+  constructor() { super('GitHub API rate limit reached'); this.name = 'CodeLookupRateLimitError'; }
+}
 export interface AiUsage {
   model: string;
   modelCalls: number;
@@ -67,15 +71,18 @@ export interface CodePort {
   readonly name: string;
   /** Optional preparation such as warming an in-memory repository index at startup. */
   prepare?(): Promise<void>;
+  /** Coverage of supported source files at the last successful index build. */
+  getCoverage?(): { indexedFiles: number; skippedLargeFiles: number } | undefined;
   findEvidence(query: string): Promise<Evidence[]>;
 }
 export type Plan =
-  | { kind: 'answer'; message: string }
+  | { kind: 'answer'; message: string; evidence?: Evidence; evidenceQuote?: string }
   | { kind: 'inspect_code'; query: string }
   | { kind: 'create_task'; title: string; description: string; assigneeId?: string }
   | { kind: 'draft_pr'; instruction: string };
 export interface BrainPort {
-  plan(current: string, ephemeralContext: readonly string[], usageContext?: string): Promise<Plan>;
+  plan(current: string, ephemeralContext: readonly string[], usageContext?: string,
+    evidence?: readonly Evidence[], conversation?: readonly ConversationTurn[]): Promise<Plan>;
   answerWithEvidence(question: string, evidence: readonly Evidence[], usageContext?: string): Promise<string>;
   usageFor?(usageContext: string): AiUsage;
   /** Assesses silent participation; must not trigger any mutating action. */

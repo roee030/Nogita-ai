@@ -9,7 +9,7 @@ import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { registerSlackEventHandlers } from './slack-socket-events.ts';
-import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
+import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
@@ -24,6 +24,7 @@ import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry } from './slack-conversations.ts';
 import { AttendeeRealtimeAudioHub } from './attendee-realtime-audio.ts';
+import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -90,17 +91,24 @@ const attendeeCommands = new AttendeeCommandRouter(
   async (sessionId, message) => {
     const meeting = attendeeMeetingsBySession.get(sessionId);
     if (!meeting) throw new Error('unknown Attendee meeting');
-    await meeting.sendStatus(message);
+    await meeting.sendStatus(message, 1_500);
   },
   { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown'),
     onLeave: async sessionId => {
       const meeting = attendeeMeetingsBySession.get(sessionId);
       const botId = meeting?.botIdentifier;
       if (meeting) {
-        try { await meeting.sendStatus('Okay, I am leaving the call now.'); }
+        try { await meeting.sendStatus('I’m leaving the call now, as requested.'); }
         catch { console.error('leave_acknowledgement_failed'); }
       }
-      await nogita.endSession(sessionId);
+      try { await nogita.endSession(sessionId); }
+      catch {
+        if (meeting) {
+          try { await meeting.sendStatus('I could not leave the call yet; I may still be connected. Please ask me to leave again or remove me from the meeting.'); }
+          catch { console.error('leave_failure_notice_failed'); }
+        }
+        return;
+      }
       sessionUsage.end(sessionId);
       await forgetAttendeeSession(sessionId, botId);
     } },
@@ -112,16 +120,20 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       baseUrl: env.ATTENDEE_AUDIO_WEBSOCKET_URL,
       signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
       deepgramApiKey: env.DEEPGRAM_API_KEY,
+      sttMode: env.DEEPGRAM_STT_MODE === 'flux-english' ? 'flux-english' : 'nova3-multilingual',
+      ttsModel: env.DEEPGRAM_TTS_MODEL,
       onTranscript: async (sessionId, participantUuid, text, participant) => {
         const mapped = participant?.attendeeUserUuid
           ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;
-        await attendeeCommands.acceptFinal({ sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
+        const request = { sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
           speakerUuid: participantUuid, ...(participant?.attendeeUserUuid ? { attendeeUserUuid: participant.attendeeUserUuid } : {}),
           utterance: { eventId: `realtime-${randomUUID()}`,
             actor: mapped ? { id: mapped.id, displayName: mapped.displayName, verified: true }
               : { id: `unmapped:attendee:${participant?.attendeeUserUuid ?? participantUuid}`,
                 displayName: participant?.displayName ?? 'Meeting participant', verified: false },
-            text, at: Date.now() } });
+            text, at: Date.now() } };
+        if (env.DEEPGRAM_STT_MODE === 'flux-english') await attendeeCommands.acceptCompletedTurn(request);
+        else await attendeeCommands.acceptFinal(request);
       },
       onSpeechActivity: (sessionId, participantUuid) => attendeeCommands.noteSpeechActivity(sessionId, participantUuid),
       onError: code => console.error(code),
@@ -255,11 +267,31 @@ async function processAttendee(payload: Record<string, unknown>): Promise<void> 
   if (ledger.status !== 'started') throw new Error('unexpected Attendee ledger state');
   const claim = ledger.claim;
   try {
-    const endedSession = parseAttendeeEndedSession(payload);
-    if (endedSession) {
-      await nogita.endSession(endedSession, false);
-      sessionUsage.end(endedSession);
-      await forgetAttendeeSession(endedSession, envelope.botId);
+    const lifecycle = parseAttendeeLifecycleEvent(payload);
+    const botLog = lifecycle ? null : parseAttendeeBotLog(payload);
+    if (lifecycle) {
+      restoreAttendeeSession(lifecycle.sessionId, lifecycle.botId);
+      const meeting = attendeeMeetingsBySession.get(lifecycle.sessionId);
+      const message = lifecycle.kind === 'fatal'
+        ? 'Nogita hit a fatal meeting-connection error and has left the call. Please add her again to restart.'
+        : lifecycle.eventType === 'post_processing_completed'
+          ? 'Nogita has left because the meeting has ended.'
+          : 'Nogita has left the call because the meeting provider ended her session.';
+      await notifyBeforeCleanup(
+        async () => { if (meeting) await meeting.sendStatus(message); },
+        async () => {
+          await nogita.endSession(lifecycle.sessionId, false);
+          sessionUsage.end(lifecycle.sessionId);
+          await forgetAttendeeSession(lifecycle.sessionId, lifecycle.botId);
+        },
+        () => console.error('attendee_exit_notice_failed'),
+      );
+    } else if (botLog) {
+      restoreAttendeeSession(botLog.sessionId, botLog.botId);
+      const meeting = attendeeMeetingsBySession.get(botLog.sessionId);
+      try {
+        await meeting?.sendStatus('I hit a meeting-service error. I’m trying to recover, so my reply may be delayed.');
+      } catch { console.error('attendee_error_notice_failed'); }
     } else {
       const participant = parseAttendeeParticipantEvent(payload);
       if (participant) {

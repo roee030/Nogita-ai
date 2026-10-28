@@ -43,12 +43,12 @@ export class AttendeeMeeting implements MeetingPort {
     this.botId = botId;
   }
 
-  private async request(path: string, body?: unknown): Promise<unknown> {
+  private async request(path: string, body?: unknown, timeoutMs = 15_000): Promise<unknown> {
     const response = await this.http(`${this.endpoint}${path}`, {
       method: 'POST',
       headers: { 'Authorization': `Token ${this.apiKey}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) throw new Error(`Attendee API failed: HTTP ${response.status}`);
     if (response.status === 204 || response.headers.get('content-length') === '0') return undefined;
@@ -82,7 +82,7 @@ export class AttendeeMeeting implements MeetingPort {
       },
       ...(this.webhookUrl ? { webhooks: [{
         url: this.webhookUrl,
-        triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave'],
+        triggers: ['bot.state_change', 'transcript.update', 'participant_events.join_leave', 'bot_logs.update'],
       }] } : {}),
       ...(this.initialChatMessage?.trim() ? {
         bot_chat_message: { to: 'everyone', message: this.initialChatMessage },
@@ -104,11 +104,11 @@ export class AttendeeMeeting implements MeetingPort {
     if (!message.trim()) throw new Error('empty spoken message');
     const speechStarted = performance.now();
     // Attendee acknowledges queued TTS but does not prove that an unmuted client played it.
-    // Mirror first so muted/delayed speech never hides the answer or intended action.
+    // Start the chat mirror and audio together so chat latency does not delay speech.
+    const chatStarted = performance.now();
+    const mirror = this.sendStatus(message).then(() => true, () => false)
+      .finally(() => this.recordSpeechDuration?.('chat_mirror', performance.now() - chatStarted));
     try {
-      const chatStarted = performance.now();
-      try { await this.sendStatus(message); }
-      finally { this.recordSpeechDuration?.('chat_mirror', performance.now() - chatStarted); }
       try {
         if (this.streamSpeech) {
           const submissionStarted = performance.now();
@@ -132,16 +132,18 @@ export class AttendeeMeeting implements MeetingPort {
             });
           } finally { this.recordSpeechDuration?.('audio_submission', performance.now() - submissionStarted); }
         }
-      } catch {
-        throw new SpeechFallbackSentError();
+      } catch (error) {
+        if (await mirror) throw new SpeechFallbackSentError();
+        throw error;
       }
+      await mirror;
     } finally { this.recordSpeechDuration?.('speech_submission', performance.now() - speechStarted); }
   }
 
-  async sendStatus(message: string): Promise<void> {
+  async sendStatus(message: string, timeoutMs = 5_000): Promise<void> {
     if (!this.botId) throw new Error('not joined');
     if (!message.trim()) throw new Error('empty chat message');
-    await this.request(`/${this.botId}/send_chat_message`, { to: 'everyone', message });
+    await this.request(`/${this.botId}/send_chat_message`, { to: 'everyone', message }, timeoutMs);
   }
 
   /** No documented native hand raise API. NEVER replace a hand raise with speech. */

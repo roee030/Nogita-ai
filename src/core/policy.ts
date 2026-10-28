@@ -23,18 +23,31 @@ export function isRepositoryConnectionQuestion(current: string): boolean {
     || /\b(?:repo|repository|github)\b.{0,50}\b(?:connected|connect|access)\b/i.test(current);
 }
 
-export function isExplicitLeaveRequest(current: string): boolean {
-  const text = current.trim().toLowerCase();
-  return /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:leave|exit|disconnect)(?:\b|$)/.test(text)
-    || /\b(?:leave|exit|disconnect|end)\s+(?:this|the)\s+(?:call|meeting)\b/.test(text);
+/** A fast hint for evidence retrieval. Ambiguous questions can still use the planner's inspect_code action. */
+export function isRepositoryQuestion(current: string): boolean {
+  return /\b(?:repo|repository|github|code|source|implementation|function|module|file|commit|push(?:ed)?|branch|merge|pull request|authentication|authorization|login|log-in|sign-in|webhook|endpoint|provider|configuration|database|deployment|architecture)\b/i.test(current);
 }
+
+export function isExplicitLeaveRequest(current: string): boolean {
+  const text = current.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
+  if (current.trim().endsWith('?') && !/^(?:please\s+)?(?:can you|could you|would you)\s+/.test(text)) return false;
+  return /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:leave|exit|disconnect)(?:\s+(?:this|the)\s+(?:call|meeting))?(?:\s+(?:now|please))?$/.test(text)
+    || /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:drop|end)\s+(?:this|the)\s+(?:call|meeting)(?:\s+(?:now|please))?$/.test(text);
+}
+
+const initialAddress = /^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you)\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b))/i;
+const laterAddress = /[.!?;]\s+(?:(?:hey|hi|hello|okay|ok|please)\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b))/i;
 
 /** Prevent simple third-person name mentions from activating the bot. */
 export function directlyAddressesNogita(text: string): boolean {
   const s = text.trim();
-  return /^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you)\s+)?nogita\b[\s,.:!?-]*/i.test(s)
+  return initialAddress.test(s)
+    || laterAddress.test(s)
+    || /^(?:how are you|are you|can you|could you|would you|what do you think|how about you),?\s+nogita\b/i.test(s)
     || /\b(?:can you|could you|would you|what do you think|how about you),?\s+nogita[?!.]?$/i.test(s);
 }
 export function removeAddress(text: string): string {
-  return text.replace(/^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you)\s+)?nogita\b[\s,.:!?-]*/i, '').trim();
+  if (initialAddress.test(text)) return text.replace(initialAddress, '').trim();
+  if (laterAddress.test(text)) return text.slice(text.search(laterAddress)).replace(laterAddress, '').trim();
+  return text.replace(/,?\s*nogita\s*,?/i, ' ').replace(/\s+([?!.])/g, '$1').replace(/\s+/g, ' ').trim();
 }

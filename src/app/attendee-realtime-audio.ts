@@ -60,6 +60,10 @@ export function parseAttendeeAudioFrame(payload: unknown, expectedBotId?: string
 export function assembleNova3Turn(message: unknown, pendingFinalSegments: string[]): string | null {
   if (!message || typeof message !== 'object') return null;
   const result = message as Record<string, unknown>;
+  if (result.type === 'TurnInfo') {
+    return result.event === 'EndOfTurn' && typeof result.transcript === 'string'
+      ? result.transcript.trim().slice(0, 4000) || null : null;
+  }
   const channel = result.channel;
   const alternatives = channel && typeof channel === 'object'
     ? (channel as Record<string, unknown>).alternatives : undefined;
@@ -82,6 +86,10 @@ export interface RealtimeAudioOptions {
   baseUrl: string;
   signingSecret: string;
   deepgramApiKey: string;
+  sttMode?: 'nova3-multilingual' | 'flux-english';
+  ttsModel?: string;
+  /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
+  ttsSynthesisTimeoutMs?: number;
   onTranscript: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string }) => void | Promise<void>;
   onSpeechActivity?: (sessionId: string, participantUuid: string) => void;
@@ -113,8 +121,12 @@ interface RealtimeSession {
   participantIdentity: Map<string, { attendeeUserUuid?: string; displayName?: string }>;
   ttsSocket?: WebSocket;
   ttsOpening?: Promise<WebSocket>;
-  ttsPending?: { resolve: () => void; reject: (error: Error) => void; bytes: number };
+  ttsPending?: { resolve: () => void; reject: (error: Error) => void;
+    synthesisComplete: () => void; bytes: number };
   ttsCarry?: Buffer;
+  ttsQueue: Buffer[];
+  ttsFlushed: boolean;
+  ttsTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
 }
 
@@ -127,6 +139,9 @@ export class AttendeeRealtimeAudioHub {
 
   constructor(private readonly options: RealtimeAudioOptions) {
     if (!options.signingSecret.trim() || !options.deepgramApiKey.trim()) throw new Error('realtime audio credentials are required');
+    if (options.ttsModel && !/^aura-2-[a-z]+-en$/.test(options.ttsModel)) {
+      throw new Error('unsupported Deepgram TTS model');
+    }
     // Validate the origin and fixed route once at startup.
     createAttendeeAudioSocketUrl(options.baseUrl, options.signingSecret, 'configuration-check');
     this.now = options.now ?? Date.now;
@@ -230,21 +245,48 @@ export class AttendeeRealtimeAudioHub {
       const timeout = setTimeout(() => {
         if (session.ttsPending !== pending) return;
         pending.reject(new Error('Deepgram TTS timed out'));
-      }, 20_000);
+      }, this.options.ttsSynthesisTimeoutMs ?? 20_000);
       const settle = (error?: Error) => {
         clearTimeout(timeout);
-        if (session.ttsPending === pending) session.ttsPending = undefined;
+        if (session.ttsPending === pending) {
+          session.ttsPending = undefined;
+          session.ttsQueue.length = 0;
+          session.ttsFlushed = false;
+          if (session.ttsTimer) clearTimeout(session.ttsTimer);
+          session.ttsTimer = undefined;
+        }
         if (error) reject(error); else resolve();
       };
-      pending = { resolve: () => settle(), reject: settle, bytes: 0 };
+      pending = { resolve: () => settle(), reject: settle,
+        synthesisComplete: () => clearTimeout(timeout), bytes: 0 };
       session.ttsPending = pending;
       session.ttsCarry = Buffer.alloc(0);
+      session.ttsQueue.length = 0;
+      session.ttsFlushed = false;
       this.options.onUsage?.(sessionId, { ttsCharacters: text.length });
       try {
         tts.send(JSON.stringify({ type: 'Speak', text }));
         tts.send(JSON.stringify({ type: 'Flush' }));
       } catch { pending.reject(new Error('Deepgram TTS request could not be submitted')); }
     });
+  }
+
+  /** Stop synthesizing and forwarding this turn when a human starts a new turn. */
+  interruptSpeech(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    const pending = session?.ttsPending;
+    if (!session || !pending) return false;
+    session.ttsCarry = Buffer.alloc(0);
+    const interruptedSocket = session.ttsSocket;
+    // A late Flushed or audio frame belongs to the old turn, never the next one.
+    session.ttsSocket = undefined;
+    if (interruptedSocket?.readyState === WebSocket.OPEN) {
+      try { interruptedSocket.send(JSON.stringify({ type: 'Clear' })); }
+      catch { this.options.onError?.('deepgram_tts_clear_failed'); }
+    }
+    pending.reject(new Error('speech interrupted by participant'));
+    interruptedSocket?.close(1000, 'speech interrupted');
+    return true;
   }
 
   closeSession(sessionId: string): void {
@@ -328,11 +370,19 @@ export class AttendeeRealtimeAudioHub {
   }
 
   private openSpeaker(sessionId: string, session: RealtimeSession, participantUuid: string): SpeakerStream {
-    const url = new URL('wss://api.deepgram.com/v1/listen');
-    for (const [key, value] of Object.entries({ model: 'nova-3', language: 'multi', language_hint: 'en',
-      encoding: 'linear16', sample_rate: String(AUDIO_SAMPLE_RATE), channels: '1', interim_results: 'true',
-      endpointing: '500', smart_format: 'true' })) url.searchParams.set(key, value);
-    url.searchParams.append('language_hint', 'he');
+    const flux = this.options.sttMode === 'flux-english';
+    const url = new URL(flux ? 'wss://api.deepgram.com/v2/listen' : 'wss://api.deepgram.com/v1/listen');
+    if (flux) {
+      for (const [key, value] of Object.entries({ model: 'flux-general-en', encoding: 'linear16',
+        sample_rate: String(AUDIO_SAMPLE_RATE), eot_threshold: '0.8', eot_timeout_ms: '7000' })) {
+        url.searchParams.set(key, value);
+      }
+    } else {
+      for (const [key, value] of Object.entries({ model: 'nova-3', language: 'multi', language_hint: 'en',
+        encoding: 'linear16', sample_rate: String(AUDIO_SAMPLE_RATE), channels: '1', interim_results: 'true',
+        endpointing: '500', smart_format: 'true' })) url.searchParams.set(key, value);
+      url.searchParams.append('language_hint', 'he');
+    }
     const speaker: SpeakerStream = { socket: this.createWebSocket(url.toString(), {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
     }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now() };
@@ -347,9 +397,16 @@ export class AttendeeRealtimeAudioHub {
       if (isBinary) return;
       let message: unknown;
       try { message = JSON.parse(data.toString()) as unknown; } catch { return; }
-      if (hasNova3SpeechActivity(message)) this.options.onSpeechActivity?.(sessionId, participantUuid);
+      if (flux && message && typeof message === 'object' &&
+          (message as Record<string, unknown>).type === 'TurnInfo' &&
+          (message as Record<string, unknown>).event === 'StartOfTurn') this.interruptSpeech(sessionId);
+      if (flux ? hasFluxSpeechActivity(message) : hasNova3SpeechActivity(message)) {
+        this.interruptSpeech(sessionId);
+        this.options.onSpeechActivity?.(sessionId, participantUuid);
+      }
       const turn = assembleNova3Turn(message, speaker.finalSegments);
       if (turn && !(speaker.lastTurnText === turn && this.now() - (speaker.lastTurnAt ?? 0) < 2_000)) {
+        this.interruptSpeech(sessionId);
         speaker.lastTurnText = turn;
         speaker.lastTurnAt = this.now();
         void Promise.resolve(this.options.onTranscript(sessionId, participantUuid, turn,
@@ -368,7 +425,7 @@ export class AttendeeRealtimeAudioHub {
     if (session.ttsSocket?.readyState === WebSocket.OPEN) return session.ttsSocket;
     if (session.ttsOpening) return session.ttsOpening;
     const url = new URL('wss://api.deepgram.com/v1/speak');
-    url.searchParams.set('model', 'aura-2-thalia-en');
+    url.searchParams.set('model', this.options.ttsModel ?? 'aura-2-thalia-en');
     url.searchParams.set('encoding', 'linear16');
     url.searchParams.set('sample_rate', String(AUDIO_SAMPLE_RATE));
     const opening = new Promise<WebSocket>((resolve, reject) => {
@@ -390,6 +447,7 @@ export class AttendeeRealtimeAudioHub {
         resolve(tts);
       });
       tts.on('message', (data, isBinary) => {
+        if (session.ttsSocket !== tts) return;
         if (isBinary) {
           const pending = session.ttsPending;
           const attendee = session.attendeeSocket;
@@ -398,40 +456,31 @@ export class AttendeeRealtimeAudioHub {
           pending.bytes += audio.length;
           if (pending.bytes > MAX_TTS_TURN_BYTES || attendee.bufferedAmount > 1_000_000) {
             pending.reject(new Error('realtime audio output limit exceeded'));
-            session.ttsPending = undefined;
             tts.close(1013, 'audio output limit exceeded');
             return;
           }
           let carry = Buffer.concat([session.ttsCarry ?? Buffer.alloc(0), audio]);
-          try {
-            while (carry.length >= 3_200) {
-              this.sendAttendeeAudio(attendee, carry.subarray(0, 3_200));
-              carry = carry.subarray(3_200);
-            }
-          } catch {
-            pending.reject(new Error('Attendee audio output failed'));
-            session.ttsPending = undefined;
-            tts.close(1013, 'audio output failed');
-            return;
+          while (carry.length >= 3_200) {
+            session.ttsQueue.push(Buffer.from(carry.subarray(0, 3_200)));
+            carry = carry.subarray(3_200);
           }
           session.ttsCarry = carry;
+          this.drainAttendeeAudio(session);
           return;
         }
         let message: Record<string, unknown>;
         try { message = JSON.parse(data.toString()) as Record<string, unknown>; } catch { return; }
         if (message.type === 'Flushed' && session.ttsPending) {
           const carry = session.ttsCarry ?? Buffer.alloc(0);
-          if (carry.length > 0 && carry.length % 2 === 0 && session.attendeeSocket?.readyState === WebSocket.OPEN) {
-            try { this.sendAttendeeAudio(session.attendeeSocket, carry); }
-            catch {
-              session.ttsPending.reject(new Error('Attendee audio output failed'));
-              session.ttsPending = undefined;
-              tts.close(1013, 'audio output failed');
-              return;
-            }
+          if (carry.length > 0 && carry.length % 2 !== 0) {
+            session.ttsPending.reject(new Error('Deepgram TTS returned invalid PCM audio'));
+            return;
           }
+          if (carry.length > 0) session.ttsQueue.push(Buffer.from(carry));
           session.ttsCarry = Buffer.alloc(0);
-          session.ttsPending.resolve();
+          session.ttsFlushed = true;
+          session.ttsPending.synthesisComplete();
+          this.drainAttendeeAudio(session);
         } else if ((message.type === 'Warning' || message.type === 'Error') && session.ttsPending) {
           session.ttsPending.reject(new Error('Deepgram TTS reported an error'));
         }
@@ -440,13 +489,15 @@ export class AttendeeRealtimeAudioHub {
         clearTimeout(timeout);
         settled = true;
         reject(new Error('Deepgram TTS connection failed'));
-        session.ttsPending?.reject(new Error('Deepgram TTS connection failed'));
+        if (session.ttsSocket === tts) session.ttsPending?.reject(new Error('Deepgram TTS connection failed'));
       });
       tts.on('close', () => {
         clearTimeout(timeout);
         if (!settled) { settled = true; reject(new Error('Deepgram TTS connection closed')); }
-        if (session.ttsSocket === tts) session.ttsSocket = undefined;
-        session.ttsPending?.reject(new Error('Deepgram TTS connection closed'));
+        if (session.ttsSocket === tts) {
+          session.ttsSocket = undefined;
+          if (!session.ttsFlushed) session.ttsPending?.reject(new Error('Deepgram TTS connection closed'));
+        }
       });
     }).finally(() => { session.ttsOpening = undefined; });
     session.ttsOpening = opening;
@@ -466,6 +517,31 @@ export class AttendeeRealtimeAudioHub {
     attendee.send(JSON.stringify({ trigger: 'realtime_audio.bot_output', data: {
       chunk: audio.toString('base64'), sample_rate: AUDIO_SAMPLE_RATE,
     } }));
+  }
+
+  private drainAttendeeAudio(session: RealtimeSession): void {
+    if (session.ttsTimer || !session.ttsPending) return;
+    const audio = session.ttsQueue.shift();
+    if (!audio) {
+      if (session.ttsFlushed) session.ttsPending.resolve();
+      return;
+    }
+    const attendee = session.attendeeSocket;
+    if (!attendee || attendee.readyState !== WebSocket.OPEN) {
+      session.ttsPending.reject(new Error('Attendee audio output disconnected'));
+      return;
+    }
+    try { this.sendAttendeeAudio(attendee, audio); }
+    catch {
+      session.ttsPending.reject(new Error('Attendee audio output failed'));
+      return;
+    }
+    // Pace PCM near playback time so an interruption can discard audio still queued locally.
+    const durationMs = audio.length / (AUDIO_SAMPLE_RATE * 2) * 1000;
+    session.ttsTimer = setTimeout(() => {
+      session.ttsTimer = undefined;
+      this.drainAttendeeAudio(session);
+    }, durationMs);
   }
 
   private closeProviderSockets(session: RealtimeSession): void {
@@ -489,7 +565,8 @@ export class AttendeeRealtimeAudioHub {
   }
 
   private newSession(sessionId: string): RealtimeSession {
-    return { sessionId, pendingFrames: [], speakers: new Map(), participantIdentity: new Map(), closed: false };
+    return { sessionId, pendingFrames: [], speakers: new Map(), participantIdentity: new Map(),
+      ttsQueue: [], ttsFlushed: false, closed: false };
   }
 }
 
@@ -503,4 +580,11 @@ export function hasNova3SpeechActivity(message: unknown): boolean {
   const first = Array.isArray(alternatives) ? alternatives[0] : undefined;
   return !!first && typeof first === 'object' && typeof (first as Record<string, unknown>).transcript === 'string'
     && ((first as Record<string, unknown>).transcript as string).trim().length > 0;
+}
+
+export function hasFluxSpeechActivity(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const turn = message as Record<string, unknown>;
+  return turn.type === 'TurnInfo' && (turn.event === 'StartOfTurn' || turn.event === 'TurnResumed' ||
+    (turn.event === 'Update' && typeof turn.transcript === 'string' && !!turn.transcript.trim()));
 }

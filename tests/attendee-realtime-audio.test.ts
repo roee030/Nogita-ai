@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { once } from 'node:events';
+import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
-import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasNova3SpeechActivity, parseAttendeeAudioFrame,
+import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasFluxSpeechActivity, hasNova3SpeechActivity, parseAttendeeAudioFrame,
   verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub } from '../src/app/attendee-realtime-audio.ts';
 
 test('audio socket URL is WSS-only and signed for one meeting session', () => {
@@ -47,6 +48,77 @@ test('Nova-3 ignores interim hypotheses and emits one assembled stable turn per 
   assert.deepEqual(segments, []);
 });
 
+test('Flux emits one completed speaker turn only on EndOfTurn', () => {
+  const segments: string[] = [];
+  assert.equal(assembleNova3Turn({ type: 'TurnInfo', event: 'Update', turn_index: 3,
+    transcript: 'Nogita, please' }, segments), null);
+  assert.equal(assembleNova3Turn({ type: 'TurnInfo', event: 'EndOfTurn', turn_index: 3,
+    transcript: 'Nogita, please open a task' }, segments), 'Nogita, please open a task');
+  assert.deepEqual(segments, []);
+});
+
+test('Flux resets the turn guard when speech starts or resumes', () => {
+  assert.equal(hasFluxSpeechActivity({ type: 'TurnInfo', event: 'StartOfTurn', transcript: '' }), true);
+  assert.equal(hasFluxSpeechActivity({ type: 'TurnInfo', event: 'Update', transcript: 'still speaking' }), true);
+  assert.equal(hasFluxSpeechActivity({ type: 'TurnInfo', event: 'EndOfTurn', transcript: 'done' }), false);
+});
+
+test('English Flux socket waits for EndOfTurn and keeps multilingual Nova-3 as the default', async () => {
+  for (const sttMode of [undefined, 'flux-english'] as const) {
+    class FakeStt extends EventEmitter {
+      readyState: number = WebSocket.CONNECTING;
+      send(): void { /* PCM reaches the fake recognizer. */ }
+      close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+    }
+    const server = createServer();
+    const received: string[] = [];
+    let created!: (value: { url: string; socket: FakeStt }) => void;
+    const sttCreated = new Promise<{ url: string; socket: FakeStt }>(resolve => { created = resolve; });
+    const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+      signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode,
+      onTranscript: (_sessionId, _participantUuid, transcript) => { received.push(transcript); },
+      createWebSocket: url => {
+        const socket = new FakeStt();
+        created({ url, socket });
+        queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+        return socket as unknown as WebSocket;
+      } });
+    hub.register('stt-mode-test');
+    hub.bindBot('stt-mode-test', 'bot_test');
+    server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+      'test-secret', 'stt-mode-test'));
+    signed.protocol = 'ws:';
+    signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const client = new WebSocket(signed);
+    try {
+      await once(client, 'open');
+      client.send(JSON.stringify({ bot_id: 'bot_test', trigger: 'realtime_audio.per_participant', data: {
+        participant_uuid: 'participant_one', sample_rate: 16000, chunk: Buffer.alloc(3200).toString('base64'),
+      } }));
+      const { url, socket } = await sttCreated;
+      assert.match(url, sttMode === 'flux-english' ? /\/v2\/listen\?model=flux-general-en/ : /\/v1\/listen\?model=nova-3/);
+      const interim = sttMode === 'flux-english'
+        ? { type: 'TurnInfo', event: 'Update', transcript: 'Nogita, wait' }
+        : { type: 'Results', is_final: false, speech_final: false,
+          channel: { alternatives: [{ transcript: 'Nogita, wait' }] } };
+      socket.emit('message', Buffer.from(JSON.stringify(interim)), false);
+      assert.deepEqual(received, []);
+      const completed = sttMode === 'flux-english'
+        ? { type: 'TurnInfo', event: 'EndOfTurn', turn_index: 1, transcript: 'Nogita, answer me' }
+        : { type: 'Results', is_final: true, speech_final: true,
+          channel: { alternatives: [{ transcript: 'Nogita, answer me' }] } };
+      socket.emit('message', Buffer.from(JSON.stringify(completed)), false);
+      socket.emit('message', Buffer.from(JSON.stringify(completed)), false);
+      assert.deepEqual(received, ['Nogita, answer me']);
+    } finally {
+      client.terminate(); hub.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }
+});
+
 test('Nova-3 exposes only non-empty interim/final-segment speech activity to the quiet-window guard', () => {
   assert.equal(hasNova3SpeechActivity({ is_final: false, speech_final: false,
     channel: { alternatives: [{ transcript: 'I am still talking' }] } }), true);
@@ -85,4 +157,239 @@ test('signed Attendee socket reconnect restores only a bot/session pair confirme
   client.close();
   hub.close();
   await new Promise<void>(resolve => server.close(() => resolve()));
+});
+
+test('interrupting speech clears pending Deepgram audio and releases the spoken turn', async () => {
+  class FakeTts extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    sent: string[] = [];
+    send(value: string): void { this.sent.push(value); }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  const tts = new FakeTts();
+  let ttsUrl = '';
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', ttsModel: 'aura-2-luna-en', onTranscript: () => {},
+    createWebSocket: url => {
+      ttsUrl = url;
+      queueMicrotask(() => { tts.readyState = WebSocket.OPEN; tts.emit('open'); });
+      return tts as unknown as WebSocket;
+    } });
+  hub.register('interrupt-test');
+  hub.bindBot('interrupt-test', 'bot_interruption');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'interrupt-test'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  await once(client, 'open');
+  const speaking = hub.speak('interrupt-test', 'This answer should stop.');
+  void speaking.catch(() => undefined);
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.match(ttsUrl, /\/v1\/speak\?model=aura-2-luna-en/);
+    assert.equal(tts.sent.some(message => message.includes('Speak')), true);
+    assert.equal(hub.interruptSpeech('interrupt-test'), true);
+    await assert.rejects(speaking, /interrupted/);
+    assert.equal(tts.sent.at(-1), JSON.stringify({ type: 'Clear' }));
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('human interruption drops queued Attendee audio instead of sending the whole answer ahead', async () => {
+  class FakeTts extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Deepgram accepts the speech request. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  const sockets: FakeTts[] = [];
+  const frames: unknown[] = [];
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    createWebSocket: () => {
+      const socket = new FakeTts();
+      sockets.push(socket);
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('paced-output-test');
+  hub.bindBot('paced-output-test', 'bot_paced');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'paced-output-test'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  client.on('message', raw => frames.push(JSON.parse(raw.toString())));
+  await once(client, 'open');
+  const speaking = hub.speak('paced-output-test', 'A long answer that should stop when I speak.');
+  void speaking.catch(() => undefined);
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    sockets[0]!.emit('message', Buffer.alloc(9_600, 1), true);
+    sockets[0]!.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await new Promise<void>(resolve => setTimeout(resolve, 30));
+    assert.equal(frames.length, 1);
+    assert.equal(hub.interruptSpeech('paced-output-test'), true);
+    await assert.rejects(speaking, /interrupted/);
+    await new Promise<void>(resolve => setTimeout(resolve, 250));
+    assert.equal(frames.length, 1);
+    const resumed = hub.speak('paced-output-test', 'A new short answer.');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(sockets.length, 2);
+    sockets[1]!.emit('message', Buffer.alloc(6_400, 2), true);
+    sockets[1]!.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await resumed;
+    assert.equal(frames.length, 3);
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('late audio and Flushed from an interrupted TTS turn cannot finish the next turn', async () => {
+  class FakeTts extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Accept request. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; }
+  }
+  const server = createServer();
+  const sockets: FakeTts[] = [];
+  const frames: unknown[] = [];
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    createWebSocket: () => {
+      const socket = new FakeTts();
+      sockets.push(socket);
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('stale-output-test');
+  hub.bindBot('stale-output-test', 'bot_stale');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'stale-output-test'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  client.on('message', raw => frames.push(JSON.parse(raw.toString())));
+  await once(client, 'open');
+  try {
+    const first = hub.speak('stale-output-test', 'First answer.');
+    void first.catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(hub.interruptSpeech('stale-output-test'), true);
+    await assert.rejects(first, /interrupted/);
+    const second = hub.speak('stale-output-test', 'Second answer.');
+    let secondSettled = false;
+    void second.finally(() => { secondSettled = true; }).catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(sockets.length, 2);
+    sockets[0]!.emit('message', Buffer.alloc(3_200, 1), true);
+    sockets[0]!.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    sockets[0]!.emit('close');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(secondSettled, false);
+    assert.equal(frames.length, 0);
+    sockets[1]!.emit('message', Buffer.alloc(3_200, 2), true);
+    sockets[1]!.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await second;
+    assert.equal(frames.length, 1);
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('completed synthesis is not timed out while its paced audio is still playing', async () => {
+  class FakeTts extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Accept request. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  const tts = new FakeTts();
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', ttsSynthesisTimeoutMs: 40,
+    onTranscript: () => {}, createWebSocket: () => {
+      queueMicrotask(() => { tts.readyState = WebSocket.OPEN; tts.emit('open'); });
+      return tts as unknown as WebSocket;
+    } });
+  hub.register('long-playback-test');
+  hub.bindBot('long-playback-test', 'bot_long_playback');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'long-playback-test'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  await once(client, 'open');
+  try {
+    const speaking = hub.speak('long-playback-test', 'A longer spoken answer.');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    tts.emit('message', Buffer.alloc(6_400, 1), true);
+    tts.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await speaking;
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('default multilingual speech activity interrupts an in-progress spoken answer', async () => {
+  class FakeProviderSocket extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Accept audio and speech requests. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  let stt!: FakeProviderSocket;
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    createWebSocket: url => {
+      const socket = new FakeProviderSocket();
+      if (url.includes('/listen')) stt = socket;
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('nova-barge-in');
+  hub.bindBot('nova-barge-in', 'bot_nova');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'nova-barge-in'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  await once(client, 'open');
+  try {
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: Buffer.alloc(3200).toString('base64'),
+    } }));
+    while (!stt) await new Promise<void>(resolve => setImmediate(resolve));
+    const speaking = hub.speak('nova-barge-in', 'A long answer.');
+    void speaking.catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'Results', is_final: false, speech_final: false,
+      channel: { alternatives: [{ transcript: 'Nogita, stop' }] } })), false);
+    await assert.rejects(speaking, /interrupted/);
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('realtime audio rejects unsupported voice model identifiers before joining a meeting', () => {
+  assert.throws(() => new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', ttsModel: 'flux-alexis-en',
+    onTranscript: () => {} }), /TTS model/i);
 });

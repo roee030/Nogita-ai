@@ -89,6 +89,19 @@ export class AttendeeCommandRouter {
     return this.accept(request);
   }
 
+  /** Flux has already identified the end of the speaker's turn. */
+  acceptCompletedTurn(request: AttendeeTranscriptRequest): Promise<void> {
+    const state = this.sessions.get(request.sessionId);
+    if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
+    const completion = this.accept(request);
+    const entry = state.buffers.get(request.speakerUuid);
+    if (entry) {
+      this.cancel(entry.timer);
+      void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
+    }
+    return completion;
+  }
+
   /** Keep waiting while live interim recognition shows the speaker has resumed. */
   noteSpeechActivity(sessionId: string, speakerUuid: string): void {
     const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
@@ -123,6 +136,10 @@ export class AttendeeCommandRouter {
         if (directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave) {
           await this.onLeave(sessionId);
         } else {
+          if (directlyAddressesNogita(text)) {
+            try { await this.sendStatus(sessionId, 'I heard you. I’m checking that now.'); }
+            catch (error) { this.onError(error); }
+          }
           await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
         }
       }

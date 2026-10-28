@@ -1,24 +1,80 @@
-import type { CodePort, Evidence } from '../core/contracts.ts';
+import { CodeLookupRateLimitError, type CodePort, type Evidence } from '../core/contracts.ts';
+import { gunzipSync } from 'node:zlib';
 
 interface TreeEntry { path: string; type: string; sha: string; size?: number }
 interface IndexedFile { path: string; text: string; lower: string }
+interface IndexBuild { files: IndexedFile[]; skippedLargeFiles: number }
 interface RepositoryTree { sha: string; tree: TreeEntry[]; truncated?: boolean }
 interface GitBlob { content?: string; encoding?: string }
 
 const allowedExtensions = /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|java|cs|rb|rs|php|md|json|yaml|yml|sql|sh|toml|xml|html|css|scss|vue|svelte|proto)$/i;
+const allowedNames = new Set(['dockerfile', 'makefile', 'procfile', '.gitignore', '.dockerignore', '.editorconfig',
+  '.node-version', 'license', 'copying', 'notice']);
 const excludedPaths = /(^|\/)(?:node_modules|dist|build|\.git|vendor|coverage|\.next|\.turbo|target|out|\.superpowers)(\/|$)|(^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|[^/]+\.lock)$/i;
 const excludedCredentialPaths = /(?:^|\/)(?:\.env(?:$|[._-][^/]*)|[^/]*(?:secret|credential|service[-_]?account|private[-_]?key|id_rsa)[^/]*|[^/]+\.(?:pem|key|p12|pfx|keystore))(?:\/|$)/i;
 const excludedFiles = /(?:\.min\.(?:js|css)|\.map)$/i;
 const stopWords = new Set(['a','an','and','are','as','at','be','but','by','can','code','do','does','for','from','how','i','in','is','it','of','on','or','our','please','repo','repository','show','tell','that','the','this','to','what','when','where','which','who','why','with','you']);
-const MAX_FILES = 300;
-const MAX_FILE_BYTES = 100 * 1024;
-const MAX_INDEX_BYTES = 5 * 1024 * 1024;
+const searchAliases: Record<string, readonly string[]> = {
+  configuration: ['config'], environment: ['env'], providers: ['provider'],
+  processing: ['process'], repeated: ['repeat'], conversations: ['conversation'],
+};
+const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_EVIDENCE = 4;
 const MAX_EXCERPT_CHARS = 2400;
 const FETCH_CONCURRENCY = 8;
+const DEFAULT_INDEX_TTL_MS = 30_000;
+const MAX_TREE_NODES = 10_000;
+const MAX_TREE_ENTRIES = 100_000;
+const MAX_INDEX_FILES = 10_000;
+const MAX_INDEX_SOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSED_BYTES = 16 * 1024 * 1024;
+const MAX_ARCHIVE_UNPACKED_BYTES = 64 * 1024 * 1024;
+const MAX_GIT_ADVERTISEMENT_BYTES = 1024 * 1024;
+const MAX_GITHUB_JSON_BYTES = 16 * 1024 * 1024;
+
+interface GitHubCommit {
+  sha?: string;
+  commit?: { message?: string; author?: { date?: string }; tree?: { sha?: string } };
+}
+interface IndexedRevision { files: IndexedFile[]; commitSha: string }
+
+function isSupportedTextFile(path: string): boolean {
+  return allowedExtensions.test(path) || allowedNames.has(path.split('/').at(-1)?.toLocaleLowerCase() ?? '');
+}
+
+function isRateLimited(response: Response): boolean {
+  return response.status === 429 ||
+    (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0');
+}
+
+function isHistoryQuestion(query: string): boolean {
+  const change = /\b(?:push(?:ed|es)?|commit(?:s|ted)?|merge(?:d|s)?|pull request|pr|changes?|changed)\b/i.test(query);
+  const recent = /\b(?:last|latest|recent|most recent|what changed|what did we)\b/i.test(query);
+  return change && recent;
+}
+
+function requestedRef(query: string, fallback: string): string {
+  const match = query.match(/\bbranch\s+([a-z0-9._/-]{1,100})/i)
+    ?? query.match(/\b(?:to|on|into)\s+(?:the\s+)?(main|master|develop|dev|[a-z0-9._-]+\/[a-z0-9._/-]+)\b/i);
+  return match?.[1]?.replace(/[.,;:!?]+$/, '') || fallback;
+}
 
 function queryTerms(query: string): string[] {
-  return [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}_]{2,}/gu)?.filter(term => !stopWords.has(term)) ?? [])];
+  const words = query.toLocaleLowerCase().match(/[\p{L}\p{N}_]{2,}/gu)?.filter(term => !stopWords.has(term)) ?? [];
+  return [...new Set(words.flatMap(word => [word, ...(searchAliases[word] ?? [])]))];
+}
+
+function redactSource(text: string): string {
+  const withoutPrivateKeys = text.replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
+    '[REDACTED]');
+  return withoutPrivateKeys.split(/\r?\n/).map(line => {
+    const assignment = line.match(/^(.*?\b[\w-]*(?:token|secret|password|credential|api[_-]?key|private[_-]?key|client[_-]?key)[\w-]*\b["']?\s*[:=])/i);
+    if (assignment) return `${assignment[1]} [REDACTED]`;
+    return line.replace(/(["'`])([\w/+.-]{24,})\1/g, '$1[REDACTED]$1')
+      .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g,
+      '[REDACTED]')
+      .replace(/\bBearer\s+[A-Za-z0-9._~-]{20,}\b/gi, 'Bearer [REDACTED]');
+  }).join('\n');
 }
 
 function countOccurrences(text: string, term: string): number {
@@ -64,18 +120,96 @@ function excerptFor(text: string, terms: readonly string[]): string {
   return chunks.join('\n…\n');
 }
 
+function tarString(bytes: Buffer): string {
+  return bytes.toString('utf8').split('\0', 1)[0] ?? '';
+}
+
+function paxPath(bytes: Buffer): string | undefined {
+  let offset = 0;
+  let path: string | undefined;
+  while (offset < bytes.length) {
+    const space = bytes.indexOf(32, offset);
+    if (space < 0) throw new Error('GitHub archive contains an invalid PAX header');
+    const length = Number(bytes.toString('ascii', offset, space));
+    if (!Number.isSafeInteger(length) || length <= space - offset + 1 || offset + length > bytes.length) {
+      throw new Error('GitHub archive contains an invalid PAX record');
+    }
+    const record = bytes.toString('utf8', space + 1, offset + length - 1);
+    if (record.startsWith('path=')) path = record.slice(5);
+    offset += length;
+  }
+  return path;
+}
+
+function indexTarArchive(compressed: Buffer): IndexBuild {
+  let archive: Buffer;
+  try { archive = gunzipSync(compressed, { maxOutputLength: MAX_ARCHIVE_UNPACKED_BYTES }); }
+  catch { throw new Error('GitHub returned an invalid or oversized archive'); }
+  const files: IndexedFile[] = [];
+  let skippedLargeFiles = 0;
+  let offset = 0;
+  let entries = 0;
+  let extendedPath: string | undefined;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every(byte => byte === 0)) return {
+      files: files.sort((a, b) => a.path.localeCompare(b.path)), skippedLargeFiles,
+    };
+    if (++entries > MAX_TREE_NODES) throw new Error('GitHub archive has too many entries');
+    const sizeText = tarString(header.subarray(124, 136)).trim();
+    const size = Number.parseInt(sizeText, 8);
+    if (!/^[0-7]+$/.test(sizeText) || !Number.isSafeInteger(size) || size < 0) {
+      throw new Error('GitHub archive contains an invalid file size');
+    }
+    const next = offset + 512 + Math.ceil(size / 512) * 512;
+    if (next > archive.length) throw new Error('GitHub archive contains an incomplete entry');
+    const data = archive.subarray(offset + 512, offset + 512 + size);
+    const type = tarString(header.subarray(156, 157));
+    if (type === 'x') extendedPath = paxPath(data);
+    else if (type === '' || type === '0') {
+      const prefix = tarString(header.subarray(345, 500));
+      const name = tarString(header.subarray(0, 100));
+      const archivePath = extendedPath ?? (prefix ? `${prefix}/${name}` : name);
+      extendedPath = undefined;
+      const segments = archivePath.split('/');
+      if (segments.length < 2 || segments.some(segment => segment === '..' || segment === '.') ||
+          archivePath.includes('\\') || archivePath.startsWith('/')) {
+        throw new Error('GitHub archive contains an invalid source path');
+      }
+      const path = segments.slice(1).join('/');
+      if (isSupportedTextFile(path) && !excludedPaths.test(path) && !excludedCredentialPaths.test(path) &&
+          !excludedFiles.test(path)) {
+        if (size <= MAX_FILE_BYTES) {
+          const text = redactSource(data.toString('utf8'));
+          files.push({ path, text, lower: text.toLocaleLowerCase() });
+        } else skippedLargeFiles++;
+      }
+    } else extendedPath = undefined;
+    offset = next;
+  }
+  throw new Error('GitHub archive is missing its end marker');
+}
+
 export class GitHubCode implements CodePort {
   readonly name = 'github';
   private readonly api = 'https://api.github.com';
   private indexedSha?: string;
-  private indexedFiles?: IndexedFile[];
-  private indexing?: { sha: string; promise: Promise<IndexedFile[]> };
+  private indexedBuild?: IndexBuild;
+  private indexedCommitSha?: string;
+  private indexExpiresAt = 0;
+  private indexing?: { sha: string; promise: Promise<IndexBuild> };
+  private readonly indexTtlMs: number;
+  private readonly now: () => number;
 
   constructor(private readonly config: { token?: string; publicRepo?: boolean; owner: string; repo: string; ref: string },
-              private readonly http: typeof fetch = fetch) {
+              private readonly http: typeof fetch = fetch,
+              options: { indexTtlMs?: number; now?: () => number } = {}) {
     if ((!config.token && config.publicRepo !== true) || !/^[a-zA-Z0-9_-]+$/.test(config.owner) || !/^[\w.-]+$/.test(config.repo) || !/^[\w./-]+$/.test(config.ref)) {
       throw new Error('GitHub configuration invalid');
     }
+    this.indexTtlMs = options.indexTtlMs ?? (config.token ? DEFAULT_INDEX_TTL_MS : 5 * 60_000);
+    this.now = options.now ?? Date.now;
+    if (!Number.isFinite(this.indexTtlMs) || this.indexTtlMs < 0) throw new Error('invalid GitHub index TTL');
   }
 
   private async get<T>(path: string): Promise<T> {
@@ -89,17 +223,44 @@ export class GitHubCode implements CodePort {
       headers,
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) throw new Error(`GitHub API failed: HTTP ${res.status}`);
-    try { return await res.json() as T; }
+    if (!res.ok) {
+      if (isRateLimited(res)) {
+        throw new CodeLookupRateLimitError();
+      }
+      throw new Error(`GitHub API failed: HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error('GitHub API returned invalid JSON');
+    const declaredSize = Number(res.headers.get('content-length'));
+    if (declaredSize > MAX_GITHUB_JSON_BYTES) throw new Error('GitHub API response size limit exceeded');
+    const reader = res.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_GITHUB_JSON_BYTES) {
+        void reader.cancel().catch(() => undefined);
+        throw new Error('GitHub API response size limit exceeded');
+      }
+      chunks.push(Buffer.from(value));
+    }
+    try { return JSON.parse(Buffer.concat(chunks, total).toString('utf8')) as T; }
     catch { throw new Error('GitHub API returned invalid JSON'); }
   }
 
-  private async buildIndex(tree: RepositoryTree): Promise<IndexedFile[]> {
-    const candidates = tree.tree.filter(entry => entry.type === 'blob' && allowedExtensions.test(entry.path)
+  private async buildIndex(tree: RepositoryTree): Promise<IndexBuild> {
+    const supported = tree.tree.filter(entry => entry.type === 'blob' && isSupportedTextFile(entry.path)
       && !excludedPaths.test(entry.path) && !excludedCredentialPaths.test(entry.path) && !excludedFiles.test(entry.path)
-      && Number.isSafeInteger(entry.size) && entry.size! >= 0 && entry.size! <= MAX_FILE_BYTES);
-    if (candidates.length > MAX_FILES || candidates.reduce((total, entry) => total + entry.size!, 0) > MAX_INDEX_BYTES) {
-      throw new Error('GitHub repository exceeds the bounded code-index limits');
+    );
+    if (supported.some(entry => !Number.isSafeInteger(entry.size) || entry.size! < 0)) {
+      throw new Error('GitHub repository contains an invalid source file size');
+    }
+    const candidates = supported.filter(entry => entry.size! <= MAX_FILE_BYTES);
+    const skippedLargeFiles = supported.length - candidates.length;
+    if (candidates.length > MAX_INDEX_FILES ||
+        candidates.reduce((bytes, entry) => bytes + entry.size!, 0) > MAX_INDEX_SOURCE_BYTES) {
+      throw new Error('GitHub repository index size limit exceeded');
     }
     if (candidates.some(entry => !/^[a-f0-9]{40,64}$/i.test(entry.sha))) {
       throw new Error('GitHub tree contains an invalid blob SHA');
@@ -118,37 +279,185 @@ export class GitHubCode implements CodePort {
         if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
           throw new Error(`GitHub returned an invalid blob encoding for ${entry.path}`);
         }
-        const text = Buffer.from(encoded, 'base64').toString('utf8');
-        if (Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES) {
+        const decoded = Buffer.from(encoded, 'base64');
+        if (decoded.length > MAX_FILE_BYTES) {
           throw new Error(`GitHub blob exceeded its declared size for ${entry.path}`);
         }
+        const text = redactSource(decoded.toString('utf8'));
         files.push({ path: entry.path, text, lower: text.toLocaleLowerCase() });
       }
     };
     await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, candidates.length) }, worker));
-    return files.sort((a, b) => a.path.localeCompare(b.path));
+    return { files: files.sort((a, b) => a.path.localeCompare(b.path)), skippedLargeFiles };
   }
 
-  private async loadIndex(): Promise<IndexedFile[]> {
+  private async buildPublicArchiveIndex(commitSha: string): Promise<IndexBuild> {
+    const { owner, repo } = this.config;
+    const response = await this.http(`https://codeload.github.com/${owner}/${repo}/tar.gz/${commitSha}`, {
+      redirect: 'manual', signal: AbortSignal.timeout(20_000),
+    });
+    if (isRateLimited(response)) throw new CodeLookupRateLimitError();
+    if (response.status >= 300 && response.status < 400) throw new Error('GitHub archive redirect is not trusted');
+    if (!response.ok || !response.body) throw new Error(`GitHub archive failed: HTTP ${response.status}`);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > MAX_ARCHIVE_COMPRESSED_BYTES) throw new Error('GitHub archive exceeds compressed size limit');
+        chunks.push(Buffer.from(value));
+      }
+    } finally { reader.releaseLock(); }
+    return indexTarArchive(Buffer.concat(chunks, total));
+  }
+
+  private async resolvePublicRef(): Promise<string> {
     const { owner, repo, ref } = this.config;
-    const tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
-    if (tree.truncated) throw new Error('GitHub tree truncated; bounded full-repository index unavailable');
+    if (/^[a-f0-9]{40}$/i.test(ref)) return ref;
+    const response = await this.http(`https://github.com/${owner}/${repo}.git/info/refs?service=git-upload-pack`, {
+      headers: { 'User-Agent': 'Nogita-V1' }, redirect: 'manual', signal: AbortSignal.timeout(10_000),
+    });
+    if (isRateLimited(response)) throw new CodeLookupRateLimitError();
+    if (!response.ok || !response.body ||
+        response.headers.get('content-type')?.split(';', 1)[0] !== 'application/x-git-upload-pack-advertisement') {
+      throw new Error(`GitHub Git reference discovery failed: HTTP ${response.status}`);
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > MAX_GIT_ADVERTISEMENT_BYTES) throw new Error('GitHub Git reference list exceeds size limit');
+        chunks.push(Buffer.from(value));
+      }
+    } finally { reader.releaseLock(); }
+    const advertisement = Buffer.concat(chunks, total);
+    const refs = new Map<string, string>();
+    let offset = 0;
+    while (offset < advertisement.length) {
+      if (offset + 4 > advertisement.length) throw new Error('GitHub Git reference list is malformed');
+      const lengthText = advertisement.toString('ascii', offset, offset + 4);
+      if (!/^[a-f0-9]{4}$/i.test(lengthText)) throw new Error('GitHub Git reference list is malformed');
+      const length = Number.parseInt(lengthText, 16);
+      if (length === 0 || length === 1 || length === 2) { offset += 4; continue; }
+      if (length < 4 || offset + length > advertisement.length) throw new Error('GitHub Git reference list is malformed');
+      const line = advertisement.toString('utf8', offset + 4, offset + length);
+      const match = line.match(/^([a-f0-9]{40}) (refs\/(?:heads|tags)\/[^\0\n]+)(?:\0[^\n]*)?\n?$/i);
+      if (match) refs.set(match[2]!, match[1]!);
+      offset += length;
+    }
+    const resolved = refs.get(`refs/heads/${ref}`) ?? refs.get(`refs/tags/${ref}^{}`) ??
+      refs.get(`refs/tags/${ref}`);
+    if (!resolved) throw new Error('GitHub public ref not found');
+    return resolved;
+  }
+
+  private async loadPublicIndex(): Promise<IndexedRevision> {
+    const commitSha = await this.resolvePublicRef();
+    if (this.indexedSha === commitSha && this.indexedBuild) {
+      this.indexedCommitSha = commitSha;
+      this.indexExpiresAt = this.now() + this.indexTtlMs;
+      return { files: this.indexedBuild.files, commitSha };
+    }
+    if (this.indexing?.sha === commitSha) return { files: (await this.indexing.promise).files, commitSha };
+    const pending = { sha: commitSha, promise: this.buildPublicArchiveIndex(commitSha) };
+    this.indexing = pending;
+    try {
+      const build = await pending.promise;
+      if (this.indexing === pending) {
+        this.indexedSha = commitSha;
+        this.indexedBuild = build;
+        this.indexedCommitSha = commitSha;
+        this.indexExpiresAt = this.now() + this.indexTtlMs;
+        this.indexing = undefined;
+      }
+      return { files: build.files, commitSha };
+    } catch (error) {
+      if (this.indexing === pending) this.indexing = undefined;
+      throw error;
+    }
+  }
+
+  private async expandTree(rootSha: string): Promise<RepositoryTree> {
+    const { owner, repo } = this.config;
+    const pending: Array<{ sha: string; prefix: string }> = [{ sha: rootSha, prefix: '' }];
+    const entries: TreeEntry[] = [];
+    let visited = 0;
+    let totalEntries = 0;
+    while (pending.length) {
+      if (++visited > MAX_TREE_NODES) throw new Error('GitHub repository tree exceeds traversal limit');
+      const current = pending.pop()!;
+      const tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${current.sha}`);
+      if (tree.sha !== current.sha || tree.truncated || !Array.isArray(tree.tree)) {
+        throw new Error('GitHub returned an incomplete subtree');
+      }
+      totalEntries += tree.tree.length;
+      if (totalEntries > MAX_TREE_ENTRIES) {
+        throw new Error('GitHub repository tree entry limit exceeded');
+      }
+      for (const entry of tree.tree) {
+        if (!entry || !entry.path || entry.path === '.' || entry.path === '..' || /[\\/]/.test(entry.path) ||
+            !/^[a-f0-9]{40,64}$/i.test(entry.sha)) throw new Error('GitHub returned an invalid tree entry');
+        const path = `${current.prefix}${entry.path}`;
+        if (entry.type === 'tree') pending.push({ sha: entry.sha, prefix: `${path}/` });
+        else if (entry.type === 'blob') entries.push({ ...entry, path });
+      }
+    }
+    return { sha: rootSha, tree: entries, truncated: false };
+  }
+
+  private async loadIndex(): Promise<IndexedRevision> {
+    if (this.indexedBuild && this.indexedCommitSha && this.now() < this.indexExpiresAt) {
+      return { files: this.indexedBuild.files, commitSha: this.indexedCommitSha };
+    }
+    if (!this.config.token && this.config.publicRepo === true) return this.loadPublicIndex();
+    const { owner, repo, ref } = this.config;
+    let tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
     if (!/^[a-f0-9]{40,64}$/i.test(tree.sha) || !Array.isArray(tree.tree)) {
       throw new Error('GitHub returned an invalid repository tree');
     }
-    if (this.indexedSha === tree.sha && this.indexedFiles) return this.indexedFiles;
-    if (this.indexing?.sha === tree.sha) return this.indexing.promise;
+    if (tree.tree.length > MAX_TREE_ENTRIES) throw new Error('GitHub repository tree entry limit exceeded');
+    const commit = await this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`);
+    const commitSha = commit.sha;
+    const commitTreeSha = commit.commit?.tree?.sha;
+    if (!commitSha || !/^[a-f0-9]{40}$/i.test(commitSha) || !commitTreeSha ||
+        !/^[a-f0-9]{40,64}$/i.test(commitTreeSha)) {
+      throw new Error('GitHub returned an invalid commit revision');
+    }
+    if (commitTreeSha !== tree.sha) {
+      tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${commitTreeSha}?recursive=1`);
+      if (tree.sha !== commitTreeSha || !Array.isArray(tree.tree)) {
+        throw new Error('GitHub returned an incomplete pinned repository tree');
+      }
+    }
+    if (tree.truncated) tree = await this.expandTree(tree.sha);
+    if (this.indexedSha === tree.sha && this.indexedBuild) {
+      this.indexedCommitSha = commitSha;
+      this.indexExpiresAt = this.now() + this.indexTtlMs;
+      return { files: this.indexedBuild.files, commitSha };
+    }
+    if (this.indexing?.sha === tree.sha) {
+      return { files: (await this.indexing.promise).files, commitSha };
+    }
 
     const pending = { sha: tree.sha, promise: this.buildIndex(tree) };
     this.indexing = pending;
     try {
-      const files = await pending.promise;
+      const build = await pending.promise;
       if (this.indexing === pending) {
         this.indexedSha = tree.sha;
-        this.indexedFiles = files;
+        this.indexedBuild = build;
+        this.indexedCommitSha = commitSha;
+        this.indexExpiresAt = this.now() + this.indexTtlMs;
         this.indexing = undefined;
       }
-      return files;
+      return { files: build.files, commitSha };
     } catch (error) {
       if (this.indexing === pending) this.indexing = undefined;
       throw error;
@@ -159,10 +468,16 @@ export class GitHubCode implements CodePort {
     await this.loadIndex();
   }
 
+  getCoverage(): { indexedFiles: number; skippedLargeFiles: number } | undefined {
+    return this.indexedBuild && { indexedFiles: this.indexedBuild.files.length,
+      skippedLargeFiles: this.indexedBuild.skippedLargeFiles };
+  }
+
   async findEvidence(query: string): Promise<Evidence[]> {
+    if (isHistoryQuestion(query)) return this.findCommitEvidence(requestedRef(query, this.config.ref));
     const terms = queryTerms(query);
     if (terms.length === 0) return [];
-    const files = await this.loadIndex();
+    const { files, commitSha } = await this.loadIndex();
     const phrase = query.toLocaleLowerCase().replace(/[^\p{L}\p{N}_]+/gu, ' ').trim();
     const scored = files.map(file => {
       const path = file.path.toLocaleLowerCase();
@@ -173,7 +488,7 @@ export class GitHubCode implements CodePort {
         const pathMatches = countOccurrences(path, term);
         if (contentMatches || pathMatches) matchedTerms++;
         score += contentMatches ? 3 + Math.min(3, Math.log2(contentMatches)) : 0;
-        score += pathMatches ? 5 : 0;
+        score += pathMatches ? 28 : 0;
       }
       if (phrase.length >= 8 && file.lower.includes(phrase)) score += 6;
       score += matchedTerms / terms.length;
@@ -181,11 +496,26 @@ export class GitHubCode implements CodePort {
     }).filter(result => result.score > 0);
     scored.sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
 
-    const { owner, repo, ref } = this.config;
+    const { owner, repo } = this.config;
     return scored.slice(0, MAX_EVIDENCE).map(({ file }) => ({
       path: file.path,
-      url: `https://github.com/${owner}/${repo}/blob/${encodeURIComponent(ref)}/${file.path.split('/').map(encodeURIComponent).join('/')}`,
+      url: `https://github.com/${owner}/${repo}/blob/${commitSha}/${file.path.split('/').map(encodeURIComponent).join('/')}`,
       excerpt: excerptFor(file.text, terms),
     }));
+  }
+
+  private async findCommitEvidence(ref: string): Promise<Evidence[]> {
+    const { owner, repo } = this.config;
+    const commits = await this.get<GitHubCommit[]>(`/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(ref)}&per_page=10`);
+    if (!Array.isArray(commits)) throw new Error('GitHub returned an invalid commit history');
+    return commits.slice(0, MAX_EVIDENCE).flatMap(commit => {
+      const sha = commit.sha;
+      const message = commit.commit?.message?.trim();
+      if (!sha || !/^[a-f0-9]{40}$/i.test(sha) || !message) return [];
+      const date = commit.commit?.author?.date;
+      return [{ path: `commit ${sha.slice(0, 7)}`,
+        url: `https://github.com/${owner}/${repo}/commit/${sha}`,
+        excerpt: `${date ? `Date: ${date}\n` : ''}${message.slice(0, MAX_EXCERPT_CHARS)}` }];
+    });
   }
 }
