@@ -36,18 +36,31 @@ export interface ToolboxReport {
 
 const MAX_WRITES_PER_TURN = 5;
 
+/** A question about existing things ("what are the open issues?") is not a command, unless it is a polite request. */
+function isInformationQuestion(t: string): boolean {
+  const lead = t.replace(/^(?:(?:hey|hi|ok|okay|so|and|also|nogita)[,\s]+)+/, '');
+  if (/^(?:can|could|would|will) you\b|^please\b/.test(lead)) return false;
+  return /^(?:what|what's|whats|which|who|whom|when|where|why|how|did|does|do|is|are|was|were|has|have|any)\b/.test(lead);
+}
+const TASK_NOUN = String.raw`(?:task|tasks|ticket|tickets|issue|issues|bug|bugs|story|stories|card|cards|todo|to-do)`;
+
 /** A direct request to make a ticket. Wider than the legacy planner check, still deterministic. */
 export function requestsTaskWrite(request: string): boolean {
-  const t = request.toLowerCase();
-  if (/\b(?:pr|pull request)\b/.test(t) && !/\b(?:task|ticket|issue|story|bug)\b/.test(t)) return false;
-  return /\b(?:create|open|add|file|make|log|raise|put|write up|track|assign|new)\b/.test(t) &&
-    /\b(?:task|tasks|ticket|tickets|issue|issues|bug|bugs|story|stories|jira|card|todo|to-do|backlog)\b/.test(t);
+  const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (isInformationQuestion(t)) return false;
+  if (/\b(?:pr|pull request)\b/.test(t) && !new RegExp(`\\b${TASK_NOUN}\\b`).test(t)) return false;
+  // "open" right before a plural noun after a determiner is an adjective: "the open issues", "any open tasks".
+  const cleaned = t.replace(/\b(?:the|any|all|our|their|my|your|which|what|many|more|of|are|is|for|with)\s+open\s+(?:tasks|tickets|issues|bugs|stories|items)\b/g, '');
+  return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${TASK_NOUN}\\b`).test(cleaned) ||
+    /\b(?:add|put|move|log)\s+(?:it|this|that|these|those|them|both)\b.{0,40}\b(?:backlog|jira|board|sprint)\b/.test(cleaned) ||
+    /\bwrite (?:it|this|that) up\b/.test(cleaned);
 }
 /** A direct request to send something to a Slack channel. */
 export function requestsChatPost(request: string): boolean {
-  const t = request.toLowerCase();
-  return /\b(?:post|send|share|tell|message|notify|announce|ping|let)\b/.test(t) &&
-    /(?:\bslack\b|\bchannel\b|#[\w-]+|\bthread\b|\beveryone\b|\bthe team\b)/.test(t);
+  const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (isInformationQuestion(t)) return false;
+  const cleaned = t.replace(/\b(?:tell me|let me|let's|lets|show me|send me)\b/g, '');
+  return /\b(?:post|send|share|tell|message|notify|announce|ping|let)\b.{0,80}(?:\bslack\b|\bchannel\b|#[\w-]+|\bthread\b|\beveryone\b|\bthe team\b)/.test(cleaned);
 }
 
 function str(value: unknown, max: number): string | undefined {

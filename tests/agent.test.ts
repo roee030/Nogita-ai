@@ -198,11 +198,19 @@ test('follow-up that is not for Nogita gets silence', async () => {
 test('explicit write detectors', () => {
   for (const text of ['open a task for Moshe', 'can you log a bug for this', 'add it to the backlog', 'create tickets for both'])
     assert.equal(requestsTaskWrite(text), true, text);
-  for (const text of ['what is the status of KAN-12?', 'how does the task runner work', 'prepare a PR'])
+  for (const text of ['make a jira ticket for the export bug', 'put it in the backlog', 'can you open two tasks for Dana?',
+    'please log a bug about the crash', 'write that up'])
+    assert.equal(requestsTaskWrite(text), true, text);
+  for (const text of ['what is the status of KAN-12?', 'how does the task runner work', 'prepare a PR',
+    'what are the open issues?', "what's new in the backlog?", 'any open tasks for Dana?', "what's open in jira?",
+    'show me the open issues on the board', 'did Dana open a ticket for that?'])
     assert.equal(requestsTaskWrite(text), false, text);
   assert.equal(requestsChatPost('post a summary in #dev'), true);
   assert.equal(requestsChatPost('tell the team in slack we shipped'), true);
-  assert.equal(requestsChatPost('what did they say in #dev?'), false);
+  assert.equal(requestsChatPost('could you share this in the dev channel?'), true);
+  for (const text of ['what did they say in #dev?', 'what did they post in #dev?', 'tell me what the team said in slack',
+    "let's ask the team", 'did anyone message the channel?'])
+    assert.equal(requestsChatPost(text), false, text);
 });
 
 test('Slack post tool goes only through an explicit request and returns the permalink', async () => {
