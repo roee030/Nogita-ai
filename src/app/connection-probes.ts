@@ -1,5 +1,5 @@
 export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetch = fetch) {
-  const checks = await Promise.all(['github', 'jira', 'attendee'].map(async provider => {
+  const checks = await Promise.all(['github', 'jira', 'attendee', 'slack'].map(async provider => {
     let url: string;
     const headers: Record<string, string> = {};
     if (provider === 'github') {
@@ -18,14 +18,29 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
         return { provider, status: 'invalid_configuration' };
       url = `${base.origin}/rest/api/3/project/${encodeURIComponent(env.JIRA_PROJECT_KEY)}`;
       headers.Authorization = `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString('base64')}`;
-    } else {
+    } else if (provider === 'attendee') {
       if (!env.ATTENDEE_API_KEY) return { provider, status: 'unconfigured' };
       url = 'https://app.attendee.dev/api/v1/bots';
       headers.Authorization = `Token ${env.ATTENDEE_API_KEY}`;
+    } else {
+      if (!env.SLACK_BOT_TOKEN) return { provider, status: 'unconfigured' };
+      url = 'https://slack.com/api/auth.test';
+      headers.Authorization = `Bearer ${env.SLACK_BOT_TOKEN}`;
     }
     const started = performance.now();
     try {
-      const response = await http(url, { headers, redirect: 'error', signal: AbortSignal.timeout(8000) });
+      const response = await http(url, { method: provider === 'slack' ? 'POST' : 'GET', headers,
+        redirect: 'error', signal: AbortSignal.timeout(8000) });
+      if (provider === 'slack' && response.ok) {
+        let authenticated = false;
+        try {
+          const payload = await response.json() as unknown;
+          authenticated = Boolean(payload && typeof payload === 'object' &&
+            (payload as Record<string, unknown>).ok === true);
+        } catch { /* Malformed provider data is a failed probe; do not expose it. */ }
+        return { provider, status: authenticated ? 'connected' : 'failed', httpStatus: response.status,
+          durationMs: Math.round(performance.now() - started) };
+      }
       await response.body?.cancel();
       return { provider, status: response.ok ? 'connected' : 'failed', httpStatus: response.status,
         durationMs: Math.round(performance.now() - started) };

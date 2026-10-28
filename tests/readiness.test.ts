@@ -7,7 +7,7 @@ const completeEnv: NodeJS.ProcessEnv = {
   NOGITA_ADMIN_TOKEN: 'admin-secret-that-is-long-enough',
   NOGITA_QUEUE_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   SLACK_APP_TOKEN: 'xapp-test-secret', SLACK_BOT_TOKEN: 'xoxb-test-secret',
-  SLACK_ALLOWED_TEAM_IDS: 'team-secret-id', SLACK_BOT_USER_ID: 'bot-secret-id',
+  SLACK_ALLOWED_TEAM_IDS: 'team-secret-id', SLACK_BOT_USER_ID: 'bot-secret-id', SLACK_SIGNING_SECRET: 'signing-secret',
   BOARD_PROVIDER: 'jira', JIRA_BASE_URL: 'https://example.atlassian.net',
   JIRA_EMAIL: 'private@example.com', JIRA_API_TOKEN: 'jira-secret', JIRA_PROJECT_KEY: 'KAN',
   REPO_PROVIDER: 'github', GITHUB_TOKEN: 'github-secret', GITHUB_OWNER: 'private-owner', GITHUB_REPO: 'private-repo',
@@ -26,7 +26,7 @@ test('readiness reports a fully configured product without exposing configuratio
   assert.ok(report.checks.every(check => check.status === 'ready'));
   const serialized = JSON.stringify(report);
   for (const secret of [
-    'admin-secret-that-is-long-enough', 'xapp-test-secret', 'xoxb-test-secret',
+    'admin-secret-that-is-long-enough', 'xapp-test-secret', 'xoxb-test-secret', 'signing-secret',
     'team-secret-id', 'bot-secret-id', 'private@example.com', 'jira-secret',
     'github-secret', 'private-owner', 'private-repo', 'attendee-secret',
     'https://service.example/webhooks/attendee', 'webhook-secret', 'model-secret',
@@ -87,12 +87,17 @@ test('readiness mirrors the HTTP admin token startup gate without exposing the t
   }
 });
 
-test('Slack readiness accepts either Socket Mode or signed Events API configuration', () => {
+test('HTTP readiness accepts signed Events API but does not mistake Socket Mode config for an active consumer', () => {
   const signedEvents = { ...completeEnv, SLACK_APP_TOKEN: '', SLACK_SIGNING_SECRET: 'signing-secret' };
   const report = buildReadinessReport(signedEvents, new IdentityDirectory([{
     id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
   }]), '22.16.0');
   assert.equal(report.checks.find(item => item.id === 'slack')?.status, 'ready');
+  const socketOnly = { ...completeEnv, SLACK_SIGNING_SECRET: '' };
+  const socketReport = buildReadinessReport(socketOnly, new IdentityDirectory([{
+    id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
+  }]), '22.16.0');
+  assert.equal(socketReport.checks.find(item => item.id === 'slack')?.status, 'blocked');
 });
 
 test('Slack readiness rejects nonempty values that are not usable Slack tokens', () => {

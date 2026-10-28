@@ -326,13 +326,10 @@ const server = createServer(async (req, res) => {
     if (req.method === 'DELETE' && pathname.startsWith('/api/sessions/')) {
       const id = decodeURIComponent(pathname.slice('/api/sessions/'.length));
       const attendeeBotId = attendeeBotsBySession.get(id);
-      try {
-        await nogita.endSession(id);
-      } finally {
-        meetingHandles.delete(id);
-        sessionUsage.end(id);
-        await forgetAttendeeSession(id, attendeeBotId);
-      }
+      await nogita.endSession(id);
+      meetingHandles.delete(id);
+      sessionUsage.end(id);
+      await forgetAttendeeSession(id, attendeeBotId);
       respond(res, 200, { ended: id }); return;
     }
     respond(res, 404, { error: 'not found' });

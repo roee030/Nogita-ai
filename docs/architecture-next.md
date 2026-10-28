@@ -21,8 +21,9 @@ Signed webhooks enter an encrypted file queue, then speaker verification and
 caption assembly feed a serialized policy-controlled engine. Claude plans;
 GitHub supplies evidence and Jira executes explicit writes. Local TTS sends MP3
 through Attendee. Render Free has ephemeral filesystem storage. Readiness checks
-configuration, not successful live provider access. Provider audio acceptance
-does not prove playback to a human.
+configuration; the authenticated `/api/connections` endpoint separately probes
+GitHub, Jira, Attendee and Slack authentication. Provider audio acceptance does
+not prove playback to a human.
 
 ## Priorities
 1. Instrument processing latency now, without retaining spoken text. Distinguish
@@ -38,6 +39,16 @@ does not prove playback to a human.
    cost per successful task before selecting a new paid provider.
 6. Scope production GitHub access to one repository with a GitHub App. The
    current user credential is a development bridge, not the multi-tenant design.
+
+## Reliability changes, 2026-10-28
+- Failed command processing now returns to the encrypted queue for bounded
+  exponential retries; the fallback chat still tells the user the command did
+  not complete. After the retry limit the queue dead-letters the event.
+- Failed provider leave retains the session and Attendee bot ID for another
+  leave attempt. Admin cleanup now happens only after the provider confirms.
+- Speaker verification binds only after its confirmation message is delivered.
+- HTTP readiness now requires signed Slack Events API configuration; Socket Mode
+  configuration alone does not make the HTTP server a Slack event consumer.
 
 ## Release gates
 No success acknowledgement before provider success. No duplicate task after
