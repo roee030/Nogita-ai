@@ -18,7 +18,7 @@ export interface Utterance {
 }
 export interface ActionReceipt {
   provider: string;
-  kind: 'task' | 'code_lookup' | 'draft_pr';
+  kind: 'task' | 'code_lookup' | 'draft_pr' | 'message';
   url: string;
   label: string;
 }
@@ -26,13 +26,15 @@ export interface ActionReceipt {
 export class SpeechFallbackSentError extends Error {
   constructor() { super('speech unavailable after chat fallback'); }
 }
+export interface SpeakOptions { chatMirror?: boolean }
 export interface MeetingPort {
   readonly id: string;
   readonly capabilities: ReadonlySet<Capability>;
   /** Only call for a user-invited meeting. */
   join(meetingUrl?: string): Promise<void>;
-  /** Called only for an explicit direct address or a verified reply to Nogita's own recent question. */
-  speak(message: string): Promise<void>;
+  /** Called only for an explicit direct address or a verified reply to Nogita's own recent question.
+   *  `chatMirror: false` asks a voice provider not to copy this line to meeting chat (streamed partial speech). */
+  speak(message: string, options?: SpeakOptions): Promise<void>;
   /** Plain meeting-chat status or speech fallback; never carries secrets. */
   sendStatus(message: string, timeoutMs?: number): Promise<void>;
   /** Returns false if native hand raise is not supported; no fallback speech/chat. */
@@ -47,9 +49,42 @@ export interface CreateTask {
   assigneeId?: string;
   requestId: string;
 }
+export interface TaskSummary {
+  key: string;
+  title: string;
+  status?: string;
+  assignee?: string;
+  type?: string;
+  priority?: string;
+  updated?: string;
+  url: string;
+}
+export interface TaskDetail extends TaskSummary {
+  description: string;
+  reporter?: string;
+  created?: string;
+  comments: Array<{ author?: string; created?: string; text: string }>;
+}
+export interface TaskSearch { text?: string; jql?: string; limit?: number }
+/** A person a board can assign work to. `id` is accepted back by `createTask` as `assigneeId`. */
+export interface AssigneeCandidate { id: string; displayName: string }
 export interface BoardPort {
   readonly name: string;
   createTask(input: CreateTask): Promise<ActionReceipt>;
+  /** Read-only lookups used by the conversational agent. Optional per provider. */
+  searchTasks?(query: TaskSearch): Promise<TaskSummary[]>;
+  getTask?(key: string): Promise<TaskDetail | undefined>;
+  findAssignees?(name: string): Promise<AssigneeCandidate[]>;
+}
+/** Team messaging workspace (Slack today) as a source of context and an explicitly requested action target. */
+export interface ChatChannel { id: string; name: string }
+export interface ChatMessage { channel: string; author: string; text: string; at: string; url?: string }
+export interface ChatPort {
+  readonly name: string;
+  listChannels(): Promise<ChatChannel[]>;
+  readChannel(channel: string, limit?: number): Promise<ChatMessage[]>;
+  searchMessages?(query: string, limit?: number): Promise<ChatMessage[]>;
+  postMessage(channel: string, text: string): Promise<ActionReceipt>;
 }
 export interface Evidence { path: string; url: string; excerpt: string; }
 export interface ConversationTurn { role: 'user' | 'assistant'; text: string; }
@@ -82,7 +117,14 @@ export interface CodePort {
   /** Coverage of supported source files at the last successful index build. */
   getCoverage?(): { indexedFiles: number; skippedLargeFiles: number } | undefined;
   findEvidence(query: string): Promise<Evidence[]>;
+  /** Whole-file and history access for the conversational agent. Optional per provider. */
+  readFile?(path: string, startLine?: number, endLine?: number): Promise<CodeFile | undefined>;
+  listFiles?(prefix?: string): Promise<string[]>;
+  recentCommits?(ref?: string): Promise<Evidence[]>;
+  /** Small, stable repository map used to prime the agent prompt. */
+  overview?(): Promise<{ paths: string[]; readme?: string; revision?: string }>;
 }
+export interface CodeFile { path: string; url: string; text: string; startLine: number; endLine: number; totalLines: number }
 export type Plan =
   | { kind: 'answer'; message: string; evidence?: Evidence; evidenceQuote?: string }
   | { kind: 'inspect_code'; query: string }

@@ -82,5 +82,19 @@ export class IdentityDirectory {
   fromGitHub(username: string): IdentityRecord | undefined { return this.byGitHub.get(username.toLowerCase()); }
   fromAttendee(userUuid: string): IdentityRecord | undefined { return this.byAttendee.get(userUuid); }
   jiraAccountIdFor(id: string): string | undefined { return this.byId.get(id)?.jiraAccountId; }
+  /** People with a board account whose display name is `name`, or whose first/last name is it. */
+  findByName(name: string): Array<{ id: string; displayName: string }> {
+    const wanted = name.trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+    if (!wanted) return [];
+    const assignable = [...this.byId.values()].filter(record => record.jiraAccountId);
+    const exact = assignable.filter(record => record.displayName.toLocaleLowerCase() === wanted);
+    const matches = exact.length ? exact : assignable.filter(record =>
+      record.displayName.toLocaleLowerCase().split(/\s+/).includes(wanted));
+    return matches.map(record => ({ id: record.id, displayName: record.displayName }));
+  }
+  displayNameFor(id: string): string | undefined {
+    const record = this.byId.get(id);
+    return record?.jiraAccountId ? record.displayName : undefined;
+  }
   hasAttendeeIdentity(): boolean { return this.byAttendee.size > 0; }
 }

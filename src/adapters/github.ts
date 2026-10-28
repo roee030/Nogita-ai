@@ -1,4 +1,4 @@
-import { CodeLookupRateLimitError, type CodePort, type Evidence } from '../core/contracts.ts';
+import { CodeLookupRateLimitError, type CodeFile, type CodePort, type Evidence } from '../core/contracts.ts';
 import { gunzipSync } from 'node:zlib';
 
 interface TreeEntry { path: string; type: string; sha: string; size?: number }
@@ -31,6 +31,9 @@ const MAX_ARCHIVE_COMPRESSED_BYTES = 16 * 1024 * 1024;
 const MAX_ARCHIVE_UNPACKED_BYTES = 64 * 1024 * 1024;
 const MAX_GIT_ADVERTISEMENT_BYTES = 1024 * 1024;
 const MAX_GITHUB_JSON_BYTES = 16 * 1024 * 1024;
+const MAX_READ_LINES = 400;
+const MAX_READ_CHARS = 24_000;
+const MAX_LISTED_PATHS = 500;
 
 interface GitHubCommit {
   sha?: string;
@@ -471,6 +474,57 @@ export class GitHubCode implements CodePort {
   getCoverage(): { indexedFiles: number; skippedLargeFiles: number } | undefined {
     return this.indexedBuild && { indexedFiles: this.indexedBuild.files.length,
       skippedLargeFiles: this.indexedBuild.skippedLargeFiles };
+  }
+
+  private fileUrl(path: string, commitSha: string, startLine?: number, endLine?: number): string {
+    const { owner, repo } = this.config;
+    const anchor = startLine ? `#L${startLine}${endLine && endLine !== startLine ? `-L${endLine}` : ''}` : '';
+    return `https://github.com/${owner}/${repo}/blob/${commitSha}/${path.split('/').map(encodeURIComponent).join('/')}${anchor}`;
+  }
+
+  /** Reads an indexed (already filtered and redacted) file; resolves a unique case-insensitive or suffix match. */
+  async readFile(path: string, startLine?: number, endLine?: number): Promise<CodeFile | undefined> {
+    const { files, commitSha } = await this.loadIndex();
+    const wanted = path.trim().replace(/^\.?\/+/, '').toLocaleLowerCase();
+    if (!wanted) return undefined;
+    let file = files.find(item => item.path.toLocaleLowerCase() === wanted);
+    if (!file) {
+      const suffix = files.filter(item => item.path.toLocaleLowerCase().endsWith(`/${wanted}`));
+      if (suffix.length === 1) file = suffix[0];
+    }
+    if (!file) return undefined;
+    const lines = file.text.split('\n');
+    const first = Math.min(Math.max(1, startLine ?? 1), lines.length);
+    let last = Math.min(lines.length, Math.max(first, endLine ?? first + MAX_READ_LINES - 1), first + MAX_READ_LINES - 1);
+    let body = '';
+    for (let line = first; line <= last; line++) {
+      const next = `${line}: ${lines[line - 1]}\n`;
+      if (body.length + next.length > MAX_READ_CHARS) { last = line - 1; break; }
+      body += next;
+    }
+    return { path: file.path, url: this.fileUrl(file.path, commitSha, first, last), text: body.trimEnd(),
+      startLine: first, endLine: Math.max(first, last), totalLines: lines.length };
+  }
+
+  async listFiles(prefix?: string): Promise<string[]> {
+    const { files } = await this.loadIndex();
+    const wanted = prefix?.trim().replace(/^\.?\/+/, '').toLocaleLowerCase();
+    const paths = files.map(file => file.path)
+      .filter(path => !wanted || path.toLocaleLowerCase().startsWith(wanted)).sort();
+    return paths.length > MAX_LISTED_PATHS
+      ? [...paths.slice(0, MAX_LISTED_PATHS), `... ${paths.length - MAX_LISTED_PATHS} more; use a narrower prefix`]
+      : paths;
+  }
+
+  async recentCommits(ref?: string): Promise<Evidence[]> {
+    return this.findCommitEvidence(ref?.trim() || this.config.ref);
+  }
+
+  async overview(): Promise<{ paths: string[]; readme?: string; revision?: string }> {
+    const { files, commitSha } = await this.loadIndex();
+    const paths = files.map(file => file.path).sort();
+    const readme = files.find(file => /^readme(?:\.md)?$/i.test(file.path))?.text;
+    return { paths, readme: readme?.slice(0, 3000), revision: commitSha };
   }
 
   async findEvidence(query: string): Promise<Evidence[]> {

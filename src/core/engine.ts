@@ -1,5 +1,8 @@
-import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort, type ConversationTurn, type Evidence,
+import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
+import { runAgent, type ChatModel } from './agent.ts';
+import { buildToolbox, type PeopleDirectory } from './agent-tools.ts';
+import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
@@ -22,6 +25,8 @@ interface Session {
 type ProgressWork = () => void | Promise<void>;
 export interface NogitaEngineOptions {
   progressDelayMs?: number;
+  /** Filler delay when the streaming agent answers; its own spoken lead-in usually comes first. */
+  agentProgressDelayMs?: number;
   schedule?: (work: ProgressWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   random?: () => number;
@@ -62,6 +67,8 @@ export class NogitaEngine {
   private readonly startingSessions = new Set<string>();
   private readonly completed = new Map<string, ActionReceipt>(); // Process-local; durable idempotency is TODO.
   private readonly progressDelayMs: number;
+  private readonly agentProgressDelayMs: number;
+  private repositoryMap?: { value?: { paths: string[]; readme?: string; revision?: string }; at: number; pending?: Promise<void> };
   private readonly schedule: (work: ProgressWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private readonly random: () => number;
@@ -72,8 +79,13 @@ export class NogitaEngine {
     brain: BrainPort;
     policy: PolicyPort;
     usage?: UsagePort;
+    /** Tool-using conversational model. When present it answers every direct request; the planner is the fallback. */
+    agent?: ChatModel;
+    chat?: ChatPort;
+    people?: PeopleDirectory;
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
+    this.agentProgressDelayMs = options.agentProgressDelayMs ?? 2_000;
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
@@ -186,7 +198,7 @@ export class NogitaEngine {
     session.progressTimer = undefined;
   }
 
-  private beginProgressAcknowledgment(sessionId: string, session: Session): void {
+  private beginProgressAcknowledgment(sessionId: string, session: Session, delayMs = this.progressDelayMs): void {
     session.progressSpeech = undefined;
     session.progressTimer = this.schedule(() => {
       session.progressTimer = undefined;
@@ -197,7 +209,7 @@ export class NogitaEngine {
       session.lastProgressPhrase = phrase;
       session.progressSpeech = this.deliverSpeech(sessionId, session.meeting, phrase).catch(() => undefined);
       return session.progressSpeech;
-    }, this.progressDelayMs);
+    }, delayMs);
   }
 
   /** Interim human speech cancels unsent filler for the prior turn. */
@@ -205,6 +217,120 @@ export class NogitaEngine {
     const session = this.sessions.get(sessionId);
     if (!session || session.ending || session.progressTimer === undefined) return;
     this.clearProgressTimer(session);
+  }
+
+  /** Repository map for the agent prompt, refreshed in the background so a turn never waits long for it. */
+  private async repositoryOverview(): Promise<{ paths: string[]; readme?: string; revision?: string } | undefined> {
+    const code = this.dependencies.code;
+    if (!code.overview) return undefined;
+    const cached = this.repositoryMap;
+    const fresh = cached?.value && this.now() - cached.at < 5 * 60_000;
+    if (!fresh && !cached?.pending) {
+      const entry = cached ?? { at: 0 };
+      entry.pending = code.overview().then(value => { entry.value = value; entry.at = this.now(); })
+        .catch(() => undefined).finally(() => { entry.pending = undefined; });
+      this.repositoryMap = entry;
+    }
+    const entry = this.repositoryMap!;
+    if (!entry.value && entry.pending) {
+      await Promise.race([entry.pending, new Promise(resolve => setTimeout(resolve, 2_500))]);
+    }
+    return entry.value;
+  }
+
+  /** Speech for a streamed chunk: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
+  private async deliverStreamedSpeech(sessionId: string, meeting: MeetingPort, text: string): Promise<void> {
+    const active = this.sessions.get(sessionId)?.activeRequest;
+    if (active && !active.firstSpeechRecorded) {
+      active.firstSpeechRecorded = true;
+      this.dependencies.usage?.recordResponseStage?.(sessionId, 'turn_to_first_speech_attempt', performance.now() - active.startedAt);
+    }
+    try {
+      await meeting.speak(text, { chatMirror: false });
+      this.dependencies.usage?.recordTts(sessionId, true);
+    } catch {
+      this.dependencies.usage?.recordTts(sessionId, false);
+    }
+  }
+
+  /**
+   * One direct request answered by the tool-using agent. Returns undefined when the agent failed before
+   * saying or changing anything, so the caller can fall back to the planner.
+   */
+  private async runAgentTurn(sessionId: string, s: Session, utterance: Utterance, request: string,
+    pending: Session['pendingFollowUp']): Promise<ProcessResult | undefined> {
+    const agent = this.dependencies.agent!;
+    const voice = s.meeting.capabilities.has('speak');
+    const speaker = utterance.actor.displayName;
+    const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
+    const writeScope = pending ? `${pending.request}\n${request}` : request;
+    const userText = pending ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
+    const repository = authorized ? await this.repositoryOverview() : undefined;
+    const { toolbox, report } = buildToolbox({
+      actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId,
+      policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
+      chat: this.dependencies.chat, people: this.dependencies.people, completed: this.completed,
+      onReceipt: receipt => s.meeting.sendCompletion(receipt),
+      recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
+    });
+    let spoke = false;
+    let speech = Promise.resolve();
+    const onSpeech = (text: string) => {
+      if (!spoke) {
+        spoke = true;
+        this.clearProgressTimer(s);
+      }
+      speech = speech.then(async () => {
+        if (s.progressSpeech) await s.progressSpeech;
+        await this.deliverStreamedSpeech(sessionId, s.meeting, text);
+      });
+    };
+    let result;
+    try {
+      result = await this.modelCall(sessionId, () => runAgent(agent, {
+        stableSystem: stableAgentPrompt({ voice,
+          repository: repository && { name: this.dependencies.code.name, ...repository },
+          boardName: authorized ? this.dependencies.board.name : undefined,
+          chatName: authorized ? this.dependencies.chat?.name : undefined }),
+        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined }),
+        messages: [{ role: 'user', content: agentUserMessage(s.history.slice(0, -1).map(turn => turn.text), speaker, userText) }],
+        toolbox, stream: voice, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
+        deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 700 : 1_500,
+      }));
+    } catch {
+      await speech;
+      if (!spoke && !report.wroteSomething) return undefined;
+      this.clearProgressTimer(s);
+      await this.speakOrChat(sessionId, s.meeting, 'Sorry, I hit a problem and could not finish that.');
+      return report.wroteSomething ? 'completed' : 'answered';
+    }
+    await speech;
+    this.clearProgressTimer(s);
+    if (s.progressSpeech) await s.progressSpeech;
+    let answer = result.answer;
+    if (!answer && result.stoppedEarly) answer = 'That is taking me too long. Ask me again with a narrower question.';
+    if (!answer) return spoke || report.wroteSomething ? (report.wroteSomething ? 'completed' : 'answered') : 'ignored';
+    if (voice) {
+      // The final answer was spoken while it streamed (unless the turn was cut short); chat gets it once.
+      if (!result.answer) await this.deliverStreamedSpeech(sessionId, s.meeting, answer);
+      try { await s.meeting.sendStatus(answer); } catch { /* Speech already delivered; chat is best effort. */ }
+      s.history.push({ role: 'assistant', text: `Nogita: ${answer}` });
+      if (s.history.length > 24) s.history.shift();
+    } else {
+      await this.speakOrChat(sessionId, s.meeting, answer);
+    }
+    if (answer.trim().endsWith('?')) {
+      s.pendingFollowUp = { actorId: utterance.actor.id, request: writeScope, question: answer,
+        expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence };
+    }
+    const codeTools = result.toolCalls.some(name => ['search_code', 'read_file', 'recent_commits'].includes(name));
+    const reference = report.codeReferences[0];
+    if (voice && codeTools && reference && !report.receipts.length) {
+      await s.meeting.sendCompletion({ provider: this.dependencies.code.name, kind: 'code_lookup',
+        url: reference.url, label: 'Code reference' }).catch(() => undefined);
+      return 'completed';
+    }
+    return report.wroteSomething ? 'completed' : 'answered';
   }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
@@ -237,7 +363,8 @@ export class NogitaEngine {
     const continuation = !directlyAddressed && pending !== undefined &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
       this.now() <= pending.expiresAt &&
-      isAffirmativeFollowUp(current);
+      // The agent can tell a real reply from unrelated talk (it answers with silence); the planner cannot.
+      (this.dependencies.agent !== undefined || isAffirmativeFollowUp(current));
     if (!directlyAddressed && !continuation) {
       if (pending?.actorId === utterance.actor.id) s.pendingFollowUp = undefined;
       if (!s.raised && Date.now() > s.mutedUntil && s.history.length > 1 &&
@@ -251,6 +378,15 @@ export class NogitaEngine {
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
     s.pendingFollowUp = undefined;
+    if (this.dependencies.agent) {
+      this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs);
+      const agentRequest = directlyAddressed ? removeAddress(current) : current;
+      s.activeRequest = { actorId: utterance.actor.id, request: agentRequest, startedAt: processingStartedAt, firstSpeechRecorded: false };
+      const outcome = await this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined);
+      if (outcome) return outcome;
+      // The agent failed before saying or doing anything: answer through the planner instead.
+      this.clearProgressTimer(s);
+    }
     if (continuation) {
       try { await s.meeting.sendStatus('I heard your reply. I’m continuing that question.'); }
       catch { /* Chat is best effort; spoken answer still proceeds. */ }

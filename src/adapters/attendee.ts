@@ -1,4 +1,4 @@
-import { SpeechFallbackSentError, type ActionReceipt, type Capability, type MeetingPort, type SpeechStage } from '../core/contracts.ts';
+import { SpeechFallbackSentError, type ActionReceipt, type Capability, type MeetingPort, type SpeakOptions, type SpeechStage } from '../core/contracts.ts';
 
 const AUDIO_SAMPLE_RATE = 16_000;
 
@@ -99,15 +99,17 @@ export class AttendeeMeeting implements MeetingPort {
   }
 
   /** TTS output is gated by NogitaEngine's direct-name policy, not by this provider. */
-  async speak(message: string): Promise<void> {
+  async speak(message: string, options: SpeakOptions = {}): Promise<void> {
     if (!this.botId) throw new Error('not joined');
     if (!message.trim()) throw new Error('empty spoken message');
     const speechStarted = performance.now();
     // Attendee acknowledges queued TTS but does not prove that an unmuted client played it.
     // Start the chat mirror and audio together so chat latency does not delay speech.
+    // Streamed partial answers skip the mirror: the engine posts the whole answer to chat once.
     const chatStarted = performance.now();
-    const mirror = this.sendStatus(message).then(() => true, () => false)
-      .finally(() => this.recordSpeechDuration?.('chat_mirror', performance.now() - chatStarted));
+    const mirror = options.chatMirror === false ? Promise.resolve(false)
+      : this.sendStatus(message).then(() => true, () => false)
+        .finally(() => this.recordSpeechDuration?.('chat_mirror', performance.now() - chatStarted));
     try {
       try {
         if (this.streamSpeech) {

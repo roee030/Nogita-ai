@@ -1,8 +1,12 @@
 import { InvalidPlanningResponseError, type AiUsage, type BrainPort, type ConversationTurn, type Evidence,
   type Plan } from '../core/contracts.ts';
+import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../core/agent.ts';
 
 /** Maintained low-cost model for latency-sensitive Nogita conversations. */
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
+/** Tool-using conversation model: quality of answers matters more than the last few hundred milliseconds. */
+export const DEFAULT_ANTHROPIC_AGENT_MODEL = 'claude-sonnet-5-5';
+interface AgentModelOptions { model?: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number }
 
 interface ModelUsage { modelCalls: number; inputTokens: number; outputTokens: number }
 interface CodeModelOptions {
@@ -62,7 +66,7 @@ function capSpokenAnswer(value: string): string {
   return kept.join(' ') || value.trim().split(/\s+/).slice(0, 55).join(' ');
 }
 
-export class AnthropicBrain implements BrainPort {
+export class AnthropicBrain implements BrainPort, ChatModel {
   private readonly model: string;
   private readonly usage = new Map<string, Map<string, ModelUsage>>();
   private readonly codeReasoningAttempts = new Map<string, number>();
@@ -74,11 +78,20 @@ export class AnthropicBrain implements BrainPort {
   private readonly codeInputUsdPerMillion: number;
   private readonly codeOutputUsdPerMillion: number;
   private readonly maxCodeReasoningCallsPerSession: number;
+  readonly agentModel: string;
+  private readonly agentInputUsdPerMillion: number;
+  private readonly agentOutputUsdPerMillion: number;
 
   constructor(private readonly key: string, model = DEFAULT_ANTHROPIC_MODEL, private readonly http: typeof fetch = fetch,
     prices: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } = {},
-    codeModel: CodeModelOptions = {}) {
+    codeModel: CodeModelOptions = {}, agent: AgentModelOptions = {}) {
     if (!key) throw new Error('Anthropic key required in live mode');
+    this.agentModel = agent.model?.trim() || DEFAULT_ANTHROPIC_AGENT_MODEL;
+    this.agentInputUsdPerMillion = agent.inputUsdPerMillion ?? 3;
+    this.agentOutputUsdPerMillion = agent.outputUsdPerMillion ?? 15;
+    if (![this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0)) {
+      throw new Error('invalid Anthropic agent token price');
+    }
     this.model = model.trim() || DEFAULT_ANTHROPIC_MODEL;
     this.inputUsdPerMillion = prices.inputUsdPerMillion ?? 0.10;
     this.outputUsdPerMillion = prices.outputUsdPerMillion ?? 0.50;
@@ -140,25 +153,7 @@ export class AnthropicBrain implements BrainPort {
       stop_reason?: string;
       usage?: { input_tokens?: number; output_tokens?: number };
     };
-    if (usageContext) {
-      const byModel = this.usage.get(usageContext) ?? new Map<string, ModelUsage>();
-      const previous = byModel.get(model) ?? { modelCalls: 0, inputTokens: 0, outputTokens: 0 };
-      const inputTokens = Number.isSafeInteger(value.usage?.input_tokens) && value.usage!.input_tokens! >= 0
-        ? value.usage!.input_tokens! : 0;
-      const outputTokens = Number.isSafeInteger(value.usage?.output_tokens) && value.usage!.output_tokens! >= 0
-        ? value.usage!.output_tokens! : 0;
-      byModel.set(model, {
-        modelCalls: previous.modelCalls + 1,
-        inputTokens: previous.inputTokens + inputTokens,
-        outputTokens: previous.outputTokens + outputTokens,
-      });
-      this.usage.set(usageContext, byModel);
-      if (!this.activeUsageSessions.has(usageContext)) {
-        this.completedUsageSessions.delete(usageContext);
-        this.completedUsageSessions.add(usageContext);
-        this.pruneCompletedUsage();
-      }
-    }
+    if (usageContext) this.recordUsage(usageContext, model, value.usage?.input_tokens, value.usage?.output_tokens);
     if (structuredPlan && value.stop_reason === 'max_tokens') {
       throw new InvalidPlanningResponseError('LLM planning output was truncated');
     }
@@ -166,6 +161,120 @@ export class AnthropicBrain implements BrainPort {
       throw new InvalidPlanningResponseError('LLM did not complete a planning response');
     }
     return value.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim() ?? '';
+  }
+  private recordUsage(usageContext: string, model: string, input: unknown, output: unknown): void {
+    const byModel = this.usage.get(usageContext) ?? new Map<string, ModelUsage>();
+    const previous = byModel.get(model) ?? { modelCalls: 0, inputTokens: 0, outputTokens: 0 };
+    const inputTokens = Number.isSafeInteger(input) && (input as number) >= 0 ? input as number : 0;
+    const outputTokens = Number.isSafeInteger(output) && (output as number) >= 0 ? output as number : 0;
+    byModel.set(model, {
+      modelCalls: previous.modelCalls + 1,
+      inputTokens: previous.inputTokens + inputTokens,
+      outputTokens: previous.outputTokens + outputTokens,
+    });
+    this.usage.set(usageContext, byModel);
+    if (!this.activeUsageSessions.has(usageContext)) {
+      this.completedUsageSessions.delete(usageContext);
+      this.completedUsageSessions.add(usageContext);
+      this.pruneCompletedUsage();
+    }
+  }
+  /**
+   * Streaming Messages API call with tools. The stable system prompt and the tool list are marked for
+   * prompt caching, so later turns in a meeting skip re-reading the repository map.
+   */
+  async streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
+    const tools = request.tools.map((tool, index) => ({ ...tool,
+      ...(index === request.tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}) }));
+    const res = await this.http('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': this.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: this.agentModel, max_tokens: request.maxTokens, stream: true,
+        system: [
+          { type: 'text', text: request.stableSystem, cache_control: { type: 'ephemeral' } },
+          ...(request.turnSystem ? [{ type: 'text', text: request.turnSystem }] : []),
+        ],
+        messages: request.messages,
+        ...(tools.length ? { tools } : {}),
+      }),
+      signal: AbortSignal.timeout(request.timeoutMs ?? 30_000),
+    });
+    if (!res.ok || !res.body) throw new Error(`Anthropic Messages API failed: HTTP ${res.status}`);
+    const blocks: Array<{ type: string; text: string; id?: string; name?: string; json: string } | undefined> = [];
+    let stopReason = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
+    const handle = (event: Record<string, unknown>) => {
+      const type = event.type;
+      if (type === 'message_start') {
+        const usage = (event.message as { usage?: Record<string, number> } | undefined)?.usage ?? {};
+        // Cache writes cost 1.25x and cache reads 0.1x of normal input; fold them into one input count.
+        inputTokens = (usage.input_tokens ?? 0) + Math.round((usage.cache_creation_input_tokens ?? 0) * 1.25) +
+          Math.round((usage.cache_read_input_tokens ?? 0) * 0.1);
+        outputTokens = usage.output_tokens ?? 0;
+      } else if (type === 'content_block_start') {
+        const block = event.content_block as { type: string; text?: string; id?: string; name?: string };
+        blocks[event.index as number] = { type: block.type, text: block.text ?? '', id: block.id, name: block.name, json: '' };
+        if (block.type === 'text' && block.text) onText(block.text);
+      } else if (type === 'content_block_delta') {
+        const block = blocks[event.index as number];
+        const delta = event.delta as { type: string; text?: string; partial_json?: string };
+        if (!block) return;
+        if (delta.type === 'text_delta' && delta.text) {
+          block.text += delta.text;
+          if (block.type === 'text') onText(delta.text);
+        } else if (delta.type === 'input_json_delta' && delta.partial_json) block.json += delta.partial_json;
+      } else if (type === 'message_delta') {
+        const delta = event.delta as { stop_reason?: string } | undefined;
+        if (delta?.stop_reason) stopReason = delta.stop_reason;
+        const usage = event.usage as { output_tokens?: number } | undefined;
+        if (usage?.output_tokens !== undefined) outputTokens = usage.output_tokens;
+      } else if (type === 'error') {
+        const error = event.error as { type?: string } | undefined;
+        throw new Error(`Anthropic stream error: ${error?.type ?? 'unknown'}`);
+      }
+    };
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let split: number;
+        while ((split = pending.indexOf('\n\n')) >= 0) {
+          const raw = pending.slice(0, split);
+          pending = pending.slice(split + 2);
+          const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (!data) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(data) as Record<string, unknown>; }
+          catch { continue; }
+          handle(event);
+        }
+      }
+    } finally {
+      if (request.usageContext) this.recordUsage(request.usageContext, this.agentModel, inputTokens, outputTokens);
+    }
+    const content: AgentContent[] = [];
+    for (const block of blocks) {
+      if (!block) continue;
+      if (block.type === 'text' && block.text) content.push({ type: 'text', text: block.text });
+      if (block.type === 'tool_use' && block.id && block.name) {
+        let input: Record<string, unknown> = {};
+        if (block.json.trim()) {
+          try {
+            const parsed = JSON.parse(block.json) as unknown;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
+          } catch { /* Unparsable tool input becomes empty; the tool then reports what is missing. */ }
+        }
+        content.push({ type: 'tool_use', id: block.id, name: block.name, input });
+      }
+    }
+    if (!stopReason) throw new Error('Anthropic stream ended without a stop reason');
+    return { content, stopReason };
   }
   private async askWithCodeFallback(system: string, user: string, maxTokens: number,
     usageContext: string | undefined, evidence: readonly Evidence[], question: string,
@@ -234,9 +343,12 @@ Give concise spoken answers. A short affirmative reply may answer your own immed
   }
   usageFor(usageContext: string): AiUsage {
     const entries = [...(this.usage.get(usageContext) ?? new Map<string, ModelUsage>())].map(([model, usage]) => {
-      const code = model === this.codeReasoningModel;
-      const estimatedUsd = (usage.inputTokens * (code ? this.codeInputUsdPerMillion : this.inputUsdPerMillion) +
-        usage.outputTokens * (code ? this.codeOutputUsdPerMillion : this.outputUsdPerMillion)) / 1_000_000;
+      const [inputPrice, outputPrice] = model === this.codeReasoningModel
+        ? [this.codeInputUsdPerMillion, this.codeOutputUsdPerMillion]
+        : model === this.agentModel && model !== this.model
+          ? [this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion]
+          : [this.inputUsdPerMillion, this.outputUsdPerMillion];
+      const estimatedUsd = (usage.inputTokens * inputPrice + usage.outputTokens * outputPrice) / 1_000_000;
       return { model, ...usage, estimatedUsd: Number(estimatedUsd.toFixed(6)) };
     });
     const totals = entries.reduce((total, item) => ({ modelCalls: total.modelCalls + item.modelCalls,
