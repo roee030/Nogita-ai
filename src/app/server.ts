@@ -45,6 +45,9 @@ try {
     dependencies = createDependencies({ ...safeEnv, IDENTITY_MAP_JSON: '[]' });
   }
 }
+if (dependencies.code.prepare) {
+  void dependencies.code.prepare().catch(() => console.error('repository_index_warmup_failed'));
+}
 const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
@@ -120,6 +123,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
                 displayName: participant?.displayName ?? 'Meeting participant', verified: false },
             text, at: Date.now() } });
       },
+      onSpeechActivity: (sessionId, participantUuid) => attendeeCommands.noteSpeechActivity(sessionId, participantUuid),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);

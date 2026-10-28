@@ -97,14 +97,53 @@ test('same-speaker fragments are ordered by provider timestamp', async () => {
   assert.equal(f.emitted[0]?.utterance.text, 'Nogita, first second');
 });
 
-test('a provider-final utterance bypasses caption quiet-window delay but keeps verification policy', async () => {
+test('a provider-final utterance waits for the quiet window and keeps verification policy', async () => {
   jobs.length = 0;
   const f = fixture(); f.router.beginSession('s', owner);
   const accepted = f.router.acceptFinal(f.request('speaker-a', 'Nogita verify 482731', 'final-1'));
-  assert.equal(jobs.length, 0);
+  assert.equal(jobs.length, 1);
+  assert.equal(f.statuses.length, 0);
+  await f.flush();
   await accepted;
   assert.match(f.statuses.at(-1) ?? '', /verified/i);
   assert.equal(f.emitted.length, 0);
+});
+test('resumed interim speech resets the quiet timer without adding transcript text', async () => {
+  const f = fixture(); f.router.beginSession('s');
+  const accepted = f.router.acceptFinal(f.request('speaker-a', 'Nogita, tell me about the', 'final-a', owner));
+  assert.equal(jobs.length, 1);
+  f.router.noteSpeechActivity('s', 'speaker-a');
+  assert.equal(jobs.length, 1);
+  await f.flush();
+  await accepted;
+  assert.equal(f.emitted.length, 1);
+  assert.equal(f.emitted[0]?.utterance.text, 'Nogita, tell me about the');
+});
+test('provider-final fragments from the same speaker reset the timer and become one utterance', async () => {
+  jobs.length = 0;
+  const f = fixture(); f.router.beginSession('s', owner);
+  f.router.accept(f.request('speaker-a', 'Nogita verify 482731', 'verify-1'));
+  await f.flush();
+  const first = f.router.acceptFinal(f.request('speaker-a', 'Nogita, can you explain how the', 'final-a'));
+  assert.equal(jobs.length, 1);
+  const second = f.router.acceptFinal(f.request('speaker-a', 'repository search works?', 'final-b'));
+  assert.equal(jobs.length, 1);
+  await f.flush();
+  await Promise.all([first, second]);
+  assert.equal(f.emitted.length, 1);
+  assert.equal(f.emitted[0]?.utterance.text, 'Nogita, can you explain how the repository search works?');
+});
+test('provider-final speech from different speakers stays in separate quiet-window buffers', async () => {
+  jobs.length = 0;
+  const f = fixture(); f.router.beginSession('s', owner);
+  const first = f.router.acceptFinal(f.request('speaker-a', 'Nogita, answer from speaker A', 'final-a', owner));
+  const second = f.router.acceptFinal(f.request('speaker-b', 'Nogita, answer from speaker B', 'final-b', owner));
+  assert.equal(jobs.length, 2);
+  await f.flush();
+  await Promise.all([first, second]);
+  assert.deepEqual(f.emitted.map(result => result.utterance.text).sort(), [
+    'Nogita, answer from speaker A', 'Nogita, answer from speaker B',
+  ]);
 });
 
 test('verified owner leave request exits the meeting without asking the model', async () => {

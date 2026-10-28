@@ -84,6 +84,7 @@ export interface RealtimeAudioOptions {
   deepgramApiKey: string;
   onTranscript: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string }) => void | Promise<void>;
+  onSpeechActivity?: (sessionId: string, participantUuid: string) => void;
   onUsage?: (sessionId: string, usage: { sttBytes?: number; ttsCharacters?: number }) => void;
   authorizeRecoveredBot?: (sessionId: string, botId: string) => Promise<boolean>;
   onError?: (code: string) => void;
@@ -346,6 +347,7 @@ export class AttendeeRealtimeAudioHub {
       if (isBinary) return;
       let message: unknown;
       try { message = JSON.parse(data.toString()) as unknown; } catch { return; }
+      if (hasNova3SpeechActivity(message)) this.options.onSpeechActivity?.(sessionId, participantUuid);
       const turn = assembleNova3Turn(message, speaker.finalSegments);
       if (turn && !(speaker.lastTurnText === turn && this.now() - (speaker.lastTurnAt ?? 0) < 2_000)) {
         speaker.lastTurnText = turn;
@@ -489,4 +491,16 @@ export class AttendeeRealtimeAudioHub {
   private newSession(sessionId: string): RealtimeSession {
     return { sessionId, pendingFrames: [], speakers: new Map(), participantIdentity: new Map(), closed: false };
   }
+}
+
+export function hasNova3SpeechActivity(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const result = message as Record<string, unknown>;
+  if (result.speech_final === true) return false;
+  const channel = result.channel;
+  const alternatives = channel && typeof channel === 'object'
+    ? (channel as Record<string, unknown>).alternatives : undefined;
+  const first = Array.isArray(alternatives) ? alternatives[0] : undefined;
+  return !!first && typeof first === 'object' && typeof (first as Record<string, unknown>).transcript === 'string'
+    && ((first as Record<string, unknown>).transcript as string).trim().length > 0;
 }

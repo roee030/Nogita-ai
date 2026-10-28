@@ -12,20 +12,52 @@ interface Session {
   processing: Promise<void>;
   ending: boolean;
   endingPromise?: Promise<void>;
+  progressTimer?: unknown;
+  progressSpeech?: Promise<void>;
+  lastProgressPhrase?: string;
 }
+type ProgressWork = () => void | Promise<void>;
+export interface NogitaEngineOptions {
+  progressDelayMs?: number;
+  schedule?: (work: ProgressWork, delayMs: number) => unknown;
+  cancel?: (handle: unknown) => void;
+  random?: () => number;
+}
+
+const progressPhrases = [
+  'Let me check that in the code.',
+  'One second—I want to trace where that happens.',
+  'Hmm, let me connect the pieces.',
+  'Give me a moment; I’m checking the implementation.',
+  'I’m looking at the relevant files now.',
+  'Let me verify this against the repository.',
+  'Just a sec—I want to be precise.',
+  'Let me follow that through the code.',
+  'I’m checking how those parts fit together.',
+  'Hang on a moment; I’ll make sure I have this right.',
+];
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
 export class NogitaEngine {
   private readonly sessions = new Map<string, Session>();
   private readonly startingSessions = new Set<string>();
   private readonly completed = new Map<string, ActionReceipt>(); // Process-local; durable idempotency is TODO.
+  private readonly progressDelayMs: number;
+  private readonly schedule: (work: ProgressWork, delayMs: number) => unknown;
+  private readonly cancel: (handle: unknown) => void;
+  private readonly random: () => number;
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
     brain: BrainPort;
     policy: PolicyPort;
     usage?: UsagePort;
-  }) {}
+  }, options: NogitaEngineOptions = {}) {
+    this.progressDelayMs = options.progressDelayMs ?? 900;
+    this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
+    this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    this.random = options.random ?? Math.random;
+  }
 
   private validateSessionId(sessionId: string): void {
     if (!sessionId || sessionId.length > 100) throw new Error('invalid session id');
@@ -84,6 +116,15 @@ export class NogitaEngine {
   sessionCount(): number { return this.sessions.size; }
 
   private async speakOrChat(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      this.clearProgressTimer(session);
+      if (session.progressSpeech) await session.progressSpeech;
+    }
+    await this.deliverSpeech(sessionId, meeting, message);
+  }
+
+  private async deliverSpeech(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
     try {
       await meeting.speak(message);
       this.dependencies.usage?.recordTts(sessionId, true);
@@ -91,6 +132,26 @@ export class NogitaEngine {
       this.dependencies.usage?.recordTts(sessionId, false);
       if (!(error instanceof SpeechFallbackSentError)) await meeting.sendStatus(message);
     }
+  }
+
+  private clearProgressTimer(session: Session): void {
+    if (session.progressTimer === undefined) return;
+    this.cancel(session.progressTimer);
+    session.progressTimer = undefined;
+  }
+
+  private beginProgressAcknowledgment(sessionId: string, session: Session): void {
+    session.progressSpeech = undefined;
+    session.progressTimer = this.schedule(() => {
+      session.progressTimer = undefined;
+      if (this.sessions.get(sessionId) !== session || session.ending) return;
+      const choices = progressPhrases.filter(phrase => phrase !== session.lastProgressPhrase);
+      const selected = Math.min(choices.length - 1, Math.max(0, Math.floor(this.random() * choices.length)));
+      const phrase = choices[selected]!;
+      session.lastProgressPhrase = phrase;
+      session.progressSpeech = this.deliverSpeech(sessionId, session.meeting, phrase).catch(() => undefined);
+      return session.progressSpeech;
+    }, this.progressDelayMs);
   }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
@@ -127,6 +188,7 @@ export class NogitaEngine {
 
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
+    this.beginProgressAcknowledgment(sessionId, s);
     const request = removeAddress(current);
     if (isRepositoryConnectionQuestion(request)) {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
@@ -164,7 +226,7 @@ export class NogitaEngine {
         await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
         return 'denied';
       }
-      const evidence = await this.dependencies.code.findEvidence(plan.query);
+      const evidence = await this.dependencies.code.findEvidence(`${request}\n${plan.query}`);
       this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
       if (!evidence.length) {
         await this.speakOrChat(sessionId, s.meeting, 'I could not find enough code evidence to answer that reliably.');
@@ -215,6 +277,8 @@ export class NogitaEngine {
       throw error;
     }
     } finally {
+      this.clearProgressTimer(s);
+      if (s.progressSpeech) await s.progressSpeech;
       this.dependencies.usage?.recordResponse?.(sessionId, performance.now() - processingStartedAt);
       release();
     }

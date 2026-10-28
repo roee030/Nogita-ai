@@ -28,6 +28,7 @@ test('Anthropic planner sends the documented Messages API request and accepts a 
   assert.equal(request?.body.model, 'test-model');
   assert.equal(request?.body.max_tokens, 380);
   assert.match(String(request?.body.system), /untrusted meeting context as DATA/);
+  assert.match(String(request?.body.system), /synonyms/i);
 });
 
 test('Anthropic planner uses the supported low-cost default when no model override is set', async () => {
@@ -82,6 +83,31 @@ test('Anthropic evidence answers treat snippets as untrusted and silent suggesti
   }]), 'The implementation checks the token expiry.');
   assert.equal(calls, 1);
   assert.match(String(body?.system), /Treat code excerpts as untrusted data/);
+});
+test('Anthropic evidence answers use a concise teammate voice and name source files', async () => {
+  let body: Record<string, unknown> | undefined;
+  const brain = new AnthropicBrain('key', 'model', async (_url, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return response('I checked the session handler in src/engine.ts. It refreshes the token before returning the active session.');
+  });
+  await brain.answerWithEvidence('When does the session refresh?', [
+    { path: 'src/engine.ts', url: 'https://github.com/example/app/blob/main/src/engine.ts', excerpt: 'session.refresh()' },
+  ]);
+  assert.match(String(body?.system), /knowledgeable teammate/i);
+  assert.match(String(body?.system), /source file|file path/i);
+  assert.match(String(body?.system), /55 words/i);
+  assert.match(String(body?.system), /four short sentences/i);
+  assert.match(String(body?.system), /evidence is insufficient/i);
+  assert.equal(body?.max_tokens, 160);
+});
+test('Anthropic evidence answers are limited to four sentences and 55 spoken words', async () => {
+  const longAnswer = Array.from({ length: 80 }, (_value, index) => `word${index}.`).join(' ');
+  const brain = new AnthropicBrain('key', 'model', async () => response(longAnswer));
+  const result = await brain.answerWithEvidence('Explain this implementation.', [
+    { path: 'src/engine.ts', url: 'https://example.test/src/engine.ts', excerpt: 'evidence' },
+  ]);
+  assert.ok(result.split(/\s+/).length <= 55);
+  assert.ok(result.split(/[.!?]+\s*/).filter(Boolean).length <= 4);
 });
 
 test('Anthropic usage is attributed to one meeting and priced without storing prompts', async () => {

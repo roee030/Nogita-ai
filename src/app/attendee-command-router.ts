@@ -84,16 +84,17 @@ export class AttendeeCommandRouter {
     return completion;
   }
 
-  /** Accept a provider-confirmed completed turn without adding the caption batching delay. */
+  /** Treat provider-final speech as a fragment; a quiet window prevents interruptions at short pauses. */
   acceptFinal(request: AttendeeTranscriptRequest): Promise<void> {
-    const completion = this.accept(request);
-    const state = this.sessions.get(request.sessionId);
-    const entry = state?.buffers.get(request.speakerUuid);
-    if (entry) {
-      this.cancel(entry.timer);
-      void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
-    }
-    return completion;
+    return this.accept(request);
+  }
+
+  /** Keep waiting while live interim recognition shows the speaker has resumed. */
+  noteSpeechActivity(sessionId: string, speakerUuid: string): void {
+    const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
+    if (!entry) return;
+    this.cancel(entry.timer);
+    entry.timer = this.schedule(() => this.flush(sessionId, speakerUuid).catch(this.onError), this.quietMs);
   }
 
   private async flush(sessionId: string, speakerUuid: string): Promise<void> {

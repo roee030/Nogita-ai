@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { assembleNova3Turn, createAttendeeAudioSocketUrl, parseAttendeeAudioFrame,
+import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasNova3SpeechActivity, parseAttendeeAudioFrame,
   verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub } from '../src/app/attendee-realtime-audio.ts';
 
 test('audio socket URL is WSS-only and signed for one meeting session', () => {
@@ -45,6 +45,17 @@ test('Nova-3 ignores interim hypotheses and emits one assembled stable turn per 
   assert.equal(assembleNova3Turn({ is_final: false, speech_final: false,
     channel: { alternatives: [{ transcript: 'unfinished' }] } }, segments), null);
   assert.deepEqual(segments, []);
+});
+
+test('Nova-3 exposes only non-empty interim/final-segment speech activity to the quiet-window guard', () => {
+  assert.equal(hasNova3SpeechActivity({ is_final: false, speech_final: false,
+    channel: { alternatives: [{ transcript: 'I am still talking' }] } }), true);
+  assert.equal(hasNova3SpeechActivity({ is_final: true, speech_final: false,
+    channel: { alternatives: [{ transcript: 'next thought' }] } }), true);
+  assert.equal(hasNova3SpeechActivity({ is_final: true, speech_final: true,
+    channel: { alternatives: [{ transcript: 'finished' }] } }), false);
+  assert.equal(hasNova3SpeechActivity({ is_final: false, speech_final: false,
+    channel: { alternatives: [{ transcript: '' }] } }), false);
 });
 
 test('signed Attendee socket reconnect restores only a bot/session pair confirmed by persisted binding', async () => {

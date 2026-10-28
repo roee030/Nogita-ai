@@ -1,16 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NogitaEngine } from '../src/core/engine.ts';
+import { NogitaEngine, type NogitaEngineOptions } from '../src/core/engine.ts';
 import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
-import { SpeechFallbackSentError, type BrainPort, type Plan, type UsagePort } from '../src/core/contracts.ts';
+import { SpeechFallbackSentError, type BrainPort, type CodePort, type Plan, type UsagePort } from '../src/core/contracts.ts';
 
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const engineer = { id: 'engineer', displayName: 'Engineer', verified: true };
-function fixture(brain: BrainPort = new DemoBrain()) {
+function fixture(brain: BrainPort = new DemoBrain(), timing: NogitaEngineOptions = {}, code: CodePort = new DemoCode()) {
   const meeting = new DemoMeeting('m');
   const board = new DemoBoard();
-  const engine = new NogitaEngine({ board, code: new DemoCode(), brain, policy: new AllowlistPolicy(new Set(['lead'])) });
+  const engine = new NogitaEngine({ board, code, brain, policy: new AllowlistPolicy(new Set(['lead'])) }, timing);
   const utter = (text: string, eventId: string, actor = lead) => engine.onUtterance('s', { text, eventId, actor });
   return { engine, meeting, board, utter };
 }
@@ -121,6 +121,154 @@ test('code evidence returns spoken grounded answer plus reference receipt', asyn
   assert.equal(f.board.tasks.length, 0);
   assert.equal(f.meeting.events.filter(e => e.type === 'speak').length, 1);
   assert.equal(f.meeting.events.filter(e => e.type === 'chat').length, 1);
+});
+test('repository lookup combines the speaker question with planner-selected search terms', async () => {
+  let searched = '';
+  const code = { name: 'github', findEvidence: async (query: string) => {
+    searched = query;
+    return [{ path: 'src/auth.ts', url: 'https://github.com/example/app/src/auth.ts', excerpt: 'session.refresh()' }];
+  } };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'session renewal token expiry' }),
+    answerWithEvidence: async () => 'The session refreshes before it expires.',
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, when does account access refresh?', 'combined-code-query');
+  assert.match(searched, /when does account access refresh/i);
+  assert.match(searched, /session renewal token expiry/i);
+});
+test('fast code answers cancel the progress timer and only speak the answer', async () => {
+  const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
+  const timing = {
+    progressDelayMs: 900,
+    schedule: (work: () => void | Promise<void>, delay: number) => {
+      const timer = { work, delay, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancel: (timer: unknown) => { (timer as { canceled: boolean }).canceled = true; },
+    random: () => 0,
+  };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'refresh session' }),
+    answerWithEvidence: async () => 'The session refreshes before it expires.',
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, timing); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, how does the repo refresh a session?', 'fast-code');
+  assert.equal(scheduled[0]?.delay, 900);
+  assert.equal(scheduled[0]?.canceled, true);
+  assert.deepEqual(f.meeting.events.filter(event => event.type === 'speak').map(event => event.text),
+    ['The session refreshes before it expires.']);
+});
+test('slow code lookup says one varied progress phrase before its final answer', async () => {
+  const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
+  const timing = {
+    progressDelayMs: 900,
+    schedule: (work: () => void | Promise<void>, delay: number) => {
+      const timer = { work, delay, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancel: (timer: unknown) => { (timer as { canceled: boolean }).canceled = true; },
+    random: () => 0,
+  };
+  let releaseAnswer!: (answer: string) => void;
+  let answerStarted!: () => void;
+  const started = new Promise<void>(resolve => { answerStarted = resolve; });
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'refresh session' }),
+    answerWithEvidence: async () => new Promise<string>(resolve => {
+      releaseAnswer = resolve;
+      answerStarted();
+    }),
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, timing); await f.engine.startSession('s', f.meeting);
+  const pending = f.utter('Nogita, how does the repo refresh a session?', 'slow-code');
+  await started;
+  assert.equal(scheduled[0]?.delay, 900);
+  await scheduled[0]!.work();
+  releaseAnswer('The session refreshes before it expires.');
+  await pending;
+  const spoken = f.meeting.events.filter(event => event.type === 'speak').map(event => event.text ?? '');
+  assert.equal(spoken.length, 2);
+  assert.match(spoken[0]!, /^(Let me|One second|Hmm|Give me|I’m|Just a sec)/);
+  assert.equal(spoken[1], 'The session refreshes before it expires.');
+});
+test('consecutive slow requests in one meeting do not repeat the same progress phrase', async () => {
+  const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
+  const timing = {
+    progressDelayMs: 900,
+    schedule: (work: () => void | Promise<void>, delay: number) => {
+      const timer = { work, delay, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancel: (timer: unknown) => { (timer as { canceled: boolean }).canceled = true; },
+    random: () => 0,
+  };
+  let releaseAnswer!: (answer: string) => void;
+  let answerStarted!: () => void;
+  let started = new Promise<void>(resolve => { answerStarted = resolve; });
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'refresh session' }),
+    answerWithEvidence: async () => new Promise<string>(resolve => {
+      releaseAnswer = resolve;
+      answerStarted();
+    }),
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, timing); await f.engine.startSession('s', f.meeting);
+  const progressLines: string[] = [];
+  for (const eventId of ['slow-one', 'slow-two']) {
+    const pending = f.utter('Nogita, how does the repo refresh a session?', eventId);
+    await started;
+    await scheduled.at(-1)!.work();
+    progressLines.push(f.meeting.events.filter(event => event.type === 'speak').at(-1)?.text ?? '');
+    releaseAnswer('The session refreshes before it expires.');
+    await pending;
+    started = new Promise<void>(resolve => { answerStarted = resolve; });
+  }
+  assert.notEqual(progressLines[0], progressLines[1]);
+});
+test('progress speech mirrored to chat by the provider is not duplicated on TTS failure', async () => {
+  const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
+  const timing = {
+    schedule: (work: () => void | Promise<void>, delay: number) => {
+      const timer = { work, delay, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancel: (timer: unknown) => { (timer as { canceled: boolean }).canceled = true; },
+    random: () => 0,
+  };
+  const meeting = new MirroredSpeechFailingMeeting('m');
+  const board = new DemoBoard();
+  let releaseAnswer!: (answer: string) => void;
+  let answerStarted!: () => void;
+  const started = new Promise<void>(resolve => { answerStarted = resolve; });
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'inspect_code', query: 'refresh session' }),
+    answerWithEvidence: async () => new Promise<string>(resolve => {
+      releaseAnswer = resolve;
+      answerStarted();
+    }),
+    suggestContribution: async () => false,
+  };
+  const engine = new NogitaEngine({ board, code: new DemoCode(), brain,
+    policy: new AllowlistPolicy(new Set(['lead'])) }, timing);
+  await engine.startSession('s', meeting);
+  const pending = engine.onUtterance('s', { text: 'Nogita, how does the repo refresh a session?', eventId: 'progress-fallback', actor: lead });
+  await started;
+  await scheduled[0]!.work();
+  const progressLine = meeting.events.filter(event => event.type === 'chat').at(-1)?.text ?? '';
+  releaseAnswer('The session refreshes before it expires.');
+  await pending;
+  const chatLines = meeting.events.filter(event => event.type === 'chat').map(event => event.text ?? '');
+  assert.equal(chatLines.filter(line => line === progressLine).length, 1);
+  assert.equal(new Set(chatLines).size, chatLines.length);
 });
 test('repository connection question performs a live code lookup instead of letting the model guess', async () => {
   const brain: BrainPort = {

@@ -65,6 +65,8 @@ export interface UsagePort {
 }
 export interface CodePort {
   readonly name: string;
+  /** Optional preparation such as warming an in-memory repository index at startup. */
+  prepare?(): Promise<void>;
   findEvidence(query: string): Promise<Evidence[]>;
 }
 export type Plan =
