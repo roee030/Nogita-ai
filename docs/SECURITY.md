@@ -16,7 +16,7 @@
 - Draft PR deliberately rejected until a trusted isolated code runner and policy exist.
 - API secret strings are environment variables and never written into demo output.
 - The authenticated readiness report exposes only fixed status messages; it never returns configured values, identifiers, URLs, or secrets.
-- Accepted Slack and Attendee payloads are encrypted with AES-256-GCM before atomic persistence; keyed filenames, exclusive leases, bounded retries/retention, and hash-only completion markers support restart recovery without plaintext at rest.
+- Accepted Slack and Attendee payloads are encrypted with AES-256-GCM before atomic persistence; keyed filenames, exclusive leases, bounded retries/retention, and hash-only completion markers support recovery without plaintext at rest when the backing filesystem persists.
 - Meeting-scoped random challenge verification binds an authorized internal owner to one provider speaker without trusting display names or durably storing the challenge/speaker binding.
 - Attendee answers and action acknowledgements are mirrored to meeting chat before TTS because an accepted speech request does not prove the audio was audible.
 
@@ -25,7 +25,7 @@
 1. **Authenticating meeting participants:** stable provider UUID enrollment and the replacement session-scoped challenge are implemented, but the updated challenge flow still requires final live validation. Self-asserted names are never trusted.
 2. **Audience-level authorization:** a verified questioner may still be in a meeting with unauthorized listeners. Sensitive GitHub/Jira answers must account for all attendees.
 3. **Real-time media disclosure and provider data retention:** verify actual Recall, speech provider and AI processor settings, consent requirements, regional storage and logs.
-4. **Distributed deployment boundary:** encrypted queue recovery and atomic leases work for the current single instance or processes sharing one persistent filesystem. Active/active hosts without shared storage need PostgreSQL or another shared queue. Delivery remains at-least-once; Jira's request marker reconciles its external-write crash window.
+4. **Filesystem durability boundary:** the current Render Free filesystem is ephemeral. Encrypted queue records and replay markers do not survive instance replacement or redeploy, so cross-redeploy recovery remains blocked until a persistent disk or managed queue is configured. Active/active hosts need shared storage. Delivery remains at-least-once; Jira's request marker reconciles its external-write crash window.
 5. **Real-time media:** Attendee signed transcript ingestion and provider TTS are implemented; direct realtime audio streaming is not. Recall still joins/sends chat only.
 6. **Raise-hand limitation:** no native Recall raise-hand API was confirmed. No fallback chat or speech to violate product rules.
 7. **Work completion jobs:** provider deliveries are durable, but arbitrary future long-running code/PR jobs still need cancellation semantics and a shared job queue before enablement.

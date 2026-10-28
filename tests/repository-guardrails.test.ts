@@ -46,3 +46,11 @@ test('production container is non-root, health-checked, secret-safe, and built i
   }
   assert.match(workflow, /docker build --pull=false --tag nogita-ci:\$\{\{ github\.sha \}\} \./);
 });
+
+test('deployment documentation distinguishes encrypted queueing from persistent storage', () => {
+  const readme = readFileSync('README.md', 'utf8');
+  const architecture = readFileSync('docs/architecture-next.md', 'utf8');
+  assert.match(readme, /Render service is on the Free plan, whose filesystem is ephemeral/i);
+  assert.match(readme, /does not survive instance replacement or redeploy/i);
+  assert.match(architecture, /cross-redeploy\s+queue durability remains blocked/i);
+});

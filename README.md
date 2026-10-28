@@ -75,9 +75,9 @@ The `.env.example` file documents environment variables. Never commit real secre
 | Jira Cloud | REST v3 create issue, ADF description, optional allowlisted account ID | Dynamic create metadata, user lookup, robust idempotency, integration account tests |
 | GitHub | Read repository tree and relevant source files with fine-grained token | Semantic search/index, branch/PR creation, access checks for whole meeting audience |
 | monday.com | GraphQL item creation (title + required configured description Text column) | Column discovery, assignee mapping, robust error reconciliation |
-| Slack | Signed Events API and Socket Mode ingestion, encrypted durable delivery queue, mentions and thread replies | Marketplace OAuth distribution, realtime contextual search |
+| Slack | Signed Events API and Socket Mode ingestion, encrypted retry queue, mentions and thread replies | Queue persistence across instance replacement without a persistent disk; Marketplace OAuth distribution; realtime contextual search |
 | Recall | Create a bot with approved Meet/Zoom/Teams URL, send receipt to meeting chat, remove bot | **Real-time audio input/output and authenticated event ingestion**, raise-hand bridge, live validation |
-| Attendee | Join, provider TTS with chat fallback, encrypted durable webhook queue, signed transcript events, session-scoped speaker verification, provider-ended/idle cleanup | Native raise hand and final live validation of the updated flow |
+| Attendee | Join, provider TTS with chat fallback, encrypted retry queue, signed transcript events, session-scoped speaker verification, provider-ended/idle cleanup | Queue persistence across instance replacement without a persistent disk; native raise hand and final live validation of the updated flow |
 | Anthropic | Optional live Messages API text planner and source-grounded summary | Voice pipeline, streaming, latency tuning |
 | Teams messaging | Port planned | Adapter/permissions implementation |
 | Zoom/Meet | Meeting URL routed through Recall bot | Native voice + platform-specific raise hand |
@@ -118,7 +118,7 @@ Generate `NOGITA_QUEUE_ENCRYPTION_KEY` as exactly 32 random bytes encoded with b
 
 - `npm test`: covers activation behavior, meeting-scoped verification, ordered split-caption assembly, automatic voice-to-chat fallback, automatic leave settings, complete per-session usage estimates, encrypted-at-rest delivery recovery, exclusive queue claims, tamper rejection, bounded retention, identity mapping, permissions, Jira crash-retry recovery, Slack verification and Socket Mode, live adapter contracts, race-safe startup, and session cleanup.
 - `npm run demo`: **passes**; demonstrates inactive listening, code lookup, raising a hand without speaking, then authorized task creation and a chat receipt.
-- Live Jira, GitHub, and Slack credentials have been validated in the dedicated test environment; voice media remains unverified.
+- On 2026-10-28, the live Render service reported all readiness checks ready and GitHub, Jira, Attendee, Slack, and the configured Anthropic model connected. This verifies credentials and model availability, not end-to-end Slack replies or audible meeting playback; voice media remains unverified.
 - `npm run typecheck`: **passes** with the installed dependencies.
 
 ## Documentation
@@ -156,3 +156,5 @@ Before testing with a real meeting: deploy the webhook behind stable HTTPS, revi
 ### Production container
 
 `Dockerfile` builds the HTTP service on the pinned Node 22.16 runtime with production dependencies only and runs it as the unprivileged `node` user. Inject configuration through the hosting platform's secret store; the image does not contain `.env`, Git metadata, tests, docs, or local runtime state. Mount a persistent volume at `/var/lib/nogita` for the encrypted queue, hash-only replay ledger, and hashed bot bindings. The container exposes port 8787 and includes a `/health` check. CI builds the image on every pull request.
+
+**Current deployment limitation:** the Nogita Render service is on the Free plan, whose filesystem is ephemeral. The encrypted queue can retry work during the running instance's lifetime, but it does not survive instance replacement or redeploy. Therefore cross-redeploy queue durability remains blocked until persistent storage is configured; readiness does not currently test filesystem persistence. No paid storage has been provisioned.

@@ -20,8 +20,10 @@ response time take priority over adding integrations.
 Signed webhooks enter an encrypted file queue, then speaker verification and
 caption assembly feed a serialized policy-controlled engine. Claude plans;
 GitHub supplies evidence and Jira executes explicit writes. Local TTS sends MP3
-through Attendee. Render Free has ephemeral filesystem storage. Readiness checks
-configuration; the authenticated `/api/connections` endpoint separately probes
+through Attendee. Render Free has ephemeral filesystem storage, so encrypted
+queue records do not survive instance replacement or redeploy; cross-redeploy
+queue durability remains blocked until persistent storage is configured.
+Readiness checks configuration; the authenticated `/api/connections` endpoint separately probes
 GitHub, Jira, Attendee, Slack authentication and configured Anthropic model
 availability. The Anthropic check uses the read-only Models API; it does not
 send a prompt or incur inference usage. Provider audio acceptance does not prove

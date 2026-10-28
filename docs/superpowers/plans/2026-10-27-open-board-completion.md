@@ -81,14 +81,24 @@
 - [x] Document queue recovery, one-instance boundary, key rotation consequence, and complete usage response.
 - [x] Run the full suite, typecheck, demo, secret scan, and diff check. (Container build is delegated to CI because Docker is unavailable on this host.)
 - [x] Review the whole branch and fix Critical/Important findings with regression tests.
-- [ ] Commit final documentation.
+- [x] Commit final documentation. (This follow-up records the Render Free storage limitation explicitly.)
 
 ### Task 4: Deploy and reconcile Jira
 
 **External systems:** GitHub PR #1, Render service, Jira KAN board.
 
-- [ ] Push `feat/attendee-meeting-provider` and wait for GitHub verification.
-- [ ] Verify Render health/readiness and run a controlled live meeting if the deployment is connected to this branch.
+- [x] Push `feat/attendee-meeting-provider` and wait for GitHub verification. (Commit `3b2faab`; CI passed.)
+- [x] Verify Render health/readiness. (Deployment `3b2faab` is live; `/api/readiness` and `/api/connections` returned HTTP 200 with all checks ready/connected.)
+- [ ] Run a controlled live meeting and verify spoken playback. (Not run: no active target meeting was provided for this deployment check.)
 - [ ] Add concise evidence comments and transition completed KAN-11, KAN-20, KAN-21, KAN-22, and KAN-23 to Done; leave any genuinely blocked item open with its exact blocker.
 - [ ] Comment on KAN-1, KAN-2, and KAN-3 that they are empty setup placeholders, then transition them to Done/obsolete.
 - [ ] Re-query the board and report any remaining open issue with evidence.
+
+### Operational status, 2026-10-28
+
+The GitHub/Render checks above are complete. Jira reconciliation and board re-query
+remain pending: the connected browser's saved policy currently denies access to
+the Jira board, and no alternate access path has been attempted. Restore Jira
+browser permission to resume these items. Render Free also has ephemeral storage;
+encrypted queue records do not survive instance replacement or redeploy, and no
+paid storage was provisioned.
