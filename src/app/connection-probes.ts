@@ -1,5 +1,7 @@
+import { DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
+
 export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetch = fetch) {
-  const checks = await Promise.all(['github', 'jira', 'attendee', 'slack'].map(async provider => {
+  const checks = await Promise.all(['github', 'jira', 'attendee', 'slack', 'anthropic'].map(async provider => {
     let url: string;
     const headers: Record<string, string> = {};
     if (provider === 'github') {
@@ -22,10 +24,15 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
       if (!env.ATTENDEE_API_KEY) return { provider, status: 'unconfigured' };
       url = 'https://app.attendee.dev/api/v1/bots';
       headers.Authorization = `Token ${env.ATTENDEE_API_KEY}`;
-    } else {
+    } else if (provider === 'slack') {
       if (!env.SLACK_BOT_TOKEN) return { provider, status: 'unconfigured' };
       url = 'https://slack.com/api/auth.test';
       headers.Authorization = `Bearer ${env.SLACK_BOT_TOKEN}`;
+    } else {
+      if (!env.ANTHROPIC_API_KEY) return { provider, status: 'unconfigured' };
+      url = 'https://api.anthropic.com/v1/models?limit=100';
+      headers['x-api-key'] = env.ANTHROPIC_API_KEY;
+      headers['anthropic-version'] = '2023-06-01';
     }
     const started = performance.now();
     try {
@@ -39,6 +46,19 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
             (payload as Record<string, unknown>).ok === true);
         } catch { /* Malformed provider data is a failed probe; do not expose it. */ }
         return { provider, status: authenticated ? 'connected' : 'failed', httpStatus: response.status,
+          durationMs: Math.round(performance.now() - started) };
+      }
+      if (provider === 'anthropic' && response.ok) {
+        let modelAvailable = false;
+        try {
+          const payload = await response.json() as unknown;
+          const data = payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).data)
+            ? (payload as { data: unknown[] }).data : [];
+          const model = env.ANTHROPIC_MODEL?.trim() || DEFAULT_ANTHROPIC_MODEL;
+          modelAvailable = data.some(item => item && typeof item === 'object' &&
+            (item as Record<string, unknown>).id === model);
+        } catch { /* Malformed provider data is a failed probe; do not expose it. */ }
+        return { provider, status: modelAvailable ? 'connected' : 'failed', httpStatus: response.status,
           durationMs: Math.round(performance.now() - started) };
       }
       await response.body?.cancel();

@@ -22,8 +22,10 @@ caption assembly feed a serialized policy-controlled engine. Claude plans;
 GitHub supplies evidence and Jira executes explicit writes. Local TTS sends MP3
 through Attendee. Render Free has ephemeral filesystem storage. Readiness checks
 configuration; the authenticated `/api/connections` endpoint separately probes
-GitHub, Jira, Attendee and Slack authentication. Provider audio acceptance does
-not prove playback to a human.
+GitHub, Jira, Attendee, Slack authentication and configured Anthropic model
+availability. The Anthropic check uses the read-only Models API; it does not
+send a prompt or incur inference usage. Provider audio acceptance does not prove
+playback to a human.
 
 ## Priorities
 1. Instrument processing latency now, without retaining spoken text. Distinguish
@@ -50,6 +52,9 @@ not prove playback to a human.
 - The HTTP service now consumes Socket Mode events when `SLACK_APP_TOKEN` is
   configured. Readiness requires an active websocket or signed Events API; token
   configuration by itself is not treated as a live connection.
+- Slack thread sessions are capped at 500 and expire after 30 minutes idle.
+  Cleanup protects in-flight work and leaves sessions intact if the meeting
+  provider cannot confirm departure.
 
 ## Release gates
 No success acknowledgement before provider success. No duplicate task after

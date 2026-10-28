@@ -22,6 +22,7 @@ import { EventWorker } from './event-worker.ts';
 import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
+import { SlackConversationRegistry } from './slack-conversations.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -49,6 +50,8 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+const MAX_SLACK_CONVERSATIONS = 500;
+const slackConversations = new SlackConversationRegistry(MAX_SLACK_CONVERSATIONS);
 let providerQueue: EncryptedFileEventQueue | undefined;
 try {
   if (env.NOGITA_QUEUE_ENCRYPTION_KEY) {
@@ -133,20 +136,50 @@ async function processSlack(raw: string): Promise<void> {
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
     env.SLACK_BOT_USER_ID, dependencies.identities);
   if (!request || !env.SLACK_BOT_TOKEN) return;
-  if (!slackWork.accepting) throw new Error('service is shutting down');
-  const ledger = await slackLedger.begin('slack', request.utterance.eventId);
-  if (ledger.status !== 'started') return;
-  const work = finishEventClaim(ledger.claim, async () => {
-    if (!slackThreads.has(request.sessionId)) {
-      await nogita.startSession(request.sessionId,
-        new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
-      slackThreads.add(request.sessionId);
-    }
-    await nogita.onUtterance(request.sessionId, request.utterance);
-  });
-  slackWork.track(work);
-  await work;
+  const lease = slackConversations.enter(request.sessionId);
+  try {
+    if (!slackWork.accepting) throw new Error('service is shutting down');
+    const ledger = await slackLedger.begin('slack', request.utterance.eventId);
+    if (ledger.status !== 'started') return;
+    const work = finishEventClaim(ledger.claim, async () => {
+      if (!nogita.hasSession(request.sessionId)) {
+        await reapSlackConversations();
+        if (slackConversations.size > MAX_SLACK_CONVERSATIONS) {
+          await new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs)
+            .sendStatus('I am at conversation capacity right now. Please try again in a few minutes.');
+          return;
+        }
+        await nogita.startSession(request.sessionId,
+          new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs));
+      }
+      await nogita.onUtterance(request.sessionId, request.utterance);
+    });
+    slackWork.track(work);
+    await work;
+  } finally {
+    lease.release();
+    if (!nogita.hasSession(request.sessionId)) slackConversations.forget(request.sessionId);
+  }
 }
+
+async function reapSlackConversations(): Promise<void> {
+  for (const sessionId of slackConversations.cleanupCandidates()) {
+    if (slackConversations.isActive(sessionId)) continue;
+    try {
+      await nogita.endSession(sessionId);
+      sessionUsage.end(sessionId);
+      slackConversations.forget(sessionId);
+    } catch (error) {
+      console.error('slack_session_cleanup_failed', error instanceof Error ? error.name : 'unknown');
+    }
+  }
+}
+
+const slackConversationReaper = setInterval(() => {
+  void reapSlackConversations().catch(error => console.error('slack_session_cleanup_failed',
+    error instanceof Error ? error.name : 'unknown'));
+}, 60_000);
+slackConversationReaper.unref();
 
 async function authorizeAttendeeEnvelope(envelope: NonNullable<ReturnType<typeof parseAttendeeEnvelope>>): Promise<boolean> {
   const activeBot = attendeeBotsBySession.get(envelope.sessionId);
@@ -385,6 +418,7 @@ function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   if (shutdown) return shutdown;
   shutdown = (async () => {
     console.log(`shutdown_started signal=${signal}`);
+    clearInterval(slackConversationReaper);
     try { await slackSocketClient?.disconnect(); }
     catch (error) { console.error('slack_socket_shutdown_failed', error instanceof Error ? error.name : 'unknown'); }
     slackSocketConnected = false;
