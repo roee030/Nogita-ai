@@ -71,6 +71,16 @@ function withCodeCoverageNotice(code: CodePort, message: string): string {
 }
 const MAX_SPOKEN_WORDS = 90;
 const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
+/** Whole sentences up to about `max` words (at least the first sentence). */
+function firstWords(text: string, max: number): string {
+  const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [text];
+  let out = '';
+  for (const sentence of sentences) {
+    if (out && (out + sentence).split(/\s+/).length > max) break;
+    out += sentence;
+  }
+  return out.trim();
+}
 /** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
 function speakable(text: string): string {
   return text
@@ -303,8 +313,9 @@ export class NogitaEngine {
     }).catch(() => undefined).finally(() => { s.assessing = false; });
   }
 
-  /** Speech for a streamed chunk: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
-  private async deliverStreamedSpeech(sessionId: string, meeting: MeetingPort, text: string): Promise<void> {
+  /** Speech for a streamed chunk: no chat mirror (the whole answer goes to chat once) and no chat fallback.
+   *  Returns false when a participant interrupted, so the rest of the answer is not spoken over them. */
+  private async deliverStreamedSpeech(sessionId: string, meeting: MeetingPort, text: string): Promise<boolean> {
     const active = this.sessions.get(sessionId)?.activeRequest;
     if (active && !active.firstSpeechRecorded) {
       active.firstSpeechRecorded = true;
@@ -313,8 +324,10 @@ export class NogitaEngine {
     try {
       await meeting.speak(text, { chatMirror: false });
       this.dependencies.usage?.recordTts(sessionId, true);
-    } catch {
+      return true;
+    } catch (error) {
       this.dependencies.usage?.recordTts(sessionId, false);
+      return !(error instanceof Error && /interrupt/i.test(error.message));
     }
   }
 
@@ -328,6 +341,7 @@ export class NogitaEngine {
     const raisedReason = s.raisedReason;
     s.raisedReason = undefined;
     const voice = s.meeting.capabilities.has('speak');
+    const streaming = voice && s.meeting.capabilities.has('streaming_speech');
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
     const writeScope = pending ? `${pending.request}\n${request}` : request;
@@ -360,10 +374,12 @@ export class NogitaEngine {
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
+    let interrupted = false;
     const queueSpeech = (text: string) => {
       speech = speech.then(async () => {
+        if (interrupted) return;
         if (s.progressSpeech) await s.progressSpeech;
-        await this.deliverStreamedSpeech(sessionId, s.meeting, text);
+        if (!await this.deliverStreamedSpeech(sessionId, s.meeting, text)) interrupted = true;
       });
     };
     const onSpeech = (raw: string) => {
@@ -375,6 +391,13 @@ export class NogitaEngine {
       const text = speakable(raw);
       if (!text || truncatedSpeech) return;
       // Spoken answers stay short; anything longer is in the chat copy of the answer.
+      if (spokenWords === 0 && !streaming) {
+        const short = firstWords(text, MAX_SPOKEN_WORDS);
+        spokenWords += short.split(/\s+/).length;
+        queueSpeech(short);
+        if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.'); }
+        return;
+      }
       const words = text.split(/\s+/).length;
       if (spokenWords > 0 && spokenWords + words > MAX_SPOKEN_WORDS) {
         truncatedSpeech = true;
@@ -403,7 +426,7 @@ export class NogitaEngine {
         turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined,
           raisedHandReason: raisedReason }),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
-        toolbox, stream: voice, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
+        toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
       }));
     } catch {

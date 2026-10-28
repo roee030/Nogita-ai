@@ -405,3 +405,41 @@ test('proactive: without a native hand, the chat fallback is used only when conf
     if (fallback === 'chat') assert.match(chats[0]!.text!, /something to add about token storage/);
   }
 });
+
+test('when a participant interrupts, the rest of the streamed answer is not spoken (chat still has it)', async () => {
+  class InterruptedMeeting extends RecordingMeeting {
+    override async speak(message: string, options: { chatMirror?: boolean } = {}): Promise<void> {
+      await super.speak(message, options);
+      if (this.spoken.length === 1) throw new Error('speech interrupted by participant');
+    }
+  }
+  const long = 'First point is the cache. ' + 'Then a much longer explanation follows with many words in it. '.repeat(6);
+  const model = new ScriptedModel([{ text: long.trim() }]);
+  const f = fixture(model, { meeting: new InterruptedMeeting('m') });
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, explain the cache', '1');
+  const meeting = f.meeting as InterruptedMeeting;
+  assert.equal(meeting.spoken.length, 1);
+  assert.equal(meeting.spoken[0]!.text, 'First point is the cache.');
+  assert.equal(meeting.events.filter(e => e.type === 'chat').length, 1);
+});
+
+test('voice without queued playback: the lead-in and a short answer are each spoken once, whole', async () => {
+  class NonStreamingMeeting extends RecordingMeeting {
+    override readonly capabilities: ReadonlySet<Capability> = new Set(['listen', 'speak', 'chat_receipt']);
+  }
+  const answer = 'The cache keeps entries for five minutes. ' + 'It also has a much longer explanation that keeps going for a while. '.repeat(10);
+  const model = new ScriptedModel([
+    { text: 'Let me look at the cache.', tools: [{ name: 'search_code', input: { query: 'cache' } }] },
+    { text: answer.trim() },
+  ]);
+  const f = fixture(model, { meeting: new NonStreamingMeeting('m') });
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, how long does the cache keep things?', '1');
+  const spoken = (f.meeting as NonStreamingMeeting).spoken.map(item => item.text);
+  assert.equal(spoken[0], 'Let me look at the cache.');
+  assert.ok(spoken[1]!.startsWith('The cache keeps entries for five minutes.'));
+  assert.ok(spoken[1]!.split(/\s+/).length <= 90);
+  assert.equal(spoken[2], 'I have put the rest in the chat.');
+  assert.equal(spoken.length, 3);
+});

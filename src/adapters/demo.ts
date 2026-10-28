@@ -1,7 +1,7 @@
 import type { ActionReceipt, BoardPort, BrainPort, Capability, CodePort, CreateTask, Evidence, MeetingPort, Plan } from '../core/contracts.ts';
 
 export class DemoMeeting implements MeetingPort {
-  readonly capabilities: ReadonlySet<Capability> = new Set(['listen', 'speak', 'raise_hand', 'chat_receipt']);
+  readonly capabilities: ReadonlySet<Capability> = new Set(['listen', 'speak', 'streaming_speech', 'raise_hand', 'chat_receipt']);
   readonly events: Array<{ type: string; text?: string }> = [];
   constructor(readonly id: string) {}
   async join(): Promise<void> { this.events.push({ type: 'join' }); }

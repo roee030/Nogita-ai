@@ -1,6 +1,7 @@
 /** Platform-neutral domain types: no Jira / monday / Recall shapes leak into orchestration. */
 export type ProviderKind = 'demo' | 'recall' | 'slack' | 'teams' | 'zoom' | 'meet';
-export type Capability = 'listen' | 'speak' | 'raise_hand' | 'chat_receipt' | 'code_search' | 'create_task' | 'draft_pr';
+/** `streaming_speech`: consecutive speak() calls play one after another, so an answer can be spoken while it is written. */
+export type Capability = 'listen' | 'speak' | 'streaming_speech' | 'raise_hand' | 'chat_receipt' | 'code_search' | 'create_task' | 'draft_pr';
 export type SpeechStage = 'chat_mirror' | 'tts_synthesis' | 'audio_submission' | 'speech_submission';
 export type ResponseStage = 'transcript_to_chat_ack' | 'model_roundtrip' | 'turn_to_first_speech_attempt';
 

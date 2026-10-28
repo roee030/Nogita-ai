@@ -31,7 +31,9 @@ export class AttendeeMeeting implements MeetingPort {
       const url = new URL(webhookUrl);
       if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Attendee webhook URL must use HTTPS');
     }
-    this.capabilities = new Set(webhookUrl ? ['listen', 'speak', 'chat_receipt'] : ['speak', 'chat_receipt']);
+    const base: Capability[] = webhookUrl ? ['listen', 'speak', 'chat_receipt'] : ['speak', 'chat_receipt'];
+    // The realtime bridge plays one request after another; MP3/provider TTS requests may overlap.
+    this.capabilities = new Set(streamSpeech ? [...base, 'streaming_speech'] : base);
   }
 
   get botIdentifier(): string | undefined { return this.botId; }

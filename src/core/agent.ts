@@ -41,7 +41,8 @@ export interface AgentTurn {
   turnSystem: string;
   messages: AgentMessage[];
   toolbox: AgentToolbox;
-  /** Called with ready-to-speak text, in order. Only used when `stream` is true. */
+  /** Called with ready-to-speak text, in order: sentence chunks when `stream` is true, otherwise each
+   *  lead-in once its step ends and the final answer once it is complete. */
   onSpeech?: (text: string) => void;
   stream: boolean;
   usageContext?: string;
@@ -146,6 +147,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     chunker?.flush();
     const text = response.content.filter(block => block.type === 'text')
       .map(block => (block as { text: string }).text).join('').trim();
+    if (!turn.stream && turn.onSpeech && text) turn.onSpeech(text);
     const uses = response.content.filter(block => block.type === 'tool_use') as
       Array<Extract<AgentContent, { type: 'tool_use' }>>;
     if (!uses.length || response.stopReason !== 'tool_use') {
