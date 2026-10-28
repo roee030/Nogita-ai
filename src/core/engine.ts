@@ -519,7 +519,8 @@ export class NogitaEngine {
     s.raised = false;
     s.pendingFollowUp = undefined;
     if (this.dependencies.agent) {
-      this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs);
+      // In a text thread the answer arrives in seconds; a "one second" message would only add noise.
+      if (s.meeting.capabilities.has('speak')) this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs);
       const agentRequest = directlyAddressed ? removeAddress(current) : current;
       s.activeRequest = { actorId: utterance.actor.id, request: agentRequest, startedAt: processingStartedAt, firstSpeechRecorded: false };
       const outcome = await this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined);
