@@ -7,7 +7,7 @@ interface Session {
   meeting: MeetingPort;
   history: ConversationTurn[]; // ephemeral: purged when session ends
   pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number };
-  activeRequest?: { actorId: string; request: string };
+  activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
   lastArrivalSequence: number;
   eventIds: Set<string>;
   raised: boolean;
@@ -73,7 +73,7 @@ export class NogitaEngine {
     policy: PolicyPort;
     usage?: UsagePort;
   }, options: NogitaEngineOptions = {}) {
-    this.progressDelayMs = options.progressDelayMs ?? 4_500;
+    this.progressDelayMs = options.progressDelayMs ?? 1_000;
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
@@ -86,6 +86,7 @@ export class NogitaEngine {
 
   private addSession(sessionId: string, meeting: MeetingPort): void {
     this.validateSessionId(sessionId);
+    this.dependencies.brain.beginUsageSession?.(sessionId);
     this.sessions.set(sessionId, {
       meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       processing: Promise.resolve(), ending: false,
@@ -121,6 +122,7 @@ export class NogitaEngine {
       if (leaveProvider) await session.meeting.leave();
       if (this.sessions.get(sessionId) !== session) return;
       this.sessions.delete(sessionId);
+      this.dependencies.brain.endUsageSession?.(sessionId);
       session.history.length = 0;
       session.pendingFollowUp = undefined;
       session.activeRequest = undefined;
@@ -158,6 +160,11 @@ export class NogitaEngine {
   }
 
   private async deliverSpeech(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
+    const active = this.sessions.get(sessionId)?.activeRequest;
+    if (active && !active.firstSpeechRecorded) {
+      active.firstSpeechRecorded = true;
+      this.dependencies.usage?.recordResponseStage?.(sessionId, 'turn_to_first_speech_attempt', performance.now() - active.startedAt);
+    }
     try {
       await meeting.speak(message);
       this.dependencies.usage?.recordTts(sessionId, true);
@@ -165,6 +172,12 @@ export class NogitaEngine {
       this.dependencies.usage?.recordTts(sessionId, false);
       if (!(error instanceof SpeechFallbackSentError)) await meeting.sendStatus(message);
     }
+  }
+
+  private async modelCall<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    const startedAt = performance.now();
+    try { return await run(); }
+    finally { this.dependencies.usage?.recordResponseStage?.(sessionId, 'model_roundtrip', performance.now() - startedAt); }
   }
 
   private clearProgressTimer(session: Session): void {
@@ -185,6 +198,13 @@ export class NogitaEngine {
       session.progressSpeech = this.deliverSpeech(sessionId, session.meeting, phrase).catch(() => undefined);
       return session.progressSpeech;
     }, this.progressDelayMs);
+  }
+
+  /** Interim human speech cancels unsent filler for the prior turn. */
+  cancelProgressForSpeechActivity(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.ending || session.progressTimer === undefined) return;
+    this.clearProgressTimer(session);
   }
 
   async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
@@ -239,7 +259,7 @@ export class NogitaEngine {
     const request = directlyAddressed ? removeAddress(current)
       : pending && /\b(?:repo|repository|github|code)\b/i.test(pending.question)
         ? `${pending.request} repository` : current;
-    s.activeRequest = { actorId: utterance.actor.id, request };
+    s.activeRequest = { actorId: utterance.actor.id, request, startedAt: processingStartedAt, firstSpeechRecorded: false };
     if (isRepositoryConnectionQuestion(request)) {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
         await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
@@ -292,8 +312,8 @@ export class NogitaEngine {
     }
     if (initialEvidence.length) this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
     const conversation = continuation ? s.history.slice() : s.history.slice(0, -1);
-    const plan = await this.dependencies.brain.plan(request, conversation.map(turn => turn.text),
-      sessionId, initialEvidence, conversation);
+    const plan = await this.modelCall(sessionId, () => this.dependencies.brain.plan(request,
+      conversation.map(turn => turn.text), sessionId, initialEvidence, conversation));
     if (plan.kind === 'answer') {
       const grounded = plan.evidence && plan.evidenceQuote && plan.evidenceQuote.length >= 12 &&
         plan.evidence.excerpt.includes(plan.evidenceQuote) &&
@@ -304,7 +324,7 @@ export class NogitaEngine {
           await this.speakOrChat(sessionId, s.meeting, missingCodeEvidenceMessage(this.dependencies.code));
           return 'answered';
         }
-        const spoken = await this.dependencies.brain.answerWithEvidence(request, initialEvidence, sessionId);
+        const spoken = await this.modelCall(sessionId, () => this.dependencies.brain.answerWithEvidence(request, initialEvidence, sessionId));
         await this.speakOrChat(sessionId, s.meeting, withCodeCoverageNotice(this.dependencies.code, spoken));
         await s.meeting.sendCompletion({ provider: this.dependencies.code.name, kind: 'code_lookup',
           url: initialEvidence[0]!.url, label: 'Code reference' });
@@ -338,7 +358,7 @@ export class NogitaEngine {
         await this.speakOrChat(sessionId, s.meeting, missingCodeEvidenceMessage(this.dependencies.code));
         return 'answered';
       }
-      const spoken = await this.dependencies.brain.answerWithEvidence(request, evidence, sessionId);
+      const spoken = await this.modelCall(sessionId, () => this.dependencies.brain.answerWithEvidence(request, evidence, sessionId));
       await this.speakOrChat(sessionId, s.meeting, withCodeCoverageNotice(this.dependencies.code, spoken));
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,

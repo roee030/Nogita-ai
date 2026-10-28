@@ -192,3 +192,109 @@ test('Anthropic usage cost uses configured per-million token prices', async () =
 
   assert.equal(brain.usageFor('priced-meeting').estimatedUsd, 0.003);
 });
+
+test('optional code model is selected only for complex multi-file questions and capped per meeting', async () => {
+  const models: string[] = [];
+  const brain = new AnthropicBrain('key', 'fast-model', async (_url, init) => {
+    models.push((JSON.parse(String(init?.body)) as { model: string }).model);
+    return response('{"kind":"answer","message":"I checked the supplied files."}',
+      { input_tokens: 1_000, output_tokens: 100 });
+  }, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, {
+    codeReasoningModel: 'reasoning-model', inputUsdPerMillion: 3, outputUsdPerMillion: 6,
+    maxCodeReasoningCallsPerSession: 2,
+  });
+  const evidence = [
+    { path: 'src/app/server.ts', url: 'https://example.test/server', excerpt: 'server accepts a request' },
+    { path: 'src/core/engine.ts', url: 'https://example.test/engine', excerpt: 'engine handles a request' },
+  ];
+  brain.beginUsageSession('meeting');
+  await brain.plan('Hello?', [], 'meeting', evidence);
+  await brain.plan('Why does the request flow across the server and engine?', [], 'meeting', evidence);
+  await brain.plan('How does the architecture connect these modules?', [], 'meeting', evidence);
+  await brain.plan('Why does the request flow across the server and engine?', [], 'meeting', evidence);
+  assert.deepEqual(models, ['fast-model', 'reasoning-model', 'reasoning-model', 'fast-model']);
+  const usage = brain.usageFor('meeting');
+  assert.equal(usage.modelCalls, 4);
+  assert.equal(usage.estimatedUsd, 0.0096);
+  assert.deepEqual(usage.modelBreakdown?.map(item => [item.model, item.modelCalls]),
+    [['fast-model', 2], ['reasoning-model', 2]]);
+});
+
+test('code questions stay on the fast model when optional reasoning is not configured', async () => {
+  const models: string[] = [];
+  const brain = new AnthropicBrain('key', 'fast-model', async (_url, init) => {
+    models.push((JSON.parse(String(init?.body)) as { model: string }).model);
+    return response('{"kind":"answer","message":"I checked the files."}');
+  });
+  brain.beginUsageSession('meeting');
+  await brain.plan('Why does this flow across modules?', [], 'meeting', [
+    { path: 'a.ts', url: 'https://example.test/a', excerpt: 'source a' },
+    { path: 'b.ts', url: 'https://example.test/b', excerpt: 'source b' },
+  ]);
+  assert.deepEqual(models, ['fast-model']);
+});
+
+test('failed reasoning calls consume the per-meeting attempt budget', async () => {
+  const models: string[] = [];
+  const brain = new AnthropicBrain('key', 'fast-model', async (_url, init) => {
+    const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+    models.push(model);
+    if (model === 'reasoning-model') return new Response('temporary failure', { status: 503 });
+    return response('{"kind":"answer","message":"I checked the files."}');
+  }, {}, { codeReasoningModel: 'reasoning-model', maxCodeReasoningCallsPerSession: 1 });
+  const evidence = [
+    { path: 'a.ts', url: 'https://example.test/a', excerpt: 'source a' },
+    { path: 'b.ts', url: 'https://example.test/b', excerpt: 'source b' },
+  ];
+  brain.beginUsageSession('meeting');
+  await brain.plan('Why do these files interact?', [], 'meeting', evidence);
+  await brain.plan('Why do these files interact?', [], 'meeting', evidence);
+  assert.deepEqual(models, ['reasoning-model', 'fast-model', 'fast-model']);
+});
+
+test('code reasoning uses a shorter timeout and falls back to the fast model on transport failure', async () => {
+  const requests: Array<{ model: string; signal?: AbortSignal | null }> = [];
+  const brain = new AnthropicBrain('key', 'fast-model', async (_url, init) => {
+    const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+    requests.push({ model, signal: init?.signal });
+    if (model === 'reasoning-model') throw new Error('transport unavailable');
+    return response('{"kind":"answer","message":"I can only confirm what the snippets show."}');
+  }, {}, { codeReasoningModel: 'reasoning-model', maxCodeReasoningCallsPerSession: 1 });
+  brain.beginUsageSession('meeting');
+  const answer = await brain.plan('Why do these files interact?', [], 'meeting', [
+    { path: 'a.ts', url: 'https://example.test/a', excerpt: 'source a' },
+    { path: 'b.ts', url: 'https://example.test/b', excerpt: 'source b' },
+  ]);
+  assert.equal(answer.kind, 'answer');
+  assert.deepEqual(requests.map(request => request.model), ['reasoning-model', 'fast-model']);
+  assert.ok(requests[0]?.signal);
+});
+
+test('active meeting keeps its reasoning cap and cost totals while completed meetings are pruned', async () => {
+  const models: string[] = [];
+  const brain = new AnthropicBrain('key', 'fast-model', async (_url, init) => {
+    const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+    models.push(model);
+    return response('{"kind":"answer","message":"I checked the files."}',
+      { input_tokens: 100, output_tokens: 10 });
+  }, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, {
+    codeReasoningModel: 'reasoning-model', inputUsdPerMillion: 3, outputUsdPerMillion: 6,
+    maxCodeReasoningCallsPerSession: 1,
+  });
+  const evidence = [
+    { path: 'a.ts', url: 'https://example.test/a', excerpt: 'source a' },
+    { path: 'b.ts', url: 'https://example.test/b', excerpt: 'source b' },
+  ];
+  brain.beginUsageSession('long-meeting');
+  await brain.plan('Why do these files interact?', [], 'long-meeting', evidence);
+  for (let index = 0; index < 105; index++) {
+    const sessionId = `short-${index}`;
+    brain.beginUsageSession(sessionId);
+    await brain.plan('Hello?', [], sessionId);
+    brain.endUsageSession(sessionId);
+  }
+  await brain.plan('Why do these files interact?', [], 'long-meeting', evidence);
+  assert.deepEqual([models[0], models.at(-1)], ['reasoning-model', 'fast-model']);
+  assert.equal(brain.usageFor('long-meeting').modelCalls, 2);
+  assert.equal(brain.usageFor('long-meeting').estimatedUsd, 0.00048);
+});

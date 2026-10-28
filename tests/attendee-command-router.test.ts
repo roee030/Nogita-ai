@@ -66,6 +66,45 @@ test('correct challenge binds only that meeting speaker and replay is ignored', 
   assert.deepEqual(f.emitted[0]?.utterance.actor, owner);
 });
 
+test('spoken verification digits bind only the speaker who said the challenge', async () => {
+  for (const [index, spoken] of [
+    'Nogita verify four, eight, two, seven, three, one.',
+    'Ah, nogita. Verify four, eight, two, seven, three, one.',
+    'Nogita verify 48-2731.',
+    'Nogita verify four 8 two 7 three 1.',
+    'Nogeta verify 482731.',
+    'Novita verify four, eight, two, seven, three, one.',
+    'No nogita verify 482731.',
+  ].entries()) {
+    const f = fixture(); f.router.beginSession('s', owner);
+    f.router.accept(f.request('speaker-a', spoken, `verify-${index}`));
+    await f.flush();
+    assert.match(f.statuses.at(-1) ?? '', /verified/i, spoken);
+    f.router.accept(f.request('speaker-a', 'Nogita, explain the repository', `owner-${index}`));
+    f.router.accept(f.request('speaker-b', 'Nogita, open a task', `other-${index}`));
+    await f.flush();
+    assert.equal(f.emitted.length, 1, spoken);
+    assert.deepEqual(f.emitted[0]?.utterance.actor, owner);
+  }
+});
+
+test('spoken verification rejects wrong, extra, and action-bearing codes', async () => {
+  for (const [index, spoken] of [
+    'Nogita verify four eight two seven three zero',
+    'Nogita verify four eight two seven three one five',
+    'Nogita verify 482731 and open a task',
+    'Nogita verify 48273',
+  ].entries()) {
+    const f = fixture(); f.router.beginSession('s', owner);
+    f.router.accept(f.request('speaker-a', spoken, `wrong-${index}`));
+    await f.flush();
+    assert.doesNotMatch(f.statuses.at(-1) ?? '', /^Verified /i, spoken);
+    f.router.accept(f.request('speaker-a', 'Nogita, explain the repository', `question-${index}`));
+    await f.flush();
+    assert.equal(f.emitted.length, 0, spoken);
+  }
+});
+
 test('ending a session clears pending fragments, challenge, and binding', async () => {
   const f = fixture(); f.router.beginSession('s', owner);
   f.router.accept(f.request('speaker-a', 'Nogita verify 482731', 'verify-1'));
@@ -116,6 +155,28 @@ test('a semantic completed turn is processed without another quiet-window delay'
   await accepted;
   assert.equal(f.emitted.length, 1);
   assert.equal(jobs.length, 0);
+});
+test('router records transcript-to-chat acknowledgement without retaining speech', async () => {
+  const samples: Array<{ sessionId: string; durationMs: number }> = [];
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    onChatAck: (sessionId, durationMs) => samples.push({ sessionId, durationMs }),
+  });
+  router.beginSession('s', owner);
+  await router.acceptCompletedTurn({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'measured', actor: owner, text: 'Nogita, hello' } });
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0]?.sessionId, 's');
+  assert.ok(Number.isFinite(samples[0]?.durationMs));
+  assert.ok(samples[0]!.durationMs >= 0);
+});
+test('interim speech activity reaches the engine even after the transcript buffer was flushed', () => {
+  const activity: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    onSpeechActivity: sessionId => { activity.push(sessionId); },
+  });
+  router.beginSession('s', owner);
+  router.noteSpeechActivity('s', 'speaker-a');
+  assert.deepEqual(activity, ['s']);
 });
 test('resumed interim speech resets the quiet timer without adding transcript text', async () => {
   const f = fixture(); f.router.beginSession('s');

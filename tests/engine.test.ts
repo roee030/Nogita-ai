@@ -455,6 +455,76 @@ test('fast code answers cancel the progress timer and only speak the answer', as
   assert.deepEqual(f.meeting.events.filter(event => event.type === 'speak').map(event => event.text),
     ['The session refreshes before it expires.']);
 });
+test('default spoken progress starts after one second of verified slow work', async () => {
+  const scheduled: number[] = [];
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'Hello.' }),
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const f = fixture(brain, { schedule: (work: () => void | Promise<void>, delay: number) => {
+    scheduled.push(delay); return work;
+  }, cancel: () => {} });
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, hello', 'default-progress-delay');
+  assert.equal(scheduled[0], 1_000);
+});
+test('engine reports model roundtrip and first speech start as distinct durations', async () => {
+  const stages: string[] = [];
+  const usage: UsagePort = {
+    recordTts: () => {}, recordExternalAction: () => {},
+    recordResponseStage: (_sessionId, stage, durationMs) => {
+      assert.ok(Number.isFinite(durationMs) && durationMs >= 0);
+      stages.push(stage);
+    },
+  };
+  const brain: BrainPort = {
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'Hello.' }),
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const meeting = new DemoMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain,
+    policy: new AllowlistPolicy(new Set(['lead'])), usage });
+  await engine.startSession('s', meeting);
+  await engine.onUtterance('s', { text: 'Nogita, hello', eventId: 'measured', actor: lead });
+  assert.deepEqual(stages, ['model_roundtrip', 'turn_to_first_speech_attempt']);
+});
+test('engine retains brain usage accounting only while its meeting is active', async () => {
+  const events: string[] = [];
+  const brain: BrainPort = {
+    beginUsageSession: sessionId => { events.push(`start:${sessionId}`); },
+    endUsageSession: sessionId => { events.push(`end:${sessionId}`); },
+    plan: async (): Promise<Plan> => ({ kind: 'answer', message: 'Hello.' }),
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain,
+    policy: new AllowlistPolicy(new Set(['lead'])) });
+  await engine.startSession('s', new DemoMeeting('m'));
+  await engine.endSession('s');
+  assert.deepEqual(events, ['start:s', 'end:s']);
+});
+test('resumed human speech cancels a pending progress phrase for the old turn', async () => {
+  const scheduled: Array<{ work: () => void | Promise<void>; canceled: boolean }> = [];
+  let finishPlan!: (plan: Plan) => void;
+  const brain: BrainPort = {
+    plan: async () => new Promise<Plan>(resolve => { finishPlan = resolve; }),
+    answerWithEvidence: async () => '', suggestContribution: async () => false,
+  };
+  const meeting = new DemoMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain,
+    policy: new AllowlistPolicy(new Set(['lead'])) }, {
+    schedule: work => { const timer = { work, canceled: false }; scheduled.push(timer); return timer; },
+    cancel: handle => { (handle as { canceled: boolean }).canceled = true; },
+  });
+  await engine.startSession('s', meeting);
+  const pending = engine.onUtterance('s', { text: 'Nogita, hello', eventId: 'resumed', actor: lead });
+  while (!finishPlan) await Promise.resolve();
+  engine.cancelProgressForSpeechActivity('s');
+  assert.equal(scheduled[0]?.canceled, true);
+  assert.equal(scheduled.length, 1);
+  finishPlan({ kind: 'answer', message: 'Hello.' });
+  await pending;
+  assert.deepEqual(meeting.events.filter(event => event.type === 'speak').map(event => event.text), ['Hello.']);
+});
 test('slow code lookup says one varied progress phrase before its final answer', async () => {
   const scheduled: Array<{ work: () => void | Promise<void>; delay: number; canceled: boolean }> = [];
   const timing = {

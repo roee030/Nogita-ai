@@ -27,6 +27,11 @@ test('session usage estimates Attendee bot time and combines meeting-scoped AI u
     ai: { model: 'claude-haiku-5-5', modelCalls: 1, inputTokens: 1_000, outputTokens: 100, estimatedUsd: 0.00015 },
     totalEstimatedUsd: 0.083483,
     processingLatency: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+    responseStages: {
+      transcript_to_chat_ack: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+      model_roundtrip: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+      turn_to_first_speech_attempt: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+    },
     speechLatency: {
       chat_mirror: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
       tts_synthesis: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
@@ -34,6 +39,24 @@ test('session usage estimates Attendee bot time and combines meeting-scoped AI u
       speech_submission: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
     },
   });
+});
+
+test('response stage samples are bounded, per meeting, and contain only numeric durations', () => {
+  const usage = new SessionUsageRegistry();
+  usage.start('a', 'attendee'); usage.start('b', 'attendee');
+  for (let duration = 1; duration <= 205; duration++) {
+    usage.recordResponseStage('a', 'model_roundtrip', duration);
+  }
+  usage.recordResponseStage('a', 'turn_to_first_speech_attempt', 800);
+  usage.recordResponseStage('a', 'transcript_to_chat_ack', 350);
+  usage.recordResponseStage('a', 'transcript_to_chat_ack', NaN);
+  usage.recordResponseStage('b', 'model_roundtrip', 9999);
+  const report = usage.report('a')!;
+  assert.deepEqual(report.responseStages.model_roundtrip,
+    { samples: 200, p50Ms: 105, p95Ms: 195, maxMs: 205 });
+  assert.equal(report.responseStages.turn_to_first_speech_attempt.p50Ms, 800);
+  assert.equal(report.responseStages.transcript_to_chat_ack.samples, 1);
+  assert.equal(JSON.stringify(report).includes('9999'), false);
 });
 
 test('processing latency reports percentiles and ignores invalid samples', () => {

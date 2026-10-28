@@ -6,7 +6,7 @@ import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 type ScheduledWork = () => void | Promise<void>;
 interface Fragment { text: string; eventId: string; at?: number; sequence: number }
 interface BufferEntry {
-  actor: Actor; fragments: Fragment[]; timer: unknown;
+  actor: Actor; fragments: Fragment[]; timer: unknown; receivedAt: number;
   waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
 }
 interface SessionState {
@@ -24,10 +24,30 @@ export interface AttendeeCommandRouterOptions {
   cancel?: (handle: unknown) => void;
   onError?: (error: unknown) => void;
   onLeave?: (sessionId: string) => Promise<void>;
+  onChatAck?: (sessionId: string, durationMs: number) => void;
+  onSpeechActivity?: (sessionId: string) => void;
 }
 
-function normalized(value: string): string {
-  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const spokenDigits: Readonly<Record<string, string>> = {
+  zero: '0', oh: '0', o: '0', one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9',
+};
+
+function matchesSpokenChallenge(text: string, challenge: string): boolean {
+  const expected = /^Nogita verify (\d{6})$/.exec(challenge)?.[1];
+  if (!expected) return false;
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  // Only these wake-word variants were observed in the provider transcript.
+  const spoken = /^(?:(?:ah|um|no) )?(?:nogita|nogeta|novita) verify (.+)$/.exec(words)?.[1];
+  if (!spoken) return false;
+  let digits = '';
+  for (const token of spoken.split(' ')) {
+    const part = /^\d+$/.test(token) ? token : spokenDigits[token];
+    if (part === undefined) return false;
+    digits += part;
+    if (digits.length > 6) return false;
+  }
+  return digits === expected;
 }
 
 export class AttendeeCommandRouter {
@@ -38,6 +58,8 @@ export class AttendeeCommandRouter {
   private readonly cancel: (handle: unknown) => void;
   private readonly onError: (error: unknown) => void;
   private readonly onLeave?: (sessionId: string) => Promise<void>;
+  private readonly onChatAck?: (sessionId: string, durationMs: number) => void;
+  private readonly onSpeechActivity?: (sessionId: string) => void;
   private sequence = 0;
 
   constructor(
@@ -51,6 +73,8 @@ export class AttendeeCommandRouter {
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.onError = options.onError ?? (() => {});
     this.onLeave = options.onLeave;
+    this.onChatAck = options.onChatAck;
+    this.onSpeechActivity = options.onSpeechActivity;
   }
 
   beginSession(sessionId: string, owner?: Actor): string | undefined {
@@ -80,7 +104,8 @@ export class AttendeeCommandRouter {
       resolve = resolvePromise; reject = rejectPromise;
     });
     completion.catch(() => undefined);
-    const entry: BufferEntry = { actor, fragments, waiters: [...(previous?.waiters ?? []), { resolve, reject }], timer: undefined };
+    const entry: BufferEntry = { actor, fragments, waiters: [...(previous?.waiters ?? []), { resolve, reject }],
+      timer: undefined, receivedAt: previous?.receivedAt ?? performance.now() };
     entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.quietMs);
     state.buffers.set(request.speakerUuid, entry);
     return completion;
@@ -106,6 +131,8 @@ export class AttendeeCommandRouter {
 
   /** Keep waiting while live interim recognition shows the speaker has resumed. */
   noteSpeechActivity(sessionId: string, speakerUuid: string): void {
+    if (!this.sessions.has(sessionId)) return;
+    this.onSpeechActivity?.(sessionId);
     const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
     if (!entry) return;
     this.cancel(entry.timer);
@@ -132,14 +159,16 @@ export class AttendeeCommandRouter {
       const bound = state.bindings.get(speakerUuid);
       const actor = bound ?? entry.actor;
       if (!actor.verified) {
-        if (state.owner && state.challenge && normalized(text) === normalized(state.challenge)) {
+        if (state.owner && state.challenge && matchesSpokenChallenge(text, state.challenge)) {
           await this.sendStatus(sessionId, `Verified ${state.owner.displayName} for this meeting.`);
+          this.onChatAck?.(sessionId, performance.now() - entry.receivedAt);
           state.bindings.set(speakerUuid, state.owner);
         } else if (directlyAddressesNogita(text)) {
           const guidance = state.challenge
             ? `I heard you, but I cannot verify this speaker. Please repeat: ${state.challenge}`
             : 'I heard you, but I cannot verify this speaker. Start the session with an authorized owner.';
           await this.sendStatus(sessionId, guidance);
+          this.onChatAck?.(sessionId, performance.now() - entry.receivedAt);
         }
       } else {
         const at = ordered.find(fragment => fragment.at !== undefined)?.at;
@@ -148,7 +177,8 @@ export class AttendeeCommandRouter {
         } else {
           if (directlyAddressesNogita(text)) {
             try { await this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
-              'I heard you. I’m checking that now.'); }
+              'I heard you. I’m checking that now.');
+              this.onChatAck?.(sessionId, performance.now() - entry.receivedAt); }
             catch (error) { this.onError(error); }
           }
           await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });

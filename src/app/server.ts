@@ -94,6 +94,8 @@ const attendeeCommands = new AttendeeCommandRouter(
     await meeting.sendStatus(message, 1_500);
   },
   { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown'),
+    onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
+    onSpeechActivity: sessionId => nogita.cancelProgressForSpeechActivity(sessionId),
     onLeave: async sessionId => {
       const meeting = attendeeMeetingsBySession.get(sessionId);
       const botId = meeting?.botIdentifier;

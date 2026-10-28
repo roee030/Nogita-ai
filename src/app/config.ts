@@ -36,6 +36,11 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
     ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL, fetch, {
         inputUsdPerMillion: Number(env.ANTHROPIC_INPUT_USD_PER_MILLION ?? '0.10'),
         outputUsdPerMillion: Number(env.ANTHROPIC_OUTPUT_USD_PER_MILLION ?? '0.50'),
+      }, {
+        codeReasoningModel: env.ANTHROPIC_CODE_REASONING_MODEL,
+        inputUsdPerMillion: Number(env.ANTHROPIC_CODE_INPUT_USD_PER_MILLION ?? '3'),
+        outputUsdPerMillion: Number(env.ANTHROPIC_CODE_OUTPUT_USD_PER_MILLION ?? '15'),
+        maxCodeReasoningCallsPerSession: Number(env.ANTHROPIC_MAX_CODE_REASONING_CALLS_PER_SESSION ?? '3'),
       })
     : new DemoBrain();
   const authorized = new Set((env.AUTHORIZED_ACTOR_IDS ?? 'demo-lead').split(',').map(s => s.trim()).filter(Boolean));

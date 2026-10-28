@@ -1,14 +1,16 @@
-import type { AiUsage, SpeechStage, UsagePort } from '../core/contracts.ts';
+import type { AiUsage, ResponseStage, SpeechStage, UsagePort } from '../core/contracts.ts';
 
 interface SessionTiming {
   provider: string; startedAt: number; endedAt?: number; realtimeAudio?: boolean;
   deepgramSttAudioSeconds: number; deepgramTtsCharacters: number;
   ttsRequests: number; ttsFailures: number; createTasks: number; codeLookups: number;
   responseMs: number[];
+  responseStageMs: Record<ResponseStage, number[]>;
   speechMs: Record<SpeechStage, number[]>;
 }
 type LatencySummary = { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
 const SPEECH_STAGES: readonly SpeechStage[] = ['chat_mirror', 'tts_synthesis', 'audio_submission', 'speech_submission'];
+const RESPONSE_STAGES: readonly ResponseStage[] = ['transcript_to_chat_ack', 'model_roundtrip', 'turn_to_first_speech_attempt'];
 export interface SessionUsageReport {
   sessionId: string;
   provider: string;
@@ -24,6 +26,7 @@ export interface SessionUsageReport {
   ai?: AiUsage;
   totalEstimatedUsd: number;
   processingLatency: { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
+  responseStages: Record<ResponseStage, LatencySummary>;
   speechLatency: Record<SpeechStage, LatencySummary>;
 }
 
@@ -42,7 +45,7 @@ export class SessionUsageRegistry implements UsagePort {
       deepgramSttAudioSeconds: 0, deepgramTtsCharacters: 0,
       createTasks: 0, codeLookups: 0, responseMs: [], speechMs: {
         chat_mirror: [], tts_synthesis: [], audio_submission: [], speech_submission: [],
-      } });
+      }, responseStageMs: { transcript_to_chat_ack: [], model_roundtrip: [], turn_to_first_speech_attempt: [] } });
     if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value!);
     if (realtimeAudio) this.sessions.get(sessionId)!.realtimeAudio = true;
   }
@@ -55,6 +58,13 @@ export class SessionUsageRegistry implements UsagePort {
     if (!session || !Number.isFinite(durationMs) || durationMs < 0) return;
     session.responseMs.push(Math.round(durationMs));
     if (session.responseMs.length > 200) session.responseMs.shift();
+  }
+  recordResponseStage(sessionId: string, stage: ResponseStage, durationMs: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || !RESPONSE_STAGES.includes(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
+    const samples = session.responseStageMs[stage];
+    samples.push(Math.round(durationMs));
+    if (samples.length > 200) samples.shift();
   }
   recordSpeechStage(sessionId: string, stage: SpeechStage, durationMs: number): void {
     const session = this.sessions.get(sessionId);
@@ -120,6 +130,11 @@ export class SessionUsageRegistry implements UsagePort {
       externalActions: { create_task: session.createTasks, code_lookup: session.codeLookups },
       ...(ai ? { ai } : {}), totalEstimatedUsd,
       processingLatency: summarize(durations),
+      responseStages: {
+        transcript_to_chat_ack: summarize(session.responseStageMs.transcript_to_chat_ack),
+        model_roundtrip: summarize(session.responseStageMs.model_roundtrip),
+        turn_to_first_speech_attempt: summarize(session.responseStageMs.turn_to_first_speech_attempt),
+      },
       speechLatency };
   }
 }
