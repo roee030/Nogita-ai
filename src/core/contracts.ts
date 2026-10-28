@@ -144,7 +144,10 @@ export interface BrainPort {
   usageFor?(usageContext: string): AiUsage;
   /** Assesses silent participation; must not trigger any mutating action. */
   suggestContribution(context: readonly string[]): Promise<boolean>;
+  /** Richer, rate-limited assessment used with the agent: whether something critical is being missed, and what. */
+  assessContribution?(context: readonly string[], usageContext?: string): Promise<ContributionAssessment>;
 }
+export interface ContributionAssessment { raise: boolean; reason?: string; topic?: string }
 export interface PolicyPort {
   mayReadCode(actor: Actor): boolean;
   mayWriteTask(actor: Actor): boolean;

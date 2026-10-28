@@ -14,6 +14,11 @@ interface Session {
   lastArrivalSequence: number;
   eventIds: Set<string>;
   raised: boolean;
+  /** Why Nogita raised her hand; told to the agent when someone gives her the floor. */
+  raisedReason?: string;
+  lastAssessmentAt: number;
+  utterancesSinceAssessment: number;
+  assessing: boolean;
   mutedUntil: number;
   processing: Promise<void>;
   ending: boolean;
@@ -27,6 +32,10 @@ export interface NogitaEngineOptions {
   progressDelayMs?: number;
   /** Filler delay when the streaming agent answers; its own spoken lead-in usually comes first. */
   agentProgressDelayMs?: number;
+  /** Where platforms cannot raise a hand natively: 'chat' posts a short hand-raise line, 'none' stays silent. */
+  handRaiseFallback?: 'none' | 'chat';
+  /** Minimum gap between proactive assessments in one meeting. */
+  assessmentIntervalMs?: number;
   schedule?: (work: ProgressWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   random?: () => number;
@@ -84,6 +93,8 @@ export class NogitaEngine {
   private readonly completed = new Map<string, ActionReceipt>(); // Process-local; durable idempotency is TODO.
   private readonly progressDelayMs: number;
   private readonly agentProgressDelayMs: number;
+  private readonly handRaiseFallback: 'none' | 'chat';
+  private readonly assessmentIntervalMs: number;
   private repositoryMap?: { value?: { paths: string[]; readme?: string; revision?: string }; at: number; pending?: Promise<void> };
   private readonly schedule: (work: ProgressWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
@@ -102,6 +113,8 @@ export class NogitaEngine {
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
     this.agentProgressDelayMs = options.agentProgressDelayMs ?? 2_000;
+    this.handRaiseFallback = options.handRaiseFallback ?? 'none';
+    this.assessmentIntervalMs = options.assessmentIntervalMs ?? 45_000;
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
@@ -117,6 +130,7 @@ export class NogitaEngine {
     this.dependencies.brain.beginUsageSession?.(sessionId);
     this.sessions.set(sessionId, {
       meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
+      lastAssessmentAt: 0, utterancesSinceAssessment: 0, assessing: false,
       processing: Promise.resolve(), ending: false,
     });
   }
@@ -263,6 +277,32 @@ export class NogitaEngine {
     } catch { return []; }
   }
 
+  /**
+   * Background check, at most every `assessmentIntervalMs` and after a few new utterances, for something critical
+   * the room is missing. It never speaks: it only raises a hand (or posts the configured chat fallback).
+   */
+  private maybeAssessContribution(sessionId: string, s: Session): void {
+    s.utterancesSinceAssessment++;
+    const canSignal = s.meeting.capabilities.has('raise_hand') || this.handRaiseFallback === 'chat';
+    if (!canSignal || !s.meeting.capabilities.has('listen') || s.raised || s.assessing || this.now() < s.mutedUntil ||
+        s.utterancesSinceAssessment < 4 || this.now() - s.lastAssessmentAt < this.assessmentIntervalMs) return;
+    s.assessing = true;
+    s.lastAssessmentAt = this.now();
+    s.utterancesSinceAssessment = 0;
+    const context = s.history.map(turn => turn.text);
+    void this.dependencies.brain.assessContribution!(context, sessionId).then(async assessment => {
+      if (!assessment.raise || !assessment.reason || this.sessions.get(sessionId) !== s || s.ending || s.raised) return;
+      s.raised = true;
+      s.raisedReason = assessment.reason;
+      s.mutedUntil = this.now() + 5 * 60_000;
+      const native = await s.meeting.raiseHand().catch(() => false);
+      if (!native && this.handRaiseFallback === 'chat') {
+        await s.meeting.sendStatus(`\u270B Nogita has something to add${assessment.topic ? ` about ${assessment.topic}` : ''}. ` +
+          'Say "Nogita, go ahead" to hear it.').catch(() => undefined);
+      }
+    }).catch(() => undefined).finally(() => { s.assessing = false; });
+  }
+
   /** Speech for a streamed chunk: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
   private async deliverStreamedSpeech(sessionId: string, meeting: MeetingPort, text: string): Promise<void> {
     const active = this.sessions.get(sessionId)?.activeRequest;
@@ -285,6 +325,8 @@ export class NogitaEngine {
   private async runAgentTurn(sessionId: string, s: Session, utterance: Utterance, request: string,
     pending: Session['pendingFollowUp']): Promise<ProcessResult | undefined> {
     const agent = this.dependencies.agent!;
+    const raisedReason = s.raisedReason;
+    s.raisedReason = undefined;
     const voice = s.meeting.capabilities.has('speak');
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
@@ -358,7 +400,8 @@ export class NogitaEngine {
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
           chatName: authorized ? this.dependencies.chat?.name : undefined }),
-        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined }),
+        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined,
+          raisedHandReason: raisedReason }),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: voice, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
@@ -436,6 +479,10 @@ export class NogitaEngine {
       (this.dependencies.agent !== undefined || isAffirmativeFollowUp(current));
     if (!directlyAddressed && !continuation) {
       if (pending?.actorId === utterance.actor.id) s.pendingFollowUp = undefined;
+      if (this.dependencies.agent && this.dependencies.brain.assessContribution) {
+        this.maybeAssessContribution(sessionId, s);
+        return 'ignored';
+      }
       if (!s.raised && Date.now() > s.mutedUntil && s.history.length > 1 &&
           await this.dependencies.brain.suggestContribution(s.history.map(turn => turn.text))) {
         const supported = await s.meeting.raiseHand();

@@ -354,3 +354,54 @@ test('the repository map reaches the agent prompt for authorized speakers', asyn
   assert.match(model.requests[0]!.stableSystem, /src\/a\.ts\nsrc\/b\.ts/);
   assert.match(model.requests[0]!.stableSystem, /Readme text/);
 });
+
+class AssessingBrain extends DemoBrain {
+  calls = 0;
+  async assessContribution(): Promise<{ raise: boolean; reason?: string; topic?: string }> {
+    this.calls++;
+    return { raise: true, topic: 'token storage', reason: 'They plan to store API tokens in plain text in the logs.' };
+  }
+}
+class NoHandMeeting extends DemoMeeting {
+  override readonly capabilities: ReadonlySet<Capability> = new Set(['listen', 'speak', 'chat_receipt']);
+  override async raiseHand(): Promise<boolean> { return false; }
+}
+async function settle(): Promise<void> { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); }
+
+test('proactive: a critical miss raises a hand silently, and the reason reaches the agent when given the floor', async () => {
+  const brain = new AssessingBrain();
+  const model = new ScriptedModel([{ text: 'We should not log API tokens; they would end up in plain text.' }]);
+  const meeting = new RecordingMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain,
+    policy: new AllowlistPolicy(new Set(['lead'])), agent: model, people },
+  { schedule: () => 0, cancel: () => undefined, assessmentIntervalMs: 0 });
+  await engine.startSession('s', meeting);
+  for (let i = 1; i <= 3; i++) await engine.onUtterance('s', { eventId: `u${i}`, actor: lead, text: `We log everything, step ${i}.` });
+  await settle();
+  assert.equal(brain.calls, 0, 'waits for a few utterances');
+  await engine.onUtterance('s', { eventId: 'u4', actor: lead, text: 'Including the API tokens.' });
+  await settle();
+  assert.equal(brain.calls, 1);
+  assert.equal(meeting.events.filter(e => e.type === 'raise_hand').length, 1);
+  assert.equal(meeting.events.filter(e => e.type === 'speak' || e.type === 'chat').length, 0);
+  await engine.onUtterance('s', { eventId: 'u5', actor: lead, text: 'Nogita, go ahead.' });
+  assert.match(model.requests[0]!.turnSystem, /plain text in the logs/);
+  assert.match(meeting.spoken[0]!.text, /should not log API tokens/);
+});
+
+test('proactive: without a native hand, the chat fallback is used only when configured', async () => {
+  for (const fallback of ['none', 'chat'] as const) {
+    const brain = new AssessingBrain();
+    const meeting = new NoHandMeeting('m');
+    const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain,
+      policy: new AllowlistPolicy(new Set(['lead'])), agent: new ScriptedModel([]), people },
+    { schedule: () => 0, cancel: () => undefined, assessmentIntervalMs: 0, handRaiseFallback: fallback });
+    await engine.startSession('s', meeting);
+    for (let i = 1; i <= 4; i++) await engine.onUtterance('s', { eventId: `u${i}`, actor: lead, text: `talk ${i}` });
+    await settle();
+    const chats = meeting.events.filter(e => e.type === 'chat');
+    assert.equal(brain.calls, fallback === 'chat' ? 1 : 0);
+    assert.equal(chats.length, fallback === 'chat' ? 1 : 0);
+    if (fallback === 'chat') assert.match(chats[0]!.text!, /something to add about token storage/);
+  }
+});
