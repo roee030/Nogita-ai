@@ -154,6 +154,23 @@ test('provider-ended meeting purges state without sending a redundant leave comm
   assert.equal(f.meeting.events.filter(e => e.type === 'leave').length, 0);
 });
 
+test('failed provider leave keeps the session available for a later leave retry', async () => {
+  const f = fixture();
+  await f.engine.startSession('leave-retry', f.meeting);
+  const originalLeave = f.meeting.leave.bind(f.meeting);
+  let attempts = 0;
+  f.meeting.leave = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('temporary provider failure');
+    await originalLeave();
+  };
+  await assert.rejects(() => f.engine.endSession('leave-retry'), /temporary provider failure/);
+  assert.equal(f.engine.hasSession('leave-retry'), true);
+  await f.engine.endSession('leave-retry');
+  assert.equal(f.engine.hasSession('leave-retry'), false);
+  assert.equal(attempts, 2);
+});
+
 test('restored session accepts events without joining the provider again', async () => {
   const f = fixture();
   f.engine.restoreSession('s', f.meeting);

@@ -24,3 +24,14 @@ test('connection probes verify all configured services with bounded read-only re
   assert.equal(report.ok, true);
   assert.deepEqual(paths, ['/repos/owner/repo/git/trees/main', '/rest/api/3/project/KAN', '/api/v1/bots']);
 });
+
+test('invalid Jira URLs are reported as configuration errors without aborting other probes', async () => {
+  const report = await probeConnections({
+    GITHUB_OWNER: 'owner', GITHUB_REPO: 'repo',
+    JIRA_BASE_URL: 'not a URL', JIRA_EMAIL: 'test@example.com', JIRA_API_TOKEN: 'secret', JIRA_PROJECT_KEY: 'KAN',
+  }, async () => new Response('{}'));
+  assert.equal(report.checks[0]?.status, 'connected');
+  assert.equal(report.checks[1]?.status, 'invalid_configuration');
+  assert.equal(report.checks[2]?.status, 'unconfigured');
+  assert.equal(report.ok, false);
+});

@@ -106,3 +106,55 @@ test('verified owner leave request exits the meeting without asking the model', 
   assert.deepEqual(f.leaves, ['s']);
   assert.equal(f.emitted.length, 0);
 });
+
+test('failed command processing is released for a bounded provider retry', async () => {
+  jobs.length = 0;
+  let attempts = 0;
+  const statuses: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('temporary planner failure');
+  }, async (_sessionId, message) => { statuses.push(message); }, {
+    schedule: work => { jobs.push(work); return work; },
+    cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+  });
+  router.beginSession('s');
+  const request = {
+    sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'retry-me', actor: owner, text: 'Nogita, create a task' },
+  };
+  const first = router.accept(request);
+  await jobs.shift()!();
+  await assert.rejects(first, /temporary planner failure/);
+  assert.match(statuses.at(-1) ?? '', /try again/i);
+
+  const second = router.accept(request);
+  await jobs.shift()!();
+  await second;
+  assert.equal(attempts, 2);
+});
+
+test('failed verification acknowledgement does not bind the speaker prematurely', async () => {
+  jobs.length = 0;
+  let statuses = 0;
+  const emitted: Utterance[] = [];
+  const router = new AttendeeCommandRouter(async (_sessionId, utterance) => { emitted.push(utterance); }, async () => {
+    statuses++;
+    if (statuses === 1) throw new Error('temporary chat failure');
+  }, {
+    randomCode: () => '482731',
+    schedule: work => { jobs.push(work); return work; },
+    cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+  });
+  router.beginSession('s', owner);
+  const challenge = { sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'verify', actor: { id: 'guest', displayName: 'Guest', verified: false }, text: 'Nogita verify 482731' } };
+  const first = router.accept(challenge);
+  await jobs.shift()!();
+  await assert.rejects(first, /temporary chat failure/);
+  const retry = router.accept(challenge);
+  await jobs.shift()!();
+  await retry;
+  assert.equal(emitted.length, 0);
+  assert.equal(statuses, 3); // failure, fallback, then successful verification
+});

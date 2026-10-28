@@ -10,8 +10,11 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
     } else if (provider === 'jira') {
       if (!env.JIRA_BASE_URL || !env.JIRA_EMAIL || !env.JIRA_API_TOKEN || !env.JIRA_PROJECT_KEY)
         return { provider, status: 'unconfigured' };
-      const base = new URL(env.JIRA_BASE_URL);
-      if (base.protocol !== 'https:' || !base.hostname.endsWith('.atlassian.net'))
+      let base: URL;
+      try { base = new URL(env.JIRA_BASE_URL); }
+      catch { return { provider, status: 'invalid_configuration' }; }
+      if (base.protocol !== 'https:' || !base.hostname.endsWith('.atlassian.net') ||
+          base.username || base.password || base.pathname !== '/' || base.search || base.hash)
         return { provider, status: 'invalid_configuration' };
       url = `${base.origin}/rest/api/3/project/${encodeURIComponent(env.JIRA_PROJECT_KEY)}`;
       headers.Authorization = `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString('base64')}`;

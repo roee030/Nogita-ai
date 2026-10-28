@@ -127,8 +127,8 @@ export class AttendeeMeeting implements MeetingPort {
 
   async leave(): Promise<void> {
     const botId = this.botId;
-    this.botId = undefined;
     if (!botId) return;
     await this.request(`/${botId}/leave`);
+    this.botId = undefined;
   }
 }

@@ -96,8 +96,8 @@ export class AttendeeCommandRouter {
       const actor = bound ?? entry.actor;
       if (!actor.verified) {
         if (state.owner && state.challenge && normalized(text) === normalized(state.challenge)) {
-          state.bindings.set(speakerUuid, state.owner);
           await this.sendStatus(sessionId, `Verified ${state.owner.displayName} for this meeting.`);
+          state.bindings.set(speakerUuid, state.owner);
         } else if (directlyAddressesNogita(text)) {
           const guidance = state.challenge
             ? `I heard you, but I cannot verify this speaker. Please repeat: ${state.challenge}`
@@ -116,10 +116,13 @@ export class AttendeeCommandRouter {
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {
       this.onError(error);
+      // Let the durable provider queue retry this delivery. Keep fragments
+      // available for that retry and clear their in-memory dedupe markers.
+      for (const fragment of ordered) state.acceptedEventIds.delete(fragment.eventId);
       try {
         await this.sendStatus(sessionId, 'I could not complete that request. Please try again; you can still ask me to leave.');
-      } catch { /* A failed status must not replay the command indefinitely. */ }
-      for (const waiter of entry.waiters) waiter.resolve();
+      } catch { /* The delivery retry is bounded by the durable queue. */ }
+      for (const waiter of entry.waiters) waiter.reject(error);
     }
   }
 

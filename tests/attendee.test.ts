@@ -111,3 +111,18 @@ test('Attendee: restored bot can speak without creating a replacement bot', asyn
   assert.throws(() => meeting.attach('bot_second'), /already joining/);
   assert.throws(() => new AttendeeMeeting('s', 'key', true, mock).attach('../bad'), /valid ID/);
 });
+
+test('Attendee: failed leave retains the bot ID so leave can be retried', async () => {
+  let attempts = 0;
+  const mock: typeof fetch = async () => {
+    attempts++;
+    return attempts === 1 ? new Response('{}', { status: 503 }) : new Response(null, { status: 204 });
+  };
+  const meeting = new AttendeeMeeting('retry-session', 'test-token', true, mock);
+  meeting.attach('bot_retry123');
+  await assert.rejects(() => meeting.leave(), /HTTP 503/);
+  assert.equal(meeting.botIdentifier, 'bot_retry123');
+  await meeting.leave();
+  assert.equal(meeting.botIdentifier, undefined);
+  assert.equal(attempts, 2);
+});

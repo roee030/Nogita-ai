@@ -11,6 +11,7 @@ interface Session {
   mutedUntil: number;
   processing: Promise<void>;
   ending: boolean;
+  endingPromise?: Promise<void>;
 }
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
@@ -57,16 +58,28 @@ export class NogitaEngine {
   async endSession(sessionId: string, leaveProvider = true): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    if (session.endingPromise) return session.endingPromise;
     session.ending = true;
-    await session.processing;
-    if (this.sessions.get(sessionId) !== session) return;
-    this.sessions.delete(sessionId);
-    session.history.length = 0;
-    session.eventIds.clear();
-    for (const key of this.completed.keys()) {
-      if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
+    const ending = (async () => {
+      await session.processing;
+      if (this.sessions.get(sessionId) !== session) return;
+      // Keep the session and provider handle until leave is confirmed. If the
+      // provider is temporarily unavailable, a later leave command can retry.
+      if (leaveProvider) await session.meeting.leave();
+      if (this.sessions.get(sessionId) !== session) return;
+      this.sessions.delete(sessionId);
+      session.history.length = 0;
+      session.eventIds.clear();
+      for (const key of this.completed.keys()) {
+        if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
+      }
+    })();
+    session.endingPromise = ending;
+    try { await ending; }
+    catch (error) {
+      session.endingPromise = undefined;
+      throw error;
     }
-    if (leaveProvider) await session.meeting.leave();
   }
   sessionCount(): number { return this.sessions.size; }
 
