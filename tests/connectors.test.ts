@@ -258,6 +258,28 @@ test('GitHub public source lookup omits credentials from every request', async (
   assert.equal(out.some(item => item.excerpt.includes('SENSITIVE')), false);
   assert.deepEqual(authorizationHeaders, [null, null]);
 });
+test('GitHub implementation questions prefer matching source over repeated planning prose', async () => {
+  const archive = testTarGz('src/app/speaker.ts',
+    'export function verifySpeaker(speakerUuid: string) { return speakerUuid.length > 0; }', [
+      { path: 'docs/superpowers/plans/meeting.md',
+        content: 'Nogita verify speaker after meeting starts. '.repeat(8) },
+      { path: 'docs/superpowers/specs/meeting.md',
+        content: 'Nogita verify speaker after meeting starts. '.repeat(8) },
+    ]);
+  const fakeFetch: typeof fetch = async url => {
+    const path = String(url);
+    if (path.endsWith('/info/refs?service=git-upload-pack')) return new Response(new Uint8Array(
+      testGitAdvertisement('refs/heads/main', 'c'.repeat(40))),
+    { headers: { 'content-type': 'application/x-git-upload-pack-advertisement' } });
+    if (path === `https://codeload.github.com/example/app/tar.gz/${'c'.repeat(40)}`) {
+      return new Response(new Uint8Array(archive));
+    }
+    throw new Error(`unexpected path ${path}`);
+  };
+  const git = new GitHubCode({ publicRepo: true, owner: 'example', repo: 'app', ref: 'main' }, fakeFetch);
+  const evidence = await git.findEvidence('How does Nogita verify a speaker after the meeting starts?');
+  assert.equal(evidence[0]?.path, 'src/app/speaker.ts');
+});
 test('public archive never follows a redirect away from pinned GitHub codeload', async () => {
   let requests = 0;
   const fakeFetch: typeof fetch = async url => {

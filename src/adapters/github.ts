@@ -479,6 +479,7 @@ export class GitHubCode implements CodePort {
     if (terms.length === 0) return [];
     const { files, commitSha } = await this.loadIndex();
     const phrase = query.toLocaleLowerCase().replace(/[^\p{L}\p{N}_]+/gu, ' ').trim();
+    const asksForPlanningDocs = /\b(?:design|specification|spec|plan|planning|proposal)\b/i.test(query);
     const scored = files.map(file => {
       const path = file.path.toLocaleLowerCase();
       let score = 0;
@@ -492,6 +493,8 @@ export class GitHubCode implements CodePort {
       }
       if (phrase.length >= 8 && file.lower.includes(phrase)) score += 6;
       score += matchedTerms / terms.length;
+      if (matchedTerms >= 2 && /^src\//i.test(path)) score += 20;
+      if (!asksForPlanningDocs && /^docs\/superpowers\//i.test(path)) score -= 30;
       return { file, score };
     }).filter(result => result.score > 0);
     scored.sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
