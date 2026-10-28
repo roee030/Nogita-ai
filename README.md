@@ -6,10 +6,10 @@ An extensible virtual engineering teammate for real-time meetings, project knowl
 
 ## Your exact interaction rules
 
-1. **Nogita speaks only after a direct address by name**, such as `Nogita, how does auth work?`. Follow-up questions without its name do **not** activate speech.
-2. When Nogita detects something significant without being addressed, it may **raise a hand** if the platform supports it. It never speaks or creates a task merely because it raised a hand. Someone must then address it by name to hear its contribution.
-3. **After an explicitly requested task completes, Nogita sends the result/link in the meeting chat.** No unrequested completion speech.
-4. No autonomous Jira/Monday writes, draft PRs, merging, deployments, or background task execution. Draft PR workflow is **deliberately disabled** in this starter.
+1. **Nogita speaks only after a direct address by name**, such as `Nogita, how does auth work?`. The one exception: when Nogita has just asked the same speaker a question (for example "Which Moshe, Cohen or Levi?"), that speaker's reply within 60 seconds reaches her without the name; if the reply is not meant for her she stays silent.
+2. When Nogita detects something critical without being addressed (security or privacy risk, data loss, a contradiction, a factual mistake), it may **raise a hand**. It never speaks or creates a task merely because it raised a hand. Someone must then address it by name ("Nogita, go ahead") to hear its contribution. Where the platform has no native hand raise, `NOGITA_HAND_RAISE_FALLBACK=chat` posts one short chat line instead.
+3. **After an explicitly requested task or message completes, Nogita sends the result/link in the meeting chat.** No unrequested completion speech.
+4. No autonomous Jira/Monday writes, Slack posts, draft PRs, merging, deployments, or background task execution. Writes happen only on an explicit request from an authorized speaker. Draft PR workflow is **deliberately disabled** in this starter.
 5. Meetings are **invitation only**. Meeting context exists in memory for the session and is purged on session end. Live media privacy requires provider-level verification before deployment.
 6. English only for speech and language reasoning.
 
@@ -20,7 +20,6 @@ Requires **Node.js >=22.16.0**.
 The repository pins `22.16.0` in `.node-version`. Use a Node version manager that honors this file, or install any newer supported release before running the commands. Pull requests and pushes to `main` run the same tests and type checks in GitHub Actions with read-only repository permissions.
 
 ```bash
-cd nogita-v1-starter
 npm run demo
 npm test
 ```
@@ -65,6 +64,42 @@ curl http://127.0.0.1:8787/api/readiness \
 
 The protected endpoint returns fixed `ready`/`blocked` checks for the runtime, admin authentication, Slack, Jira, GitHub, Attendee, and live reasoning. It returns HTTP 503 while a blocker remains, which makes it suitable for deployment readiness probes without turning `/health` into a secrets/configuration inventory.
 
+## Conversational agent (live mode)
+
+In live mode every direct request is answered by a tool-using Claude agent (`src/core/agent.ts`, default model
+`claude-sonnet-5-5`), not by a fixed plan. It decides what to look up, can run several lookups in parallel, and
+answers in its own words:
+
+| Source | Tools |
+| --- | --- |
+| GitHub | `search_code`, `read_file` (numbered lines, pinned links), `list_files`, `recent_commits` |
+| Jira | `search_tasks` (text or JQL, always inside the configured projects), `get_task`, `create_task` with the owner resolved by name |
+| Slack | `list_channels`, `read_channel`, `search_messages` (with a user token), `post_message` |
+
+How it stays fast and natural in a voice meeting:
+
+- The answer is **streamed**: the first sentence goes to speech as soon as it exists, later sentences in small batches.
+- Before a lookup Nogita says one short lead-in ("Let me check the retry worker.") instead of a canned filler; after
+  six seconds of silence she says one "still on it".
+- The repository map and README are in the system prompt, which is **prompt-cached** together with the tool list,
+  and an in-memory code search runs before the first model call, so most questions need one lookup round.
+- Spoken answers stay short (about 90 words, no markdown); the full answer goes to meeting chat once, with a code link.
+
+Safety stays outside the model: tools are only offered to authorized speakers, every write is checked against the
+explicit request (`requestsTaskWrite` / `requestsChatPost`), owners are resolved only through the identity map or
+Jira's own assignable-user search (ambiguous names make Nogita ask), and task creation keeps its idempotency key.
+In a Slack thread the agent reads the whole thread as context; a DM is addressed to Nogita without her name.
+
+Measured on 2026-10-28 against this repository, its Jira board and the live API (`tools/agent-smoke.ts`, read-only,
+five questions, speech provider excluded): first spoken text 1.1–2.3 s, complete answer 2.9–6.8 s, about $0.02 per
+question with Sonnet. Run it yourself:
+
+```bash
+node --experimental-transform-types tools/agent-smoke.ts "Nogita, how does the Jira idempotency work?"
+```
+
+`NOGITA_AGENT=off` returns to the one-shot planner.
+
 ## Provider configuration (incrementally)
 
 The `.env.example` file documents environment variables. Never commit real secrets or expose the development API publicly.
@@ -72,13 +107,13 @@ The `.env.example` file documents environment variables. Never commit real secre
 | Provider | Supported in this starter | Still missing |
 | --- | --- | --- |
 | Demo meeting / board / repo | Fully executable local simulation | N/A |
-| Jira Cloud | REST v3 create issue, ADF description, optional allowlisted account ID | Dynamic create metadata, user lookup, robust idempotency, integration account tests |
-| GitHub | Read repository tree and relevant source files with fine-grained token | Semantic search/index, branch/PR creation, access checks for whole meeting audience |
+| Jira Cloud | REST v3 create issue with crash-safe idempotency, search (text/JQL) and read issues, owner by name (identity map or assignable-user search) | Dynamic create metadata, custom fields, issue updates |
+| GitHub | Pinned in-memory index: keyword search, whole-file reads, file listing, recent commits | Semantic/vector search, branch/PR creation, access checks for whole meeting audience |
 | monday.com | GraphQL item creation (title + required configured description Text column) | Column discovery, assignee mapping, robust error reconciliation |
-| Slack | Signed Events API and Socket Mode ingestion, encrypted retry queue, mentions and thread replies | Queue persistence across instance replacement without a persistent disk; Marketplace OAuth distribution; realtime contextual search |
+| Slack | Signed Events API and Socket Mode ingestion, encrypted retry queue, mentions, DMs and thread replies; agent reads channels/threads, searches (user token) and posts on request | Queue persistence across instance replacement without a persistent disk; Marketplace OAuth distribution |
 | Recall | Create a bot with approved Meet/Zoom/Teams URL, send receipt to meeting chat, remove bot | **Real-time audio input/output and authenticated event ingestion**, raise-hand bridge, live validation |
 | Attendee | Join, provider TTS with chat fallback, encrypted retry queue, signed transcript events, session-scoped speaker verification, provider-ended/idle cleanup | Queue persistence across instance replacement without a persistent disk; native raise hand and final live validation of the updated flow |
-| Anthropic | Optional live Messages API text planner and source-grounded summary | Voice pipeline, streaming, latency tuning |
+| Anthropic | Streaming tool-use agent with prompt caching (default), one-shot planner fallback, background hand-raise assessor | Talker/reasoner split for sub-second first words |
 | Teams messaging | Port planned | Adapter/permissions implementation |
 | Zoom/Meet | Meeting URL routed through Recall bot | Native voice + platform-specific raise hand |
 

@@ -1,4 +1,4 @@
-import { DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
+import { DEFAULT_ANTHROPIC_AGENT_MODEL, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
 
 export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetch = fetch) {
   const checks = await Promise.all(['github', 'jira', 'attendee', 'slack', 'anthropic'].map(async provider => {
@@ -54,9 +54,13 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
           const payload = await response.json() as unknown;
           const data = payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).data)
             ? (payload as { data: unknown[] }).data : [];
-          const model = env.ANTHROPIC_MODEL?.trim() || DEFAULT_ANTHROPIC_MODEL;
-          modelAvailable = data.some(item => item && typeof item === 'object' &&
-            (item as Record<string, unknown>).id === model);
+          const models = [env.ANTHROPIC_MODEL?.trim() || DEFAULT_ANTHROPIC_MODEL];
+          // The conversational agent model must be available too whenever live mode uses it.
+          if (env.NOGITA_MODE === 'live' && env.NOGITA_AGENT !== 'off') {
+            models.push(env.ANTHROPIC_AGENT_MODEL?.trim() || DEFAULT_ANTHROPIC_AGENT_MODEL);
+          }
+          modelAvailable = models.every(model => data.some(item => item && typeof item === 'object' &&
+            (item as Record<string, unknown>).id === model));
         } catch { /* Malformed provider data is a failed probe; do not expose it. */ }
         return { provider, status: modelAvailable ? 'connected' : 'failed', httpStatus: response.status,
           durationMs: Math.round(performance.now() - started) };

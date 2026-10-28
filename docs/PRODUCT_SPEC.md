@@ -23,11 +23,11 @@ Parallel passive lane: `JOINED_SILENT -> IMPORTANT_CONTRIBUTION_DETECTED -> HAND
 Invariants:
 
 - `speak()` is called **only** within the `DIRECTLY_ADDRESSED` request context.
-- No implicit 20-second follow-up window: a new spoken reply requires addressing "Nogita" again.
+- No open follow-up window: a new spoken reply requires addressing "Nogita" again, except that the same speaker may answer a question Nogita just asked (60 seconds); Nogita stays silent when that reply is not for her.
 - An accepted raised hand is not permission to speak. The facilitator must still say Nogita's name.
 - `sendCompletion()` runs only for completion of an explicitly requested task or code lookup.
 - Task completion never triggers autonomous speech. Spoken acknowledgement is allowed in the directly addressed turn at task start.
-- A native raise-hand capability that is unsupported remains pending internally. It does not become chat spam or unrequested speech.
+- A native raise-hand capability that is unsupported remains pending internally. It never becomes unrequested speech; a single chat line is posted only when the operator enables `NOGITA_HAND_RAISE_FALLBACK=chat`.
 - A command heard in a conversation that is **not addressed to Nogita** does not grant permission to do anything.
 - No transcript archive or recording by default. Check underlying provider controls and retention separately.
 

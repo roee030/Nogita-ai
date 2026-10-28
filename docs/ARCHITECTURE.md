@@ -32,6 +32,28 @@ flowchart LR
 
 Connectors may use distinct user credentials, project IDs and board field schemas, without requiring changes to conversation orchestration. Keep board task schema generic, and introduce typed provider-specific options only in adapter configuration.
 
+## Conversational agent (2026-10-28)
+
+`NogitaEngine` hands every direct request to `runAgent` (`src/core/agent.ts`) when an `agent` model is configured:
+
+```mermaid
+flowchart LR
+    Utterance --> Address[Direct address or reply to Nogita's question]
+    Address --> Prefetch[Repository map + quick code search]
+    Prefetch --> Model[Claude, streaming, tools]
+    Model -- tool calls --> Toolbox[agent-tools.ts: policy, explicit-write check, idempotency]
+    Toolbox --> GitHub & Jira & Slack
+    Toolbox -- results --> Model
+    Model -- sentences --> Speech[Speech queue, no chat mirror]
+    Model -- final answer --> Chat[Meeting chat once + code link]
+```
+
+- The toolbox is built per turn from the existing ports (`CodePort`, `BoardPort`, `ChatPort`) and `PolicyPort`;
+  unauthorized speakers get no project tools. Writes run one at a time after parallel reads.
+- If the model fails before saying or doing anything, the engine falls back to the one-shot planner path.
+- Proactive participation: `BrainPort.assessContribution` runs in the background at most every 45 seconds and
+  after four new utterances; it can only raise a hand. Its reason is given to the agent when Nogita gets the floor.
+
 ## Future multi-tool provider design
 
 Add `Registry` with per-workspace provider connections, supported-capability discovery and credentials references (encrypted secrets manager). A task should be routed by configured project and provider, not by whichever brand happens to be named in casual speech.
@@ -54,5 +76,6 @@ Identity resolution is independent from provider IDs: one human may have differe
 1. Small TS/Node monolith first, instead of a distributed cluster.
 2. Adapters behind interfaces; real provider API payloads never inside the engine.
 3. Runtime is fail-closed for draft PR and for unsupported raise-hand functions.
-4. Never silently convert a voice failure into a chat answer; spoken behavior is part of the product contract.
+4. Every spoken answer is also posted to meeting chat (Attendee cannot prove playback); a speech failure is
+   recorded in usage metrics rather than hidden.
 5. No background work that persists after meeting end in this starter. A future durable worker must be authorized and able to post completed receipts to the original meeting or an explicitly designated channel.
