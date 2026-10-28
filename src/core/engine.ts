@@ -391,8 +391,9 @@ export class NogitaEngine {
       const text = speakable(raw);
       if (!text || truncatedSpeech) return;
       // Spoken answers stay short; anything longer is in the chat copy of the answer.
-      if (spokenWords === 0 && !streaming) {
-        const short = firstWords(text, MAX_SPOKEN_WORDS);
+      if (!streaming) {
+        // Whole pieces (a lead-in, then the answer): keep at least the first sentence of each.
+        const short = firstWords(text, Math.max(1, MAX_SPOKEN_WORDS - spokenWords));
         spokenWords += short.split(/\s+/).length;
         queueSpeech(short);
         if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.'); }
