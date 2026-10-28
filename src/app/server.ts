@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { SocketModeClient } from '@slack/socket-mode';
 import { NogitaEngine } from '../core/engine.ts';
 import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
@@ -7,6 +8,7 @@ import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
+import { registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
@@ -60,6 +62,9 @@ const attendeeBotsBySession = new Map<string, string>();
 const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
+const slackSocketClient = env.SLACK_APP_TOKEN?.startsWith('xapp-') && env.SLACK_BOT_TOKEN?.startsWith('xoxb-')
+  ? new SocketModeClient({ appToken: env.SLACK_APP_TOKEN }) : undefined;
+let slackSocketConnected = false;
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
 const attendeeCommands = new AttendeeCommandRouter(
   async (sessionId, utterance) => { await nogita.onUtterance(sessionId, utterance); },
@@ -218,6 +223,38 @@ async function acceptAttendee(raw: string, signature: string | undefined): Promi
   return { status: 200, response: { ok: true } };
 }
 
+if (slackSocketClient) {
+  type SocketPayload = { body: unknown; ack: () => Promise<void> };
+  registerSlackEventHandlers<SocketPayload>(slackSocketClient, async ({ body, ack }) => {
+    const request = parseSlackRequest(body as SlackEnvelope, allowedSlackTeams,
+      env.SLACK_BOT_USER_ID, dependencies.identities);
+    if (!request || !providerConfigValid || !slackWork.accepting) { await ack(); return; }
+    try {
+      const raw = JSON.stringify(body);
+      if (providerQueue) await providerQueue.enqueue('slack', request.utterance.eventId, raw);
+      await ack();
+      if (!providerQueue) {
+        void processSlack(raw).catch(error => console.error('slack_event_failed',
+          error instanceof Error ? error.name : 'unknown'));
+      }
+    } catch (error) {
+      console.error('slack_event_failed', error instanceof Error ? error.name : 'unknown');
+    }
+  });
+  slackSocketClient.on('connected', () => {
+    slackSocketConnected = true;
+    console.log('slack_socket_connected');
+  });
+  slackSocketClient.on('disconnected', error => {
+    slackSocketConnected = false;
+    if (error) console.error('slack_socket_disconnected', error instanceof Error ? error.name : 'unknown');
+  });
+  slackSocketClient.on('error', error => console.error('slack_socket_error',
+    error instanceof Error ? error.name : 'unknown'));
+  void slackSocketClient.start().catch(error => console.error('slack_socket_start_failed',
+    error instanceof Error ? error.name : 'unknown'));
+}
+
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
   try {
@@ -246,7 +283,8 @@ const server = createServer(async (req, res) => {
       respond(res, report.ok ? 200 : 503, report); return;
     }
     if (req.method === 'GET' && pathname === '/api/readiness') {
-      const report = buildReadinessReport(env, dependencies.identities, process.versions.node, providerConfigValid);
+      const report = buildReadinessReport(env, dependencies.identities, process.versions.node,
+        providerConfigValid, slackSocketConnected);
       respond(res, report.ok ? 200 : 503, report); return;
     }
     const usageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/usage$/);
@@ -347,6 +385,9 @@ function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   if (shutdown) return shutdown;
   shutdown = (async () => {
     console.log(`shutdown_started signal=${signal}`);
+    try { await slackSocketClient?.disconnect(); }
+    catch (error) { console.error('slack_socket_shutdown_failed', error instanceof Error ? error.name : 'unknown'); }
+    slackSocketConnected = false;
     const closed = new Promise<void>((resolveClose, rejectClose) => {
       server.close(error => error ? rejectClose(error) : resolveClose());
     });

@@ -98,6 +98,10 @@ test('HTTP readiness accepts signed Events API but does not mistake Socket Mode 
     id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
   }]), '22.16.0');
   assert.equal(socketReport.checks.find(item => item.id === 'slack')?.status, 'blocked');
+  const connectedSocketReport = buildReadinessReport(socketOnly, new IdentityDirectory([{
+    id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',
+  }]), '22.16.0', true, true);
+  assert.equal(connectedSocketReport.checks.find(item => item.id === 'slack')?.status, 'ready');
 });
 
 test('Slack readiness rejects nonempty values that are not usable Slack tokens', () => {

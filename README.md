@@ -90,7 +90,7 @@ The `.env.example` file documents environment variables. Never commit real secre
 - For Anthropic set `NOGITA_MODE=live` plus `ANTHROPIC_API_KEY`. `ANTHROPIC_MODEL` is an optional override; the maintained default is `claude-haiku-5-5`, selected for low latency and cost in live conversation. The text planner is functional against the documented API shape but has not been exercised with real credentials. Creating a provider account, purchasing credits, and adding the key remain explicit operator actions; never commit the key.
 - For a Recall join/chat API integration set `MEETING_PROVIDER=recall` and `RECALL_API_KEY`, and provide an allowed `meetingUrl` when creating a session. **Do not attempt a voice demo yet.** `speak()` intentionally rejects so we cannot misrepresent missing functionality.
 - For shared identities, set `IDENTITY_MAP_JSON` in local `.env` from `config/identities.example.json`, then authorize internal IDs such as `roee` in `AUTHORIZED_ACTOR_IDS`. Provider identifiers are never guessed; unknown users remain unauthorized.
-- For Slack configure a signed Events subscription to `POST /slack/events`, supply `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN`, and include Slack user IDs in the allowlist to enable sensitive actions. Set the durable-queue key and mount `NOGITA_STATE_DIR` on persistent storage before production.
+- For Slack, the HTTP service can receive a signed Events API subscription at `POST /slack/events`, or it starts a Socket Mode consumer when valid `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` values are present. Readiness reports Socket Mode ready only after the websocket connects. Include Slack user IDs in the allowlist to enable sensitive actions. For reliable production delivery, prefer signed Events API; avoid running the local Socket Mode command at the same time as the deployed consumer because the two processes do not share replay state.
 
 ### Provisioning test identities
 
@@ -151,7 +151,7 @@ Before testing with a real meeting: deploy the webhook behind stable HTTPS, revi
 3. In local `.env`, set `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_ALLOWED_TEAM_IDS=T012...`, `SLACK_BOT_USER_ID=U012...`, `IDENTITY_MAP_JSON` with the matching Slack identity, and `AUTHORIZED_ACTOR_IDS` with its internal ID. For a no-cost echo test keep `NOGITA_MODE=demo` and providers `demo`; answers and task links are simulated.
 4. Run `npm install` and `npm run slack`, invite the app to a test channel (`/invite @Nogita`), then say `@Nogita hello` or send it a DM saying `Nogita, hello`. The reply stays in the originating thread. DMs without an explicit name are ignored.
 
-`MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. A real spoken-meeting test still requires stable HTTPS, privacy acceptance, an authorized internal owner, and live provider validation; a durable Attendee speaker UUID is optional. Keep `.env` local and never paste tokens into chat or commit them. Note: Socket Mode is for local prototyping, not Slack Marketplace distribution.
+`MEETING_PROVIDER=attendee` is independent of the Slack bot: Slack channel messages are **not** Zoom/Meet/Teams calls. A real spoken-meeting test still requires stable HTTPS, privacy acceptance, an authorized internal owner, and live provider validation; a durable Attendee speaker UUID is optional. Keep `.env` local and never paste tokens into chat or commit them. Slack Socket Mode is not allowed for public Marketplace distribution.
 
 ### Production container
 

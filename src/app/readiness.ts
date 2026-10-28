@@ -49,11 +49,13 @@ export function buildReadinessReport(
   identities: IdentityDirectory,
   nodeVersion = process.versions.node,
   providerConfigValid = true,
+  slackSocketConnected = false,
 ): ReadinessReport {
   const hasAuthorizedOwner = (env.AUTHORIZED_ACTOR_IDS ?? '').split(',')
     .map(id => id.trim()).filter(Boolean).some(id => Boolean(identities.fromId(id)));
   const slackCommon = Boolean(env.SLACK_BOT_TOKEN?.startsWith('xoxb-')) &&
     present(env, ['SLACK_ALLOWED_TEAM_IDS', 'SLACK_BOT_USER_ID']);
+  const slackSocketModeReady = slackCommon && Boolean(env.SLACK_APP_TOKEN?.startsWith('xapp-')) && slackSocketConnected;
   const slackEventsMode = slackCommon && Boolean(env.SLACK_SIGNING_SECRET?.trim());
   const checks: ReadinessCheck[] = [
     check('runtime', supportedNode(nodeVersion), 'The Node.js runtime is supported.',
@@ -66,9 +68,9 @@ export function buildReadinessReport(
     check('durable_queue', validQueueKey(env.NOGITA_QUEUE_ENCRYPTION_KEY),
       'The encrypted durable event queue is configured.',
       'Set NOGITA_QUEUE_ENCRYPTION_KEY to 32 random base64-encoded bytes in deployment secrets.'),
-    check('slack', slackEventsMode,
-      'Signed Slack Events API configuration is complete for the HTTP service.',
-      'Configure the Slack bot/workspace values and signing secret for POST /slack/events; Socket Mode runs through npm run slack.'),
+    check('slack', slackEventsMode || slackSocketModeReady,
+      slackSocketModeReady ? 'Slack Socket Mode is connected.' : 'Signed Slack Events API configuration is complete for the HTTP service.',
+      'Configure signed Events API for POST /slack/events or provide Socket Mode credentials and wait for the WebSocket connection.'),
     check('jira', env.BOARD_PROVIDER === 'jira' &&
       present(env, ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY']),
       'Jira is selected and its required configuration is present.',

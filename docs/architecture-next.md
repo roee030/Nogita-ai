@@ -47,8 +47,9 @@ not prove playback to a human.
 - Failed provider leave retains the session and Attendee bot ID for another
   leave attempt. Admin cleanup now happens only after the provider confirms.
 - Speaker verification binds only after its confirmation message is delivered.
-- HTTP readiness now requires signed Slack Events API configuration; Socket Mode
-  configuration alone does not make the HTTP server a Slack event consumer.
+- The HTTP service now consumes Socket Mode events when `SLACK_APP_TOKEN` is
+  configured. Readiness requires an active websocket or signed Events API; token
+  configuration by itself is not treated as a live connection.
 
 ## Release gates
 No success acknowledgement before provider success. No duplicate task after
