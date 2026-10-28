@@ -88,7 +88,7 @@
 **External systems:** GitHub PR #1, Render service, Jira KAN board.
 
 - [x] Push `feat/attendee-meeting-provider` and wait for GitHub verification. (Commit `3b2faab`; CI passed.)
-- [x] Verify Render health/readiness. (Deployment `3b2faab` is live; `/api/readiness` and `/api/connections` returned HTTP 200 with all checks ready/connected.)
+- [x] Verify Render health/readiness. (Deployment `80dc4f8` is live; provider connections passed. The follow-up readiness guard now correctly reports the unpersisted Render Free filesystem as a blocker.)
 - [ ] Run a controlled live meeting and verify spoken playback. (Not run: no active target meeting was provided for this deployment check.)
 - [ ] Add concise evidence comments and transition completed KAN-11, KAN-20, KAN-21, KAN-22, and KAN-23 to Done; leave any genuinely blocked item open with its exact blocker.
 - [ ] Comment on KAN-1, KAN-2, and KAN-3 that they are empty setup placeholders, then transition them to Done/obsolete.
@@ -96,7 +96,9 @@
 
 ### Operational status, 2026-10-28
 
-The GitHub/Render checks above are complete. Jira reconciliation and board re-query
+The GitHub/Render checks above are complete. Provider auth/model probes are
+connected; readiness is intentionally blocked until persistent storage exists.
+Jira reconciliation and board re-query
 remain pending: the connected browser's saved policy currently denies access to
 the Jira board, and no alternate access path has been attempted. Restore Jira
 browser permission to resume these items. Render Free also has ephemeral storage;

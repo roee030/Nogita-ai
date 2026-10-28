@@ -23,7 +23,8 @@ GitHub supplies evidence and Jira executes explicit writes. Local TTS sends MP3
 through Attendee. Render Free has ephemeral filesystem storage, so encrypted
 queue records do not survive instance replacement or redeploy; cross-redeploy
 queue durability remains blocked until persistent storage is configured.
-Readiness checks configuration; the authenticated `/api/connections` endpoint separately probes
+Readiness blocks on Render unless persistent storage is explicitly confirmed;
+the authenticated `/api/connections` endpoint separately probes
 GitHub, Jira, Attendee, Slack authentication and configured Anthropic model
 availability. The Anthropic check uses the read-only Models API; it does not
 send a prompt or incur inference usage. Provider audio acceptance does not prove

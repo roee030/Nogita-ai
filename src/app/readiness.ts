@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type { IdentityDirectory } from '../core/identity.ts';
 
 export interface ReadinessCheck {
@@ -57,6 +58,8 @@ export function buildReadinessReport(
     present(env, ['SLACK_ALLOWED_TEAM_IDS', 'SLACK_BOT_USER_ID']);
   const slackSocketModeReady = slackCommon && Boolean(env.SLACK_APP_TOKEN?.startsWith('xapp-')) && slackSocketConnected;
   const slackEventsMode = slackCommon && Boolean(env.SLACK_SIGNING_SECRET?.trim());
+  const queueStoragePersistent = env.RENDER !== 'true' ||
+    (env.NOGITA_STATE_PERSISTENT === 'true' && isAbsolute(env.NOGITA_STATE_DIR ?? ''));
   const checks: ReadinessCheck[] = [
     check('runtime', supportedNode(nodeVersion), 'The Node.js runtime is supported.',
       'Upgrade the runtime to Node.js 22.16 or newer.'),
@@ -65,9 +68,11 @@ export function buildReadinessReport(
       'Set a strong local or deployment NOGITA_ADMIN_TOKEN before starting the HTTP service.'),
     check('provider_config', providerConfigValid, 'Selected provider adapters accepted their configuration.',
       'Correct invalid provider configuration before processing events or sessions.'),
-    check('durable_queue', validQueueKey(env.NOGITA_QUEUE_ENCRYPTION_KEY),
-      'The encrypted durable event queue is configured.',
-      'Set NOGITA_QUEUE_ENCRYPTION_KEY to 32 random base64-encoded bytes in deployment secrets.'),
+    check('durable_queue', validQueueKey(env.NOGITA_QUEUE_ENCRYPTION_KEY) && queueStoragePersistent,
+      'The encrypted event queue has a valid key and its filesystem persistence is configured.',
+      env.RENDER === 'true' && !queueStoragePersistent
+        ? 'Mount persistent storage, set NOGITA_STATE_DIR to its absolute mount path, and set NOGITA_STATE_PERSISTENT=true only after verifying the mount.'
+        : 'Set NOGITA_QUEUE_ENCRYPTION_KEY to 32 random base64-encoded bytes in deployment secrets.'),
     check('slack', slackEventsMode || slackSocketModeReady,
       slackSocketModeReady ? 'Slack Socket Mode is connected.' : 'Signed Slack Events API configuration is complete for the HTTP service.',
       'Configure signed Events API for POST /slack/events or provide Socket Mode credentials and wait for the WebSocket connection.'),

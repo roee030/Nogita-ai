@@ -128,3 +128,19 @@ test('readiness blocks production when the durable queue encryption key is missi
     if (value) assert.equal(JSON.stringify(report).includes(value), false);
   }
 });
+
+test('readiness does not claim a durable queue on Render without an operator-confirmed persistent disk', () => {
+  const withoutDisk = buildReadinessReport({ ...completeEnv, RENDER: 'true' },
+    new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]), '22.16.0');
+  assert.equal(withoutDisk.checks.find(item => item.id === 'durable_queue')?.status, 'blocked');
+  assert.match(withoutDisk.checks.find(item => item.id === 'durable_queue')!.detail, /persistent storage/i);
+
+  const falseAttestation = buildReadinessReport({ ...completeEnv, RENDER: 'true', NOGITA_STATE_PERSISTENT: 'true' },
+    new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]), '22.16.0');
+  assert.equal(falseAttestation.checks.find(item => item.id === 'durable_queue')?.status, 'blocked');
+
+  const withDisk = buildReadinessReport({ ...completeEnv, RENDER: 'true', NOGITA_STATE_PERSISTENT: 'true',
+    NOGITA_STATE_DIR: '/var/lib/nogita' },
+    new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]), '22.16.0');
+  assert.equal(withDisk.checks.find(item => item.id === 'durable_queue')?.status, 'ready');
+});
