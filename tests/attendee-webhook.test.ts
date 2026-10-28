@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { IdentityDirectory } from '../src/core/identity.ts';
-import { canonicalJson, parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from '../src/app/attendee-webhook.ts';
+import { canonicalJson, parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from '../src/app/attendee-webhook.ts';
 
 const secret = Buffer.from('webhook-secret').toString('base64');
 const transcriptPayload = {
@@ -65,4 +65,17 @@ test('Attendee meeting-ended state resolves the internal session', () => {
   };
   assert.equal(parseAttendeeEndedSession(payload), 'meeting-1');
   assert.equal(parseAttendeeEndedSession({ ...payload, data: { new_state: 'joined_recording' } }), null);
+});
+
+test('Attendee join/leave events expose stable UUIDs for audio-speaker binding, never identity by name', () => {
+  const payload = { trigger: 'participant_events.join_leave', idempotency_key: 'join-1', bot_id: 'bot_123',
+    bot_metadata: { session_id: 'meeting-1' }, data: { event_type: 'join', participant_uuid: 'speaker-1',
+      participant_user_uuid: 'meet-user-1', participant_name: 'Roee Angel' } };
+  assert.deepEqual(parseAttendeeParticipantEvent(payload), { eventId: 'join-1', botId: 'bot_123',
+    sessionId: 'meeting-1', participantUuid: 'speaker-1', attendeeUserUuid: 'meet-user-1',
+    displayName: 'Roee Angel', eventType: 'join' });
+  assert.equal(parseAttendeeParticipantEvent({ ...payload,
+    data: { ...payload.data, participant_uuid: '../bad' } }), null);
+  assert.equal(parseAttendeeParticipantEvent({ ...payload,
+    data: { ...payload.data, event_type: 'kick' } }), null);
 });

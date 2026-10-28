@@ -97,6 +97,16 @@ test('same-speaker fragments are ordered by provider timestamp', async () => {
   assert.equal(f.emitted[0]?.utterance.text, 'Nogita, first second');
 });
 
+test('a provider-final utterance bypasses caption quiet-window delay but keeps verification policy', async () => {
+  jobs.length = 0;
+  const f = fixture(); f.router.beginSession('s', owner);
+  const accepted = f.router.acceptFinal(f.request('speaker-a', 'Nogita verify 482731', 'final-1'));
+  assert.equal(jobs.length, 0);
+  await accepted;
+  assert.match(f.statuses.at(-1) ?? '', /verified/i);
+  assert.equal(f.emitted.length, 0);
+});
+
 test('verified owner leave request exits the meeting without asking the model', async () => {
   const f = fixture(); f.router.beginSession('s', owner);
   f.router.accept(f.request('speaker-a', 'Nogita verify 482731', 'verify-1'));

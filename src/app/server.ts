@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { SocketModeClient } from '@slack/socket-mode';
 import { NogitaEngine } from '../core/engine.ts';
 import { DemoMeeting } from '../adapters/demo.ts';
@@ -9,7 +9,7 @@ import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { registerSlackEventHandlers } from './slack-socket-events.ts';
-import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
+import { parseAttendeeEndedSession, parseAttendeeEnvelope, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
@@ -23,6 +23,7 @@ import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry } from './slack-conversations.ts';
+import { AttendeeRealtimeAudioHub } from './attendee-realtime-audio.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -45,7 +46,9 @@ try {
   }
 }
 const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
-const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice);
+const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
+  Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
+  Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'));
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
@@ -63,6 +66,16 @@ const attendeeLedger = new FileEventLedger(stateDirectory);
 const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
 const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
+const realtimeAudioEnabled = env.NOGITA_REALTIME_AUDIO_ENABLED === 'true';
+if (env.NOGITA_REALTIME_AUDIO_ENABLED !== undefined && !['true', 'false'].includes(env.NOGITA_REALTIME_AUDIO_ENABLED)) {
+  providerConfigValid = false;
+  console.error('realtime_audio_configuration_invalid');
+}
+if (realtimeAudioEnabled && (!env.ATTENDEE_AUDIO_WEBSOCKET_URL || !env.DEEPGRAM_API_KEY ||
+    env.ATTENDEE_PRIVACY_REVIEWED !== 'true' || !env.ATTENDEE_WEBHOOK_SECRET || env.MEETING_PROVIDER !== 'attendee')) {
+  providerConfigValid = false;
+  console.error('realtime_audio_configuration_incomplete');
+}
 const slackThreads = new Set<string>();
 const slackWork = new InFlightWork();
 const slackSocketClient = env.SLACK_APP_TOKEN?.startsWith('xapp-') && env.SLACK_BOT_TOKEN?.startsWith('xoxb-')
@@ -90,20 +103,58 @@ const attendeeCommands = new AttendeeCommandRouter(
     } },
 );
 
+let realtimeAudio: AttendeeRealtimeAudioHub | undefined;
+if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API_KEY && env.ATTENDEE_WEBHOOK_SECRET) {
+  try { realtimeAudio = new AttendeeRealtimeAudioHub({
+      baseUrl: env.ATTENDEE_AUDIO_WEBSOCKET_URL,
+      signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
+      deepgramApiKey: env.DEEPGRAM_API_KEY,
+      onTranscript: async (sessionId, participantUuid, text, participant) => {
+        const mapped = participant?.attendeeUserUuid
+          ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;
+        await attendeeCommands.acceptFinal({ sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
+          speakerUuid: participantUuid, ...(participant?.attendeeUserUuid ? { attendeeUserUuid: participant.attendeeUserUuid } : {}),
+          utterance: { eventId: `realtime-${randomUUID()}`,
+            actor: mapped ? { id: mapped.id, displayName: mapped.displayName, verified: true }
+              : { id: `unmapped:attendee:${participant?.attendeeUserUuid ?? participantUuid}`,
+                displayName: participant?.displayName ?? 'Meeting participant', verified: false },
+            text, at: Date.now() } });
+      },
+      onError: code => console.error(code),
+      onUsage: (sessionId, usage) => {
+        if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
+        if (usage.ttsCharacters) sessionUsage.recordDeepgramTtsCharacters(sessionId, usage.ttsCharacters);
+      },
+      authorizeRecoveredBot: async (sessionId, botId) => {
+        if (!await attendeeBindings.has(sessionId, botId)) return false;
+        attendeeBotsBySession.set(sessionId, botId);
+        if (nogita.hasSession(sessionId)) realtimeAudio?.bindBot(sessionId, botId);
+        else restoreAttendeeSession(sessionId, botId);
+        return true;
+      },
+    }); }
+  catch { providerConfigValid = false; console.error('realtime_audio_configuration_invalid'); }
+}
+
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
   attendeeCommands.endSession(sessionId);
   attendeeMeetingsBySession.delete(sessionId);
   attendeeBotsBySession.delete(sessionId);
+  realtimeAudio?.closeSession(sessionId);
   if (botId) await attendeeBindings.remove(sessionId, botId);
 }
 
 function restoreAttendeeSession(sessionId: string, botId: string): void {
   if (nogita.hasSession(sessionId)) return;
   const meeting = new AttendeeMeeting(sessionId, env.ATTENDEE_API_KEY ?? '',
-    env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL, undefined, synthesizeLocalMp3);
+    env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL, undefined, synthesizeLocalMp3,
+    (stage, durationMs) => sessionUsage.recordSpeechStage(sessionId, stage, durationMs), undefined,
+    realtimeAudio ? text => realtimeAudio.speak(sessionId, text) : undefined);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
-  sessionUsage.start(sessionId, 'attendee');
+  if (realtimeAudio && !realtimeAudio.hasSession(sessionId)) realtimeAudio.register(sessionId);
+  if (realtimeAudio) realtimeAudio.bindBot(sessionId, botId);
+  sessionUsage.start(sessionId, 'attendee', Boolean(realtimeAudio));
   attendeeMeetingsBySession.set(sessionId, meeting);
   attendeeCommands.beginSession(sessionId);
 }
@@ -206,6 +257,13 @@ async function processAttendee(payload: Record<string, unknown>): Promise<void> 
       sessionUsage.end(endedSession);
       await forgetAttendeeSession(endedSession, envelope.botId);
     } else {
+      const participant = parseAttendeeParticipantEvent(payload);
+      if (participant) {
+        restoreAttendeeSession(participant.sessionId, envelope.botId);
+        if (participant.eventType === 'join') realtimeAudio?.bindParticipant(participant.sessionId,
+          participant.participantUuid, { attendeeUserUuid: participant.attendeeUserUuid, displayName: participant.displayName });
+        else realtimeAudio?.participantLeft(participant.sessionId, participant.participantUuid);
+      }
       const transcript = parseAttendeeTranscript(payload, dependencies.identities);
       if (transcript) {
         if (!transcript.utterance.actor.verified && transcript.attendeeUserUuid) {
@@ -350,21 +408,25 @@ const server = createServer(async (req, res) => {
       const attendeeChallenge = provider === 'attendee'
         ? attendeeCommands.beginSession(payload.id, owner)
         : undefined;
+      const realtimeAudioUrl = provider === 'attendee' && realtimeAudio ? realtimeAudio.register(payload.id) : undefined;
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
         ? new AttendeeMeeting(payload.id, env.ATTENDEE_API_KEY ?? '', env.ATTENDEE_PRIVACY_REVIEWED === 'true',
             fetch, env.ATTENDEE_WEBHOOK_URL, attendeeChallenge
               ? `To verify your identity for this meeting, please say: ${attendeeChallenge}`
-              : undefined, synthesizeLocalMp3)
+              : undefined, synthesizeLocalMp3,
+            (stage, durationMs) => sessionUsage.recordSpeechStage(payload.id!, stage, durationMs),
+            realtimeAudioUrl, realtimeAudio ? text => realtimeAudio.speak(payload.id!, text) : undefined)
         : new DemoMeeting(payload.id);
       try {
         await nogita.startSession(payload.id, meeting, payload.meetingUrl);
       } catch (error) {
         if (provider === 'attendee') attendeeCommands.endSession(payload.id);
+        realtimeAudio?.closeSession(payload.id);
         throw error;
       }
-      sessionUsage.start(payload.id, provider);
+      sessionUsage.start(payload.id, provider, provider === 'attendee' && Boolean(realtimeAudio));
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
       if (meeting instanceof AttendeeMeeting) {
         const botId = meeting.botIdentifier;
@@ -373,6 +435,7 @@ const server = createServer(async (req, res) => {
           await attendeeBindings.register(payload.id, botId);
           attendeeBotsBySession.set(payload.id, botId);
           attendeeMeetingsBySession.set(payload.id, meeting);
+          if (realtimeAudio) realtimeAudio.bindBot(payload.id, botId);
         } catch (error) {
           await nogita.endSession(payload.id);
           sessionUsage.end(payload.id);
@@ -409,6 +472,13 @@ const server = createServer(async (req, res) => {
     respond(res, 400, { error: error instanceof Error ? error.message : 'request failed' });
   }
 });
+server.on('upgrade', (request, socket, head) => {
+  if (!realtimeAudio || !realtimeAudio.handleUpgrade(request, socket, head)) {
+    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+  }
+});
+
 const host = env.HOST ?? '127.0.0.1';
 const port = Number(env.PORT ?? '8787');
 server.listen(port, host, () => console.log(`Nogita dev server listening on http://${host}:${port}`));
@@ -419,6 +489,7 @@ function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   shutdown = (async () => {
     console.log(`shutdown_started signal=${signal}`);
     clearInterval(slackConversationReaper);
+    realtimeAudio?.close();
     try { await slackSocketClient?.disconnect(); }
     catch (error) { console.error('slack_socket_shutdown_failed', error instanceof Error ? error.name : 'unknown'); }
     slackSocketConnected = false;

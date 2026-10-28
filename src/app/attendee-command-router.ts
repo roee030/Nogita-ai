@@ -84,6 +84,18 @@ export class AttendeeCommandRouter {
     return completion;
   }
 
+  /** Accept a provider-confirmed completed turn without adding the caption batching delay. */
+  acceptFinal(request: AttendeeTranscriptRequest): Promise<void> {
+    const completion = this.accept(request);
+    const state = this.sessions.get(request.sessionId);
+    const entry = state?.buffers.get(request.speakerUuid);
+    if (entry) {
+      this.cancel(entry.timer);
+      void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
+    }
+    return completion;
+  }
+
   private async flush(sessionId: string, speakerUuid: string): Promise<void> {
     const state = this.sessions.get(sessionId); const entry = state?.buffers.get(speakerUuid);
     if (!state || !entry) return;

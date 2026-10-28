@@ -1,4 +1,6 @@
-import { SpeechFallbackSentError, type ActionReceipt, type Capability, type MeetingPort } from '../core/contracts.ts';
+import { SpeechFallbackSentError, type ActionReceipt, type Capability, type MeetingPort, type SpeechStage } from '../core/contracts.ts';
+
+const AUDIO_SAMPLE_RATE = 16_000;
 
 /**
  * Attendee meeting control adapter (API v1).
@@ -20,6 +22,9 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly webhookUrl?: string,
     private readonly initialChatMessage?: string,
     private readonly synthesizeSpeech?: (text: string) => Promise<Buffer>,
+    private readonly recordSpeechDuration?: (stage: SpeechStage, durationMs: number) => void,
+    private readonly realtimeAudioUrl?: string,
+    private readonly streamSpeech?: (text: string) => Promise<void>,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
     if (webhookUrl) {
@@ -83,6 +88,9 @@ export class AttendeeMeeting implements MeetingPort {
         bot_chat_message: { to: 'everyone', message: this.initialChatMessage },
       } : {}),
       debug_settings: { create_debug_recording: false },
+      ...(this.realtimeAudioUrl ? { websocket_settings: { per_participant_audio: {
+        url: this.realtimeAudioUrl, sample_rate: AUDIO_SAMPLE_RATE,
+      } } } : {}),
     }) as { id?: string } | undefined;
     if (!data?.id || !/^bot_[a-zA-Z0-9_-]+$/.test(data.id)) {
       throw new Error('Attendee bot creation did not return a valid ID');
@@ -94,22 +102,40 @@ export class AttendeeMeeting implements MeetingPort {
   async speak(message: string): Promise<void> {
     if (!this.botId) throw new Error('not joined');
     if (!message.trim()) throw new Error('empty spoken message');
+    const speechStarted = performance.now();
     // Attendee acknowledges queued TTS but does not prove that an unmuted client played it.
     // Mirror first so muted/delayed speech never hides the answer or intended action.
-    await this.sendStatus(message);
     try {
-      if (this.synthesizeSpeech) {
-        const audio = await this.synthesizeSpeech(message);
-        await this.request(`/${this.botId}/output_audio`, { type: 'audio/mp3', data: audio.toString('base64') });
-      } else {
-        await this.request(`/${this.botId}/speech`, {
-          text: message,
-          text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
-        });
+      const chatStarted = performance.now();
+      try { await this.sendStatus(message); }
+      finally { this.recordSpeechDuration?.('chat_mirror', performance.now() - chatStarted); }
+      try {
+        if (this.streamSpeech) {
+          const submissionStarted = performance.now();
+          try { await this.streamSpeech(message); }
+          finally { this.recordSpeechDuration?.('audio_submission', performance.now() - submissionStarted); }
+        } else if (this.synthesizeSpeech) {
+          const synthesisStarted = performance.now();
+          let audio: Buffer;
+          try { audio = await this.synthesizeSpeech(message); }
+          finally { this.recordSpeechDuration?.('tts_synthesis', performance.now() - synthesisStarted); }
+          const submissionStarted = performance.now();
+          try {
+            await this.request(`/${this.botId}/output_audio`, { type: 'audio/mp3', data: audio.toString('base64') });
+          } finally { this.recordSpeechDuration?.('audio_submission', performance.now() - submissionStarted); }
+        } else {
+          const submissionStarted = performance.now();
+          try {
+            await this.request(`/${this.botId}/speech`, {
+              text: message,
+              text_to_speech_settings: { google: { voice_language_code: 'en-US', voice_name: 'en-US-Casual-K' } },
+            });
+          } finally { this.recordSpeechDuration?.('audio_submission', performance.now() - submissionStarted); }
+        }
+      } catch {
+        throw new SpeechFallbackSentError();
       }
-    } catch {
-      throw new SpeechFallbackSentError();
-    }
+    } finally { this.recordSpeechDuration?.('speech_submission', performance.now() - speechStarted); }
   }
 
   async sendStatus(message: string): Promise<void> {

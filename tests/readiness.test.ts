@@ -112,6 +112,19 @@ test('Slack readiness rejects nonempty values that are not usable Slack tokens',
   assert.equal(report.checks.find(item => item.id === 'slack')?.status, 'blocked');
 });
 
+test('realtime audio readiness stays ready when off and requires the complete privacy-gated WSS configuration when on', () => {
+  const identities = new IdentityDirectory([{ id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker' }]);
+  const disabled = buildReadinessReport(completeEnv, identities, '22.16.0');
+  assert.equal(disabled.checks.find(item => item.id === 'realtime_audio')?.status, 'ready');
+  const enabled = buildReadinessReport({ ...completeEnv, NOGITA_REALTIME_AUDIO_ENABLED: 'true',
+    ATTENDEE_AUDIO_WEBSOCKET_URL: 'wss://service.example/webhooks/attendee/audio', DEEPGRAM_API_KEY: 'deepgram-secret' }, identities, '22.16.0');
+  assert.equal(enabled.checks.find(item => item.id === 'realtime_audio')?.status, 'ready');
+  const missingKey = buildReadinessReport({ ...completeEnv, NOGITA_REALTIME_AUDIO_ENABLED: 'true',
+    ATTENDEE_AUDIO_WEBSOCKET_URL: 'wss://service.example/webhooks/attendee/audio' }, identities, '22.16.0');
+  assert.equal(missingKey.checks.find(item => item.id === 'realtime_audio')?.status, 'blocked');
+  assert.equal(JSON.stringify(enabled).includes('deepgram-secret'), false);
+});
+
 test('readiness surfaces strict adapter construction failures without exposing the error', () => {
   const report = buildReadinessReport(completeEnv, new IdentityDirectory([{
     id: 'lead', displayName: 'Lead', attendeeUserUuid: 'speaker',

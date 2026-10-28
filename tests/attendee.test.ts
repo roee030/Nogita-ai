@@ -94,6 +94,54 @@ test('Attendee: local speech is uploaded as MP3 audio instead of relying on prov
   });
 });
 
+test('Attendee realtime mode requests per-participant PCM and routes output through the stream', async () => {
+  const calls: Array<{ path: string; payload: any }> = [];
+  const mock: typeof fetch = async (url, options) => {
+    calls.push({ path: new URL(String(url)).pathname,
+      payload: options?.body ? JSON.parse(String(options.body)) : undefined });
+    if (String(url).endsWith('/api/v1/bots')) return new Response(JSON.stringify(bot), { status: 201 });
+    return new Response(null, { status: 204 });
+  };
+  const spoken: string[] = [];
+  const meeting = new AttendeeMeeting('realtime-session', 'test-token', true, mock, undefined, undefined,
+    async () => { throw new Error('legacy synthesis must not be selected'); }, undefined,
+    'wss://nogita.example/webhooks/attendee/audio?session_id=signed', async text => { spoken.push(text); });
+  await meeting.join(meetingUrl);
+  await meeting.speak('Hello over PCM');
+  assert.deepEqual(calls[0]?.payload.websocket_settings, { per_participant_audio: {
+    url: 'wss://nogita.example/webhooks/attendee/audio?session_id=signed', sample_rate: 16000,
+  } });
+  assert.deepEqual(spoken, ['Hello over PCM']);
+  assert.deepEqual(calls.map(call => call.path), [
+    '/api/v1/bots', '/api/v1/bots/bot_weIAju4OXNZkDTpZ/send_chat_message',
+  ]);
+});
+
+test('Attendee: reports only numeric speech stage timings for local TTS flow', async () => {
+  const stages: Array<{ stage: string; durationMs: number }> = [];
+  const mock: typeof fetch = async () => new Response(null, { status: 204 });
+  const meeting = new AttendeeMeeting('timed-session', 'test-token', true, mock, undefined, undefined,
+    async () => Buffer.from('mp3'), (stage, durationMs) => stages.push({ stage, durationMs }));
+  meeting.attach('bot_timing123');
+  await meeting.speak('A private sentence that must not enter metrics.');
+
+  assert.deepEqual(stages.map(item => item.stage).sort(),
+    ['audio_submission', 'chat_mirror', 'speech_submission', 'tts_synthesis'].sort());
+  assert.ok(stages.every(item => Number.isFinite(item.durationMs) && item.durationMs >= 0));
+  assert.equal(JSON.stringify(stages).includes('private sentence'), false);
+});
+
+test('Attendee: failed synthesis still records elapsed stages without reporting audio submission', async () => {
+  const stages: string[] = [];
+  const mock: typeof fetch = async () => new Response(null, { status: 204 });
+  const meeting = new AttendeeMeeting('timed-failure', 'test-token', true, mock, undefined, undefined,
+    async () => { throw new Error('private provider detail'); }, stage => stages.push(stage));
+  meeting.attach('bot_timing123');
+
+  await assert.rejects(() => meeting.speak('Hello.'), /speech unavailable after chat fallback/);
+  assert.deepEqual(stages.sort(), ['chat_mirror', 'speech_submission', 'tts_synthesis'].sort());
+});
+
 test('Attendee: restored bot can speak without creating a replacement bot', async () => {
   const paths: string[] = [];
   const mock: typeof fetch = async url => {

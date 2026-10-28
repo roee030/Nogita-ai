@@ -41,6 +41,30 @@ export interface AttendeeEnvelope {
   sessionId: string;
 }
 
+export interface AttendeeParticipantEvent extends AttendeeEnvelope {
+  participantUuid: string;
+  attendeeUserUuid?: string;
+  displayName?: string;
+  eventType: 'join' | 'leave';
+}
+
+export function parseAttendeeParticipantEvent(payload: unknown): AttendeeParticipantEvent | null {
+  const envelope = parseAttendeeEnvelope(payload);
+  if (!envelope || !payload || typeof payload !== 'object') return null;
+  const root = payload as Record<string, unknown>;
+  if (root.trigger !== 'participant_events.join_leave' || !root.data || typeof root.data !== 'object') return null;
+  const data = root.data as Record<string, unknown>;
+  const participantUuid = typeof data.participant_uuid === 'string' ? data.participant_uuid : '';
+  const eventType = data.event_type;
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(participantUuid) || (eventType !== 'join' && eventType !== 'leave')) return null;
+  const attendeeUserUuid = typeof data.participant_user_uuid === 'string' && data.participant_user_uuid.length <= 128
+    ? data.participant_user_uuid : undefined;
+  const displayName = typeof data.participant_name === 'string' && data.participant_name.length <= 200
+    ? data.participant_name : undefined;
+  return { ...envelope, participantUuid, ...(attendeeUserUuid ? { attendeeUserUuid } : {}),
+    ...(displayName ? { displayName } : {}), eventType };
+}
+
 export function parseAttendeeEnvelope(payload: unknown): AttendeeEnvelope | null {
   if (!payload || typeof payload !== 'object') return null;
   const root = payload as Record<string, unknown>;

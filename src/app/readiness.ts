@@ -2,7 +2,7 @@ import { isAbsolute } from 'node:path';
 import type { IdentityDirectory } from '../core/identity.ts';
 
 export interface ReadinessCheck {
-  id: 'runtime' | 'admin_auth' | 'provider_config' | 'durable_queue' | 'slack' | 'jira' | 'github' | 'attendee' | 'reasoning';
+  id: 'runtime' | 'admin_auth' | 'provider_config' | 'durable_queue' | 'slack' | 'jira' | 'github' | 'attendee' | 'realtime_audio' | 'reasoning';
   status: 'ready' | 'blocked';
   detail: string;
 }
@@ -34,6 +34,15 @@ function validHttpsUrl(value: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function validWssUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'wss:' && !url.username && !url.password && !url.search && !url.hash &&
+      url.pathname === '/webhooks/attendee/audio';
+  } catch { return false; }
 }
 
 function validQueueKey(value: string | undefined): boolean {
@@ -89,6 +98,13 @@ export function buildReadinessReport(
       (identities.hasAttendeeIdentity() || hasAuthorizedOwner),
       'Attendee webhook, privacy gate, and an authorized meeting identity are configured.',
       'Complete Attendee API/webhook setup, privacy review, stable HTTPS, and configure an authorized internal meeting owner or a stable speaker identity.'),
+    check('realtime_audio', env.NOGITA_REALTIME_AUDIO_ENABLED !== 'true' ||
+      env.MEETING_PROVIDER === 'attendee' && env.ATTENDEE_PRIVACY_REVIEWED === 'true' &&
+      present(env, ['ATTENDEE_WEBHOOK_SECRET', 'DEEPGRAM_API_KEY']) && validWssUrl(env.ATTENDEE_AUDIO_WEBSOCKET_URL),
+      env.NOGITA_REALTIME_AUDIO_ENABLED === 'true'
+        ? 'Opt-in realtime audio is configured with WSS, provider credentials, and privacy review.'
+        : 'Realtime audio is safely disabled; the existing meeting audio path remains active.',
+      'To enable the opt-in realtime audio experiment, select Attendee, complete privacy review, and configure its WSS URL, webhook secret, and Deepgram API key.'),
     check('reasoning', env.NOGITA_MODE === 'live' && present(env, ['ANTHROPIC_API_KEY']),
       'The live reasoning provider is configured.',
       'Enable live mode and configure the reasoning provider key; the model has a maintained low-cost default.'),

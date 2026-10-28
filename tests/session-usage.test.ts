@@ -19,12 +19,20 @@ test('session usage estimates Attendee bot time and combines meeting-scoped AI u
     active: false,
     durationSeconds: 600,
     transcriptionMode: 'closed_captions',
+    speechPipeline: 'closed_captions_mp3',
     meetingEstimatedUsd: 0.083333,
+    deepgramEstimatedUsd: 0,
     tts: { requests: 1, failures: 1 },
     externalActions: { create_task: 1, code_lookup: 0 },
     ai: { model: 'claude-haiku-5-5', modelCalls: 1, inputTokens: 1_000, outputTokens: 100, estimatedUsd: 0.00015 },
     totalEstimatedUsd: 0.083483,
     processingLatency: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+    speechLatency: {
+      chat_mirror: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+      tts_synthesis: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+      audio_submission: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+      speech_submission: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
+    },
   });
 });
 
@@ -34,6 +42,20 @@ test('processing latency reports percentiles and ignores invalid samples', () =>
   for (const duration of [100, 400, 200, 300, NaN, -1]) usage.recordResponse('s', duration);
   assert.deepEqual(usage.report('s')?.processingLatency,
     { samples: 4, p50Ms: 200, p95Ms: 400, maxMs: 400 });
+});
+
+test('speech latency is isolated by stage, bounded, and summarized without payload data', () => {
+  const usage = new SessionUsageRegistry();
+  usage.start('voice-a', 'attendee');
+  for (const duration of [10, 20, 30, NaN, -1]) usage.recordSpeechStage('voice-a', 'chat_mirror', duration);
+  for (let i = 1; i <= 205; i++) usage.recordSpeechStage('voice-a', 'audio_submission', i);
+  usage.recordSpeechStage('voice-b', 'chat_mirror', 999);
+
+  const report = usage.report('voice-a')!;
+  assert.deepEqual(report.speechLatency.chat_mirror, { samples: 3, p50Ms: 20, p95Ms: 30, maxMs: 30 });
+  assert.deepEqual(report.speechLatency.audio_submission, { samples: 200, p50Ms: 105, p95Ms: 195, maxMs: 205 });
+  assert.deepEqual(report.speechLatency.tts_synthesis, { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 });
+  assert.equal(JSON.stringify(report).includes('999'), false);
 });
 
 test('session usage distinguishes estimate from free credits and rejects unknown sessions', () => {
@@ -56,4 +78,17 @@ test('usage counters stay isolated between simultaneous sessions', () => {
   assert.deepEqual(usage.report('two')?.tts, { requests: 0, failures: 0 });
   assert.deepEqual(usage.report('one')?.externalActions, { create_task: 0, code_lookup: 0 });
   assert.deepEqual(usage.report('two')?.externalActions, { create_task: 0, code_lookup: 1 });
+});
+
+test('realtime voice cost uses submitted PCM bytes and TTS characters as a clearly separate estimate', () => {
+  const usage = new SessionUsageRegistry(0.50, () => 10_000);
+  usage.start('realtime', 'attendee', true);
+  usage.recordDeepgramSttBytes('realtime', 32_000 * 60);
+  usage.recordDeepgramTtsCharacters('realtime', 1000);
+  const report = usage.report('realtime')!;
+  assert.equal(report.deepgramUsage?.sttAudioSeconds, 60);
+  assert.equal(report.deepgramUsage?.ttsCharacters, 1000);
+  assert.equal(report.deepgramEstimatedUsd, 0.0358);
+  assert.equal(report.speechPipeline, 'deepgram_aura_stream');
+  assert.equal(report.totalEstimatedUsd, report.meetingEstimatedUsd + report.deepgramEstimatedUsd);
 });

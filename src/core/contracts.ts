@@ -1,6 +1,7 @@
 /** Platform-neutral domain types: no Jira / monday / Recall shapes leak into orchestration. */
 export type ProviderKind = 'demo' | 'recall' | 'slack' | 'teams' | 'zoom' | 'meet';
 export type Capability = 'listen' | 'speak' | 'raise_hand' | 'chat_receipt' | 'code_search' | 'create_task' | 'draft_pr';
+export type SpeechStage = 'chat_mirror' | 'tts_synthesis' | 'audio_submission' | 'speech_submission';
 
 export interface Actor {
   id: string;

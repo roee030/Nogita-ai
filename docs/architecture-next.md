@@ -65,7 +65,39 @@ retry. An external failure must allow a subsequent leave command. Measure median
 and p95, and retain only bounded numeric telemetry. Do not lower caption buffering
 blindly: shorter delays can split requests and cause duplicate actions.
 
+## Voice observability, 2026-10-28
+- The authenticated session usage report now exposes bounded numeric p50/p95/max
+  durations for chat mirroring, local TTS synthesis, Attendee audio submission,
+  and total speech submission. It does not retain spoken text or audio.
+- `speech_submission` ends when Attendee accepts the output request. It is not
+  time-to-first-audio and does not prove playback by an unmuted meeting client.
+- The current path is explicitly reported as `closed_captions_mp3`; do not call
+  it streaming or interruptible. `processingLatency` is engine work time, not
+  speech-end-to-first-audible-audio.
+- Next voice milestone: expose Attendee's documented 16 kHz per-participant or
+  mixed PCM WebSocket input/output behind a feature flag, then benchmark two
+  realtime agent providers with the same consented scenario set. Record numeric
+  stage timing, transcript/speaker/turn accuracy, interruption behavior, and
+  provider-reported usage; do not store raw media by default.
+
 ## Initial implementation
 Expose a bounded window of engine processing durations (including engine queue
 wait) through the authenticated usage report. This is not end-to-end voice
 latency; caption assembly, transport and playback remain separate future metrics.
+
+## Opt-in realtime voice milestone, 2026-10-28
+- Implemented a disabled-by-default Attendee PCM bridge using per-participant
+  streams, separate Deepgram Nova-3 multilingual recognition sessions, and
+  streamed English Aura-2 speech output. Every completed turn still enters the
+  existing command router and meeting verification/policy boundary.
+- Signed WSS routes pin/restore only bot IDs confirmed by the persisted hashed
+  session binding. Participant join/leave events bind a UUID to metadata; display
+  names are never treated as identity. Audio, text, and provider payloads are not
+  persisted or logged by this bridge.
+- Session usage now reports numeric speech-stage latency and an estimated
+  Deepgram breakdown (submitted PCM duration + TTS characters) separately from
+  Attendee and Claude costs. Provider invoices remain authoritative.
+- Live voice quality, interruption behavior, first-audible-output timing, Hebrew
+  speech, and contracted cost have not been validated. No credentials were
+  provisioned, paid API calls made, or deployment performed; a consented canary
+  and an active Deepgram key are still required before enabling the flag.
