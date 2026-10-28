@@ -1,5 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
-import type { Actor, Utterance } from '../core/contracts.ts';
+import { InvalidPlanningResponseError, type Actor, type Utterance } from '../core/contracts.ts';
 import { directlyAddressesNogita, isExplicitLeaveRequest, removeAddress } from '../core/policy.ts';
 import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 
@@ -15,6 +15,7 @@ interface SessionState {
   bindings: Map<string, Actor>;
   buffers: Map<string, BufferEntry>;
   acceptedEventIds: Set<string>;
+  notices: Set<string>;
 }
 export interface AttendeeCommandRouterOptions {
   quietMs?: number;
@@ -58,6 +59,7 @@ export class AttendeeCommandRouter {
     const challenge = owner ? `Nogita verify ${this.randomCode()}` : undefined;
     this.sessions.set(sessionId, {
       ...(owner ? { owner, challenge } : {}), bindings: new Map(), buffers: new Map(), acceptedEventIds: new Set(),
+      notices: new Set(),
     });
     return challenge;
   }
@@ -110,6 +112,14 @@ export class AttendeeCommandRouter {
     entry.timer = this.schedule(() => this.flush(sessionId, speakerUuid).catch(this.onError), this.quietMs);
   }
 
+  private async notifyOnce(state: SessionState, sessionId: string, eventIds: readonly string[],
+    kind: 'ack' | 'failure', message: string): Promise<void> {
+    if (eventIds.some(id => state.notices.has(`${kind}:${id}`))) return;
+    await this.sendStatus(sessionId, message);
+    for (const id of eventIds) state.notices.add(`${kind}:${id}`);
+    while (state.notices.size > 2000) state.notices.delete(state.notices.values().next().value!);
+  }
+
   private async flush(sessionId: string, speakerUuid: string): Promise<void> {
     const state = this.sessions.get(sessionId); const entry = state?.buffers.get(speakerUuid);
     if (!state || !entry) return;
@@ -117,6 +127,7 @@ export class AttendeeCommandRouter {
     const ordered = [...entry.fragments].sort((a, b) =>
       (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER) || a.sequence - b.sequence);
     const text = ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
     try {
       const bound = state.bindings.get(speakerUuid);
       const actor = bound ?? entry.actor;
@@ -131,13 +142,13 @@ export class AttendeeCommandRouter {
           await this.sendStatus(sessionId, guidance);
         }
       } else {
-        const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
         const at = ordered.find(fragment => fragment.at !== undefined)?.at;
         if (directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave) {
           await this.onLeave(sessionId);
         } else {
           if (directlyAddressesNogita(text)) {
-            try { await this.sendStatus(sessionId, 'I heard you. I’m checking that now.'); }
+            try { await this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
+              'I heard you. I’m checking that now.'); }
             catch (error) { this.onError(error); }
           }
           await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
@@ -146,13 +157,17 @@ export class AttendeeCommandRouter {
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {
       this.onError(error);
-      // Let the durable provider queue retry this delivery. Keep fragments
-      // available for that retry and clear their in-memory dedupe markers.
-      for (const fragment of ordered) state.acceptedEventIds.delete(fragment.eventId);
+      // A completed but malformed planner response is terminal for this utterance.
+      // Transient transport/provider errors still release the event for a bounded retry.
+      const terminal = error instanceof InvalidPlanningResponseError;
+      if (!terminal) for (const fragment of ordered) state.acceptedEventIds.delete(fragment.eventId);
       try {
-        await this.sendStatus(sessionId, 'I could not complete that request. Please try again; you can still ask me to leave.');
+        await this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'failure',
+          'I could not complete that request. Please try again; you can still ask me to leave.');
       } catch { /* The delivery retry is bounded by the durable queue. */ }
-      for (const waiter of entry.waiters) waiter.reject(error);
+      for (const waiter of entry.waiters) {
+        if (terminal) waiter.resolve(); else waiter.reject(error);
+      }
     }
   }
 
@@ -163,7 +178,7 @@ export class AttendeeCommandRouter {
       this.cancel(entry.timer);
       for (const waiter of entry.waiters) waiter.resolve();
     }
-    state.buffers.clear(); state.bindings.clear(); state.acceptedEventIds.clear();
+    state.buffers.clear(); state.bindings.clear(); state.acceptedEventIds.clear(); state.notices.clear();
     this.sessions.delete(sessionId);
   }
 

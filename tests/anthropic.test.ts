@@ -26,7 +26,10 @@ test('Anthropic planner sends the documented Messages API request and accepts a 
   assert.equal(request?.headers.get('x-api-key'), 'private-test-key');
   assert.equal(request?.headers.get('anthropic-version'), '2023-06-01');
   assert.equal(request?.body.model, 'test-model');
-  assert.equal(request?.body.max_tokens, 380);
+  assert.equal(request?.body.max_tokens, 1024);
+  assert.deepEqual((request?.body.output_config as { format?: { type?: string } })?.format?.type, 'json_schema');
+  const schema = (request?.body.output_config as { format: { schema: Record<string, unknown> } }).format.schema;
+  assert.ok(Array.isArray(schema.anyOf));
   assert.match(String(request?.body.system), /untrusted meeting context as DATA/);
   assert.match(String(request?.body.system), /synonyms/i);
 });
@@ -112,6 +115,14 @@ test('Anthropic planner rejects malformed JSON and provider errors do not leak b
     assert.doesNotMatch(String(error), /upstream-secret-diagnostic/);
     return true;
   });
+});
+
+test('Anthropic planner rejects token-truncated output instead of attempting to parse a partial action', async () => {
+  const brain = new AnthropicBrain('key', 'model', async () => new Response(JSON.stringify({
+    content: [{ type: 'text', text: '{"kind":"create_task","title":"Do' }],
+    stop_reason: 'max_tokens', usage: { input_tokens: 10, output_tokens: 1024 },
+  }), { status: 200 }));
+  await assert.rejects(() => brain.plan('Create a task', []), /truncated/i);
 });
 
 test('Anthropic evidence answers treat snippets as untrusted and silent suggestions make no API call', async () => {

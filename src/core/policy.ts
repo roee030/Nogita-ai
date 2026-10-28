@@ -18,14 +18,20 @@ export function isExplicitPRRequest(current: string): boolean {
   return /\b(create|open|prepare|draft|make)\b.{0,90}\b(pr|pull request)\b/i.test(current);
 }
 
+export function isRepositoryOverviewQuestion(current: string): boolean {
+  return /\b(?:project|product|repo|repository)\b/i.test(current) &&
+    /\b(?:about|working on)\b/i.test(current) && /\b(?:what|explain|describe|tell me)\b/i.test(current);
+}
+
 export function isRepositoryConnectionQuestion(current: string): boolean {
+  if (isRepositoryOverviewQuestion(current)) return false;
   return /\b(?:connected|connect|access)\b.{0,50}\b(?:repo|repository|github)\b/i.test(current)
     || /\b(?:repo|repository|github)\b.{0,50}\b(?:connected|connect|access)\b/i.test(current);
 }
 
 /** A fast hint for evidence retrieval. Ambiguous questions can still use the planner's inspect_code action. */
 export function isRepositoryQuestion(current: string): boolean {
-  return /\b(?:repo|repository|github|code|source|implementation|function|module|file|commit|push(?:ed)?|branch|merge|pull request|authentication|authorization|login|log-in|sign-in|webhook|endpoint|provider|configuration|database|deployment|architecture)\b/i.test(current);
+  return /\b(?:project|repo|repository|github|code|source|implementation|function|module|file|commit|push(?:ed)?|branch|merge|pull request|authentication|authorization|login|log-in|sign-in|webhook|endpoint|provider|configuration|database|deployment|architecture)\b/i.test(current);
 }
 
 export function isExplicitLeaveRequest(current: string): boolean {

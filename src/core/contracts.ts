@@ -55,6 +55,10 @@ export interface ConversationTurn { role: 'user' | 'assistant'; text: string; }
 export class CodeLookupRateLimitError extends Error {
   constructor() { super('GitHub API rate limit reached'); this.name = 'CodeLookupRateLimitError'; }
 }
+/** A completed model response that cannot safely be interpreted as a plan; repeating the same event is not useful. */
+export class InvalidPlanningResponseError extends Error {
+  constructor(message: string) { super(message); this.name = 'InvalidPlanningResponseError'; }
+}
 export interface AiUsage {
   model: string;
   modelCalls: number;

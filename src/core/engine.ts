@@ -1,7 +1,7 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest,
-  isRepositoryConnectionQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
+  isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
@@ -275,7 +275,11 @@ export class NogitaEngine {
     try {
       if (this.dependencies.code.name === 'github' && this.dependencies.policy.mayReadCode(utterance.actor) &&
           isRepositoryQuestion(request) && !isExplicitCreateRequest(request) && !isExplicitPRRequest(request)) {
-        initialEvidence = await this.dependencies.code.findEvidence(request);
+        const overview = isRepositoryOverviewQuestion(request);
+        const found = await this.dependencies.code.findEvidence(overview ? 'README package.json' : request);
+        const overviewFiles = overview ? found.filter(item => /^(?:README\.md|package\.json)$/i.test(item.path))
+          .sort((a, b) => Number(!/^README\.md$/i.test(a.path)) - Number(!/^README\.md$/i.test(b.path))) : [];
+        initialEvidence = overviewFiles.length ? overviewFiles : found;
       }
     }
     catch (error) {

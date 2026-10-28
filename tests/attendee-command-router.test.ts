@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AttendeeCommandRouter } from '../src/app/attendee-command-router.ts';
 import type { AttendeeTranscriptRequest } from '../src/app/attendee-webhook.ts';
 import type { Actor, Utterance } from '../src/core/contracts.ts';
+import { InvalidPlanningResponseError } from '../src/core/contracts.ts';
 
 const owner: Actor = { id: 'roee', displayName: 'Roee Angel', verified: true };
 const jobs: Array<() => void | Promise<void>> = [];
@@ -264,6 +265,77 @@ test('failed command processing is released for a bounded provider retry', async
   await jobs.shift()!();
   await second;
   assert.equal(attempts, 2);
+});
+
+test('invalid planner output ends one request with one acknowledgement and one failure notice', async () => {
+  jobs.length = 0;
+  let attempts = 0;
+  const statuses: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {
+    attempts++;
+    throw new InvalidPlanningResponseError('invalid planning JSON');
+  }, async (_sessionId, message) => { statuses.push(message); }, {
+    schedule: work => { jobs.push(work); return work; },
+    cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+  });
+  router.beginSession('s', owner);
+  const request = { sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'invalid-plan', actor: owner, text: 'Nogita, what is the repository about?' } };
+  const first = router.accept(request);
+  await jobs.shift()!();
+  await first;
+  await router.accept(request);
+  assert.equal(attempts, 1);
+  assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
+});
+
+test('a provider retry does not repeat acknowledgement or failure notice for the same utterance', async () => {
+  jobs.length = 0;
+  let attempts = 0;
+  const statuses: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {
+    attempts++;
+    if (attempts < 3) throw new Error('transient failure');
+  }, async (_sessionId, message) => { statuses.push(message); }, {
+    schedule: work => { jobs.push(work); return work; },
+    cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+  });
+  router.beginSession('s', owner);
+  const request = { sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'retry-once-notice', actor: owner, text: 'Nogita, check the repository' } };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const accepted = router.accept(request);
+    await jobs.shift()!();
+    if (attempt < 2) await assert.rejects(accepted, /transient failure/);
+    else await accepted;
+  }
+  assert.equal(attempts, 3);
+  assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
+});
+
+test('a provider retry of one fragment does not repeat notices for the original combined utterance', async () => {
+  jobs.length = 0;
+  const statuses: string[] = [];
+  const router = new AttendeeCommandRouter(async () => { throw new Error('transient failure'); },
+    async (_sessionId, message) => { statuses.push(message); }, {
+      schedule: work => { jobs.push(work); return work; },
+      cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+    });
+  router.beginSession('s', owner);
+  const first = router.accept({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'fragment-a', actor: owner, text: 'Nogita, what is the' } });
+  const second = router.accept({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'fragment-b', actor: owner, text: 'repository about?' } });
+  await jobs.shift()!();
+  await assert.rejects(Promise.all([first, second]), /transient failure/);
+  const retry = router.accept({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-a',
+    utterance: { eventId: 'fragment-b', actor: owner, text: 'repository about?' } });
+  await jobs.shift()!();
+  await assert.rejects(retry, /transient failure/);
+  assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
 });
 
 test('failed verification acknowledgement does not bind the speaker prematurely', async () => {

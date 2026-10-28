@@ -78,7 +78,7 @@ test('verified affirmative follow-up continues Nogita’s recent read-only quest
   assert.equal(await f.utter('Yes, please.', 'repeat'), 'ignored');
   assert.equal(calls.length, 2);
 });
-test('read-only repository follow-up resumes the original question instead of losing its search', async () => {
+test('project-overview question searches the repository and answers without asking for permission again', async () => {
   const queries: string[] = [];
   const code: CodePort = { name: 'github', findEvidence: async query => {
     queries.push(query);
@@ -96,10 +96,11 @@ test('read-only repository follow-up resumes the original question instead of lo
     answerWithEvidence: async () => 'Nogita is a virtual teammate.', suggestContribution: async () => false,
   };
   const f = fixture(brain, {}, code); await f.engine.startSession('s', f.meeting);
-  await f.utter('Nogita, what is the project about?', 'repo-first');
-  assert.equal(await f.utter('Yes, please.', 'repo-yes'), 'completed');
+  assert.equal(await f.utter('Nogita, what is the project about?', 'repo-first'), 'completed');
   assert.equal(queries.length, 1);
-  assert.match(queries[0] ?? '', /project about.*repository/i);
+  assert.equal(queries[0], 'README package.json');
+  assert.match(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /virtual teammate/i);
+  assert.equal(await f.utter('Yes, please.', 'repo-yes'), 'ignored');
 });
 test('a different speaker, stale answer, and task confirmation cannot inherit pending permission', async () => {
   let time = 1000;
@@ -571,6 +572,34 @@ test('repository connection question performs a live code lookup instead of lett
   assert.equal(await f.utter('Nogita, are you connected to our repository?', 'repo-status'), 'completed');
   assert.match(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /read-only access/i);
   assert.match(f.meeting.events.find(event => event.type === 'chat')?.text ?? '', /Code reference/i);
+});
+test('asking what a connected repository builds is treated as a content question, not a connection check', async () => {
+  let planned = false;
+  const queries: string[] = [];
+  const code: CodePort = { name: 'github', findEvidence: async query => {
+    queries.push(query);
+    return [
+      { path: 'package.json', url: 'https://github.com/example/app/blob/main/package.json', excerpt: '"name":"nogita"' },
+      { path: 'README.md', url: 'https://github.com/example/app/blob/main/README.md',
+        excerpt: 'Nogita joins meetings and answers questions from project code.' },
+      { path: 'docs/superpowers/plans/old-plan.md', url: 'https://github.com/example/app/blob/main/docs/superpowers/plans/old-plan.md',
+        excerpt: 'Outdated future idea.' },
+    ];
+  } };
+  const brain: BrainPort = {
+    plan: async (_current, _history, _id, evidence) => {
+      planned = true;
+      assert.deepEqual(evidence?.map(item => item.path), ['README.md', 'package.json']);
+      return { kind: 'answer', message: 'Nogita joins meetings and answers from project code.' };
+    },
+    answerWithEvidence: async () => 'Nogita joins meetings and answers from project code.',
+    suggestContribution: async () => false,
+  };
+  const f = fixture(brain, {}, code); await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what is the project that you connected to our repository working on?', 'project-intent');
+  assert.equal(planned, true);
+  assert.deepEqual(queries, ['README package.json']);
+  assert.doesNotMatch(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /read-only access/i);
 });
 test('draft PR has an explicit not-supported response; never modifies repo', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);

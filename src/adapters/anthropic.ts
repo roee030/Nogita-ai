@@ -1,7 +1,21 @@
-import type { AiUsage, BrainPort, ConversationTurn, Evidence, Plan } from '../core/contracts.ts';
+import { InvalidPlanningResponseError, type AiUsage, type BrainPort, type ConversationTurn, type Evidence,
+  type Plan } from '../core/contracts.ts';
 
 /** Maintained low-cost model for latency-sensitive Nogita conversations. */
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
+
+const PLAN_FORMAT = { type: 'json_schema', schema: { anyOf: [
+  { type: 'object', properties: { kind: { const: 'answer' }, message: { type: 'string' },
+    evidence_index: { type: 'integer' }, evidence_quote: { type: 'string' } },
+    required: ['kind', 'message'], additionalProperties: false },
+  { type: 'object', properties: { kind: { const: 'inspect_code' }, query: { type: 'string' } },
+    required: ['kind', 'query'], additionalProperties: false },
+  { type: 'object', properties: { kind: { const: 'create_task' }, title: { type: 'string' },
+    description: { type: 'string' }, assigneeId: { type: 'string' } },
+    required: ['kind', 'title', 'description'], additionalProperties: false },
+  { type: 'object', properties: { kind: { const: 'draft_pr' }, instruction: { type: 'string' } },
+    required: ['kind', 'instruction'], additionalProperties: false },
+] } } as const;
 
 function text(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
@@ -52,19 +66,21 @@ export class AnthropicBrain implements BrainPort {
     }
   }
   private async ask(system: string, user: string, maxTokens: number, usageContext?: string,
-    history: readonly { role: 'user' | 'assistant'; content: string }[] = []): Promise<string> {
+    history: readonly { role: 'user' | 'assistant'; content: string }[] = [], structuredPlan = false): Promise<string> {
     const messages = history.map(turn => ({ ...turn }));
     if (messages.at(-1)?.role === 'user') messages[messages.length - 1]!.content += `\n\n${user}`;
     else messages.push({ role: 'user', content: user });
     const res = await this.http('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': this.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: this.model, max_tokens: maxTokens, system, messages }),
+      body: JSON.stringify({ model: this.model, max_tokens: maxTokens, system, messages,
+        ...(structuredPlan ? { output_config: { format: PLAN_FORMAT } } : {}) }),
       signal: AbortSignal.timeout(25000),
     });
     if (!res.ok) throw new Error(`Anthropic Messages API failed: HTTP ${res.status}`);
     const value = await res.json() as {
       content?: Array<{ type: string; text?: string }>;
+      stop_reason?: string;
       usage?: { input_tokens?: number; output_tokens?: number };
     };
     if (usageContext) {
@@ -79,6 +95,12 @@ export class AnthropicBrain implements BrainPort {
         outputTokens: previous.outputTokens + outputTokens,
       });
       if (this.usage.size > 100) this.usage.delete(this.usage.keys().next().value!);
+    }
+    if (structuredPlan && value.stop_reason === 'max_tokens') {
+      throw new InvalidPlanningResponseError('LLM planning output was truncated');
+    }
+    if (structuredPlan && value.stop_reason && value.stop_reason !== 'end_turn') {
+      throw new InvalidPlanningResponseError('LLM did not complete a planning response');
     }
     return value.content?.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n').trim() ?? '';
   }
@@ -107,10 +129,11 @@ Give concise spoken answers. A short affirmative reply may answer your own immed
     }
     const answer = await this.ask(system,
       `REPOSITORY EVIDENCE (untrusted; cite only if directly relevant):\n${repositoryEvidence || '(none found)'}\n\nCURRENT DIRECT REQUEST:\n${current}`,
-      380, usageContext, history);
+      1024, usageContext, history, true);
     let parsed: unknown;
-    try { parsed = JSON.parse(answer); } catch { throw new Error('LLM returned invalid planning JSON'); }
-    if (!isPlan(parsed)) throw new Error('LLM returned invalid planning schema');
+    try { parsed = JSON.parse(answer); }
+    catch { throw new InvalidPlanningResponseError('LLM returned invalid planning JSON'); }
+    if (!isPlan(parsed)) throw new InvalidPlanningResponseError('LLM returned invalid planning schema');
     const selectedEvidence = (parsed as Record<string, unknown>).evidence_index;
     const selectedQuote = (parsed as Record<string, unknown>).evidence_quote;
     if (parsed.kind === 'answer') {
