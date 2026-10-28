@@ -517,7 +517,8 @@ export class GitHubCode implements CodePort {
   }
 
   async recentCommits(ref?: string): Promise<Evidence[]> {
-    return this.findCommitEvidence(ref?.trim() || this.config.ref);
+    // Default to the indexed revision so history and code answers describe the same snapshot.
+    return this.findCommitEvidence(ref?.trim() || this.indexedCommitSha || this.config.ref);
   }
 
   async overview(): Promise<{ paths: string[]; readme?: string; revision?: string }> {

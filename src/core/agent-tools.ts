@@ -110,7 +110,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const paths = await code.listFiles!(str(input.prefix, 300));
       return { content: paths.length ? paths.join('\n') : 'No files under that prefix.' };
     });
-    if (code.recentCommits) add({ name: 'recent_commits', description: 'Recent commits (newest first) on a branch, with messages and links. Use for "what changed", "what did we push".',
+    if (code.recentCommits) add({ name: 'recent_commits', description: 'Recent commits (newest first), with messages and links. Omit branch to use the revision Nogita reads; pass a branch only if the person named one. Use for "what changed", "what did we push".',
       input_schema: { type: 'object', properties: { branch: { type: 'string' } } } },
     async input => {
       const commits = await code.recentCommits!(str(input.branch, 100));

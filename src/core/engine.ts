@@ -60,6 +60,22 @@ function codeCoverageNotice(skipped: number): string {
 function withCodeCoverageNotice(code: CodePort, message: string): string {
   return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
 }
+const MAX_SPOKEN_WORDS = 90;
+const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
+/** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
+function speakable(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/(^|\s)[*_]([^*_]+)[*_](?=\s|[.,!?]|$)/g, '$1$2')
+    .replace(/^\s*(?:[-*\u2022]|\d+[.)])\s+/gm, '')
+    .replace(/^#+\s*/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
 export class NogitaEngine {
@@ -238,6 +254,15 @@ export class NogitaEngine {
     return entry.value;
   }
 
+  private async prefetchEvidence(request: string): Promise<Evidence[]> {
+    if (!isRepositoryQuestion(request) || isExplicitCreateRequest(request)) return [];
+    try {
+      const found = await Promise.race([this.dependencies.code.findEvidence(request),
+        new Promise<Evidence[]>(resolve => setTimeout(() => resolve([]), 1_500))]);
+      return found.slice(0, 3);
+    } catch { return []; }
+  }
+
   /** Speech for a streamed chunk: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
   private async deliverStreamedSpeech(sessionId: string, meeting: MeetingPort, text: string): Promise<void> {
     const active = this.sessions.get(sessionId)?.activeRequest;
@@ -264,8 +289,15 @@ export class NogitaEngine {
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
     const writeScope = pending ? `${pending.request}\n${request}` : request;
-    const userText = pending ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
-    const repository = authorized ? await this.repositoryOverview() : undefined;
+    let userText = pending ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
+    // A quick in-memory search runs alongside the repository map, so most code questions need one lookup round fewer.
+    const [repository, prefetched] = authorized
+      ? await Promise.all([this.repositoryOverview(), this.prefetchEvidence(request)])
+      : [undefined, []];
+    if (prefetched.length) {
+      userText += `\n\nQuick search results for this request (untrusted data; read files for details):\n${prefetched
+        .map(item => `${item.path} (${item.url})\n${item.excerpt.slice(0, 1200)}`).join('\n---\n')}`;
+    }
     const { toolbox, report } = buildToolbox({
       actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
@@ -275,15 +307,42 @@ export class NogitaEngine {
     });
     let spoke = false;
     let speech = Promise.resolve();
-    const onSpeech = (text: string) => {
-      if (!spoke) {
-        spoke = true;
-        this.clearProgressTimer(s);
-      }
+    let spokenWords = 0;
+    let truncatedSpeech = false;
+    let stillWorking: unknown;
+    let stillWorkingUsed = false;
+    const queueSpeech = (text: string) => {
       speech = speech.then(async () => {
         if (s.progressSpeech) await s.progressSpeech;
         await this.deliverStreamedSpeech(sessionId, s.meeting, text);
       });
+    };
+    const onSpeech = (raw: string) => {
+      if (!spoke) {
+        spoke = true;
+        this.clearProgressTimer(s);
+      }
+      if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
+      const text = speakable(raw);
+      if (!text || truncatedSpeech) return;
+      // Spoken answers stay short; anything longer is in the chat copy of the answer.
+      const words = text.split(/\s+/).length;
+      if (spokenWords > 0 && spokenWords + words > MAX_SPOKEN_WORDS) {
+        truncatedSpeech = true;
+        queueSpeech('I have put the rest in the chat.');
+        return;
+      }
+      spokenWords += words;
+      queueSpeech(text);
+      // After a spoken lead-in, a long silence while tools run gets one short "still on it".
+      if (!stillWorkingUsed) {
+        stillWorking = this.schedule(() => {
+          stillWorking = undefined;
+          if (stillWorkingUsed || truncatedSpeech || this.sessions.get(sessionId) !== s) return;
+          stillWorkingUsed = true;
+          queueSpeech(STILL_WORKING[Math.floor(this.random() * STILL_WORKING.length) % STILL_WORKING.length]!);
+        }, 6_000);
+      }
     };
     let result;
     try {
@@ -295,15 +354,18 @@ export class NogitaEngine {
         turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined }),
         messages: [{ role: 'user', content: agentUserMessage(s.history.slice(0, -1).map(turn => turn.text), speaker, userText) }],
         toolbox, stream: voice, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
-        deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 700 : 1_500,
+        deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
       }));
     } catch {
+      if (stillWorking !== undefined) this.cancel(stillWorking);
       await speech;
       if (!spoke && !report.wroteSomething) return undefined;
       this.clearProgressTimer(s);
       await this.speakOrChat(sessionId, s.meeting, 'Sorry, I hit a problem and could not finish that.');
       return report.wroteSomething ? 'completed' : 'answered';
     }
+    if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
+    stillWorkingUsed = true;
     await speech;
     this.clearProgressTimer(s);
     if (s.progressSpeech) await s.progressSpeech;
