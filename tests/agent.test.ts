@@ -267,14 +267,14 @@ test('Anthropic streaming parses text and tool calls, caches the prompt and reco
   assert.deepEqual(response.content, [{ type: 'text', text: 'Let me check.' },
     { type: 'tool_use', id: 'tu1', name: 'search_code', input: { query: 'retry' } }]);
   assert.equal(response.stopReason, 'tool_use');
-  assert.equal(body.model, 'claude-sonnet-5-5');
+  assert.equal(body.model, 'claude-haiku-5-5');
   assert.equal(body.stream, true);
   assert.deepEqual((body.system as Array<Record<string, unknown>>)[0]!.cache_control, { type: 'ephemeral' });
   assert.deepEqual((body.tools as Array<Record<string, unknown>>)[0]!.cache_control, { type: 'ephemeral' });
   const usage = brain.usageFor('s');
   assert.equal(usage.inputTokens, 200);
   assert.equal(usage.outputTokens, 20);
-  assert.equal(usage.estimatedUsd, Number(((200 * 3 + 20 * 15) / 1_000_000).toFixed(6)));
+  assert.equal(usage.estimatedUsd, Number(((200 * 0.10 + 20 * 0.50) / 1_000_000).toFixed(6)));
 });
 
 test('Jira reads stay inside the configured projects and assignees come from Jira itself', async () => {

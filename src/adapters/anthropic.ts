@@ -5,7 +5,9 @@ import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } fro
 /** Maintained low-cost model for latency-sensitive Nogita conversations. */
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
 /** Tool-using conversation model: quality of answers matters more than the last few hundred milliseconds. */
-export const DEFAULT_ANTHROPIC_AGENT_MODEL = 'claude-sonnet-5-5';
+// Haiku: in the voice lab (56 spoken turns) it reached its own first words 1.3 s sooner than Sonnet, passed more
+// turns (50 vs 48) and judged equally correct, at a fraction of the price.
+export const DEFAULT_ANTHROPIC_AGENT_MODEL = 'claude-haiku-5-5';
 interface AgentModelOptions { model?: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number }
 
 interface ModelUsage { modelCalls: number; inputTokens: number; outputTokens: number }
@@ -87,8 +89,8 @@ export class AnthropicBrain implements BrainPort, ChatModel {
     codeModel: CodeModelOptions = {}, agent: AgentModelOptions = {}) {
     if (!key) throw new Error('Anthropic key required in live mode');
     this.agentModel = agent.model?.trim() || DEFAULT_ANTHROPIC_AGENT_MODEL;
-    this.agentInputUsdPerMillion = agent.inputUsdPerMillion ?? 3;
-    this.agentOutputUsdPerMillion = agent.outputUsdPerMillion ?? 15;
+    this.agentInputUsdPerMillion = agent.inputUsdPerMillion ?? 0.10;
+    this.agentOutputUsdPerMillion = agent.outputUsdPerMillion ?? 0.50;
     if (![this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0)) {
       throw new Error('invalid Anthropic agent token price');
     }

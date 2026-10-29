@@ -46,8 +46,8 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
         maxCodeReasoningCallsPerSession: Number(env.ANTHROPIC_MAX_CODE_REASONING_CALLS_PER_SESSION ?? '3'),
       }, {
         model: env.ANTHROPIC_AGENT_MODEL,
-        inputUsdPerMillion: Number(env.ANTHROPIC_AGENT_INPUT_USD_PER_MILLION ?? '3'),
-        outputUsdPerMillion: Number(env.ANTHROPIC_AGENT_OUTPUT_USD_PER_MILLION ?? '15'),
+        inputUsdPerMillion: Number(env.ANTHROPIC_AGENT_INPUT_USD_PER_MILLION ?? '0.10'),
+        outputUsdPerMillion: Number(env.ANTHROPIC_AGENT_OUTPUT_USD_PER_MILLION ?? '0.50'),
       })
     : new DemoBrain();
   // The tool-using agent answers direct requests in live mode; NOGITA_AGENT=off keeps the one-shot planner.

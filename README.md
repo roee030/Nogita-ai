@@ -67,7 +67,8 @@ The protected endpoint returns fixed `ready`/`blocked` checks for the runtime, a
 ## Conversational agent (live mode)
 
 In live mode every direct request is answered by a tool-using Claude agent (`src/core/agent.ts`, default model
-`claude-sonnet-5-5`), not by a fixed plan. It decides what to look up, can run several lookups in parallel, and
+`claude-haiku-5-5`, chosen with the voice lab; `ANTHROPIC_AGENT_MODEL=claude-sonnet-5-5` for deeper code answers),
+not by a fixed plan. It decides what to look up, can run several lookups in parallel, and
 answers in its own words:
 
 | Source | Tools |
@@ -91,8 +92,9 @@ Jira's own assignable-user search (ambiguous names make Nogita ask), and task cr
 In a Slack thread the agent reads the whole thread as context; a DM is addressed to Nogita without her name.
 
 Measured on 2026-10-28 against this repository, its Jira board and the live API (`tools/agent-smoke.ts`, read-only,
-five questions, speech provider excluded): first spoken text 1.1–2.3 s, complete answer 2.9–6.8 s, about $0.02 per
-question with Sonnet. Run it yourself:
+five questions, speech provider excluded): first spoken text 1.1–2.3 s, complete answer 2.9–6.8 s with Sonnet.
+Spoken end to end in the voice lab (56 turns with noise, Flux recognition), Haiku's own words came 3.0 s after the
+question (median) against 4.3 s for Sonnet. Run it yourself:
 
 ```bash
 node --experimental-transform-types tools/agent-smoke.ts "Nogita, how does the Jira idempotency work?"
