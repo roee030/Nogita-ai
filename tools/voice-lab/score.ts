@@ -73,6 +73,20 @@ export function scoreTurn(record: TurnRecord): TurnScore {
     checks.push({ name: `write mentions ${expect.writeIncludes.slice(0, 3).join('/')}`, ok: !!hit, detail: record.writes.join('; ') || 'no write' });
   }
   if (expect.handRaisedBefore) checks.push({ name: 'raised hand earlier', ok: record.handRaisedBefore });
+  if (expect.tools) {
+    const used = expect.tools.find(tool => record.tools.some(call => call.startsWith(`${tool}:`)));
+    checks.push({ name: `looked up ${expect.tools.join('/')}`, ok: !!used, detail: record.tools.join('; ') || 'no lookups' });
+  }
+  if (expect.firstSoundWithinMs !== undefined) {
+    const gap = record.timing.firstAudio;
+    checks.push({ name: `first sound within ${expect.firstSoundWithinMs / 1000} s`, ok: gap !== undefined && gap <= expect.firstSoundWithinMs,
+      detail: gap === undefined ? 'no sound' : `${(gap / 1000).toFixed(2)} s` });
+  }
+  if (expect.contentWithinMs !== undefined) {
+    const gap = record.timing.firstContentAudio;
+    checks.push({ name: `answer within ${expect.contentWithinMs / 1000} s`, ok: gap !== undefined && gap <= expect.contentWithinMs,
+      detail: gap === undefined ? 'no answer' : `${(gap / 1000).toFixed(2)} s` });
+  }
   if (record.interruptedByNoise) checks.push({ name: 'not cut off', ok: false, detail: 'speech was interrupted without anyone talking over her' });
   if (record.turn.bargeIn) {
     const stop = record.timing.bargeInStop;
@@ -102,6 +116,8 @@ Question (as scripted): ${record.script}
 Question (as transcribed): ${record.heard ?? '(nothing)'}
 What Nogita said aloud: ${record.spoken.join(' ') || '(nothing)'}
 What Nogita wrote in chat: ${record.chat.join(' | ') || '(nothing)'}
+Lookups Nogita made: ${record.tools.join('; ') || '(none)'}
+Actions Nogita took: ${record.writes.join('; ') || '(none)'}
 Grader notes: ${record.turn.expect.note ?? 'none'}
 Score 1-5: correct (answers the actual question, no invented facts), natural (sounds like a helpful colleague speaking, not a document), concise (right length for speech).
 Reply with only JSON: {"correct": n, "natural": n, "concise": n, "comment": "one short sentence"}`;

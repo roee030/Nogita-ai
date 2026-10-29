@@ -26,7 +26,7 @@ export interface TurnTiming {
   bargeInStop?: number;
 }
 
-const FILLERS = new Set([...agentProgressPhrases, ...progressPhrases, ...STILL_WORKING]);
+export const FILLERS = new Set([...agentProgressPhrases, ...progressPhrases, ...STILL_WORKING]);
 
 export interface TurnRecord {
   index: number;
@@ -37,6 +37,8 @@ export interface TurnRecord {
   spoken: string[];
   chat: string[];
   writes: string[];
+  /** Lookups Nogita made for this turn ("search_tasks: status = In Progress"). */
+  tools: string[];
   interruptedByNoise: boolean;
   /** A hand-raise line was posted to chat before this turn started. */
   handRaisedBefore: boolean;
@@ -85,6 +87,10 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
       // Two people at once: start while the previous speaker is still talking.
       const previousStart = marks.at(-1)!.start;
       await until(() => performance.now() >= previousStart + turn.overlapPreviousMs!, 60_000, 5);
+    } else if (turn.afterPreviousMs !== undefined && marks.length) {
+      // A second question queued right behind the previous one, before Nogita answers it.
+      await ends.at(-1);
+      await sleep(turn.afterPreviousMs);
     } else if (turn.bargeIn) {
       // Talk over her once she has been audible for a while.
       const previousEnd = marks.at(-1)?.end ?? 0;
@@ -100,7 +106,8 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
     const mark = { start: spoken.start, end: Infinity };
     marks.push(mark);
     ends.push(spoken.ended.then(end => { mark.end = end; }));
-    if (scenario.turns[index + 1]?.overlapPreviousMs !== undefined) continue;
+    const next = scenario.turns[index + 1];
+    if (next?.overlapPreviousMs !== undefined || next?.afterPreviousMs !== undefined) continue;
     await spoken.ended;
     // Give the pipeline time to hear the end of the turn and start (or decide not to start) an answer.
     await sleep(2_500);
@@ -152,6 +159,7 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
     chat: window.filter(event => event.type === 'chat' && event.t >= mark.end && !spoken.includes(event.text ?? ''))
       .map(event => event.text ?? ''),
     writes: window.filter(event => event.type === 'write').map(event => event.text ?? ''),
+    tools: window.filter(event => event.type === 'tool').map(event => event.text ?? ''),
     // An interruption nobody scripted: the hub heard "speech" (noise, a cough) and cut her off.
     handRaisedBefore: events.some(event => event.type === 'chat' && event.t < mark.start && /has something to add/i.test(event.text ?? '')),
     interruptedByNoise: window.some(event => event.type === 'speak_error' && /interrupt/i.test(event.detail ?? '') && event.t > mark.end),

@@ -99,6 +99,11 @@ export interface RealtimeAudioOptions {
   deepgramApiKey: string;
   sttMode?: 'nova3-multilingual' | 'flux-english';
   ttsModel?: string;
+  /** Flux end-of-turn confidence. Deepgram's default 0.7 ended turns at the pause after "Nogita," in the voice lab,
+   *  so she answered her own name and was cut off by the rest of the question; 0.8 waits for the question. */
+  fluxEndOfTurnThreshold?: number;
+  /** Keep a speech connection open for the whole meeting: a cold one cost 0.7-1.4 s before the first word. */
+  warmSpeech?: boolean;
   /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
   keyterms?: readonly string[];
   /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
@@ -251,6 +256,7 @@ export class AttendeeRealtimeAudioHub {
         this.closeProviderSockets(session);
       });
       client.on('error', () => this.options.onError?.('attendee_audio_socket_error'));
+      this.warmTts(session);
     });
     return true;
   }
@@ -309,7 +315,14 @@ export class AttendeeRealtimeAudioHub {
     }
     pending.reject(new Error('speech interrupted by participant'));
     interruptedSocket?.close(1000, 'speech interrupted');
+    // The answer to whoever interrupted should not wait for a new handshake.
+    this.warmTts(session);
     return true;
+  }
+
+  private warmTts(session: RealtimeSession): void {
+    if (!this.options.warmSpeech || session.closed || session.attendeeSocket?.readyState !== WebSocket.OPEN) return;
+    void this.openTts(session).catch(() => undefined);
   }
 
   closeSession(sessionId: string): void {
@@ -451,7 +464,8 @@ export class AttendeeRealtimeAudioHub {
     const url = new URL(flux ? 'wss://api.deepgram.com/v2/listen' : 'wss://api.deepgram.com/v1/listen');
     if (flux) {
       for (const [key, value] of Object.entries({ model: 'flux-general-en', encoding: 'linear16',
-        sample_rate: String(AUDIO_SAMPLE_RATE), eot_threshold: '0.8', eot_timeout_ms: '3000' })) {
+        sample_rate: String(AUDIO_SAMPLE_RATE), eot_threshold: String(this.options.fluxEndOfTurnThreshold ?? 0.8),
+        eot_timeout_ms: '3000' })) {
         url.searchParams.set(key, value);
       }
     } else {
@@ -523,9 +537,11 @@ export class AttendeeRealtimeAudioHub {
         tts.close(1013, 'TTS connection timed out');
         reject(new Error('Deepgram TTS connection timed out'));
       }, 10_000);
+      let opened = false;
       tts.once('open', () => {
         if (settled) { tts.close(1013, 'late TTS connection'); return; }
         settled = true;
+        opened = true;
         clearTimeout(timeout);
         resolve(tts);
       });
@@ -580,6 +596,9 @@ export class AttendeeRealtimeAudioHub {
         if (session.ttsSocket === tts) {
           session.ttsSocket = undefined;
           if (!session.ttsFlushed) session.ttsPending?.reject(new Error('Deepgram TTS connection closed'));
+          // The provider closed an idle connection: open the next one now rather than when she next speaks.
+          // A connection that never opened is not retried here, so a bad key cannot loop.
+          if (opened) setTimeout(() => this.warmTts(session), 1_000).unref?.();
         }
       });
     }).finally(() => { session.ttsOpening = undefined; });

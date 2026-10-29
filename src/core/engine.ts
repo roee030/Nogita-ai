@@ -26,6 +26,9 @@ interface Session {
   progressTimer?: unknown;
   progressSpeech?: Promise<void>;
   lastProgressPhrase?: string;
+  /** Keeps the agent's prompt cache warm between questions in a voice meeting. */
+  cacheTimer?: ReturnType<typeof setTimeout>;
+  lastModelCallAt: number;
 }
 type ProgressWork = () => void | Promise<void>;
 export interface NogitaEngineOptions {
@@ -150,8 +153,44 @@ export class NogitaEngine {
     this.sessions.set(sessionId, {
       meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       lastAssessmentAt: 0, utterancesSinceAssessment: 0, assessing: false,
-      processing: Promise.resolve(), ending: false,
+      processing: Promise.resolve(), ending: false, lastModelCallAt: 0,
     });
+    this.keepAgentCacheWarm(sessionId);
+  }
+
+  /**
+   * A voice meeting's first question waited about 1.5 s longer on a cold prompt cache (voice lab). The cache is
+   * written when the session starts and read again before its 5-minute lifetime ends while the meeting is quiet.
+   */
+  private keepAgentCacheWarm(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    const agent = this.dependencies.agent;
+    if (!session || session.ending || !agent?.warmCache || !session.meeting.capabilities.has('speak')) return;
+    const warm = async () => {
+      if (this.now() - session.lastModelCallAt < 4 * 60_000) return;
+      const repository = await this.repositoryOverview();
+      if (this.sessions.get(sessionId) !== session || session.ending) return;
+      // The tool list an authorized person gets; it is only described to the model here, never run.
+      const { toolbox } = buildToolbox({
+        actor: { id: 'cache-warmup', displayName: 'Nogita', verified: true }, request: '', sessionId, eventId: 'cache-warmup',
+        policy: { mayReadCode: () => true, mayWriteTask: () => true, mayDraftPR: () => false },
+        code: this.dependencies.code, board: this.dependencies.board, chat: this.dependencies.chat,
+        people: this.dependencies.people, completed: new Map(), onReceipt: async () => {},
+      });
+      session.lastModelCallAt = this.now();
+      await agent.warmCache!({ stableSystem: stableAgentPrompt({ voice: true,
+        repository: repository && { name: this.dependencies.code.name, ...repository },
+        boardName: this.dependencies.board.name, chatName: this.dependencies.chat?.name }),
+      tools: toolbox.specs, usageContext: sessionId });
+    };
+    const loop = () => {
+      void warm().catch(() => undefined).finally(() => {
+        if (this.sessions.get(sessionId) !== session || session.ending) return;
+        session.cacheTimer = setTimeout(loop, 60_000);
+        session.cacheTimer.unref?.();
+      });
+    };
+    loop();
   }
 
   async startSession(sessionId: string, meeting: MeetingPort, meetingUrl?: string): Promise<void> {
@@ -175,6 +214,7 @@ export class NogitaEngine {
     if (!session) return;
     if (session.endingPromise) return session.endingPromise;
     session.ending = true;
+    if (session.cacheTimer) clearTimeout(session.cacheTimer);
     const ending = (async () => {
       await session.processing;
       if (this.sessions.get(sessionId) !== session) return;
@@ -428,6 +468,7 @@ export class NogitaEngine {
       }
     };
     let result;
+    s.lastModelCallAt = this.now();
     try {
       result = await this.modelCall(sessionId, () => runAgent(agent, {
         stableSystem: stableAgentPrompt({ voice,

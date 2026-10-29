@@ -28,6 +28,8 @@ export interface ChatModelResponse { content: AgentContent[]; stopReason: string
 export interface ChatModel {
   readonly agentModel: string;
   streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse>;
+  /** Optional: prime the provider's prompt cache with the stable prompt and tools. */
+  warmCache?(request: { stableSystem: string; tools: AgentToolSpec[]; usageContext?: string }): Promise<void>;
 }
 export interface ToolOutcome { content: string; isError?: boolean }
 export interface AgentToolbox {

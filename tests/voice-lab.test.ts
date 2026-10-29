@@ -10,6 +10,7 @@ import { SPEECH_RMS, createNoise } from '../tools/voice-lab/noise.ts';
 import { VoiceRig } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
 import { scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
+import { transcriptLines, transcriptMarkdown } from '../tools/voice-lab/report.ts';
 
 test('speech recognition variants of the wake word are restored only where someone addresses Nogita', () => {
   for (const [heard, expected] of [
@@ -78,7 +79,7 @@ test('every built-in scenario names its own participants and a known noise kind'
 });
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
-  return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [],
+  return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [], tools: [],
     interruptedByNoise: false, handRaisedBefore: false, events: [], timing: { speechStart: 0, speechEnd: 0 }, ...fields };
 }
 
@@ -160,4 +161,29 @@ test('the lab drives the real voice path end to end and times each stage', async
   assert.equal(scoreTurn(turn!).passed, true);
   assert.ok(rig.room.length >= msToSamples(600) && rig.nogita.length > 0);
   assert.equal(rig.room.length % FRAME_SAMPLES, 0);
+});
+
+test('scoring checks lookups and response time, and the transcript shows every step', () => {
+  const ask: Turn = { speaker: 'roee', say: "Nogita, what's in progress on the board?",
+    expect: { respond: 'speak', tools: ['search_tasks'], firstSoundWithinMs: 2_000, contentWithinMs: 3_000 } };
+  const events = [
+    { t: 1_000, type: 'speak_call' as const, text: 'One sec.' },
+    { t: 1_200, type: 'tool' as const, text: 'search_tasks: status = "In Progress"' },
+    { t: 2_500, type: 'speak_call' as const, text: 'Two tasks are in progress.' },
+    { t: 2_600, type: 'write' as const, text: 'task: Fix retries — from the meeting', detail: 'intercepted' },
+  ];
+  const good = record(ask, { spoken: ['One sec.', 'Two tasks are in progress.'], tools: ['search_tasks: status = "In Progress"'],
+    events, timing: { speechStart: 0, speechEnd: 0, firstAudio: 1_100, firstContentAudio: 2_600 } });
+  assert.equal(scoreTurn(good).passed, true);
+  const slow = scoreTurn(record(ask, { spoken: ['Two tasks.'], tools: [],
+    timing: { speechStart: 0, speechEnd: 0, firstAudio: 3_400, firstContentAudio: 3_400 } }));
+  assert.deepEqual(slow.checks.filter(c => !c.ok).map(c => c.name), ['looked up search_tasks', 'first sound within 2 s', 'answer within 3 s']);
+
+  const scenario = { name: 's', title: 'S', noise: { kind: 'quiet' as const, snrDb: 60 },
+    participants: [{ id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', authorized: true, mic: 'open' as const }], turns: [ask] };
+  const [lines] = transcriptLines({ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [] });
+  assert.deepEqual(lines!.map(line => line.kind), ['person', 'bridge', 'tool', 'nogita', 'task', 'verdict']);
+  assert.equal(lines![3]!.at, 2.5);
+  assert.match(transcriptMarkdown([{ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [] }]),
+    /Jira task:\* Fix retries — from the meeting \[intercepted\]/);
 });

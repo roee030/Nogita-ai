@@ -12,7 +12,9 @@ export function isExplicitCreateRequest(current: string): boolean {
   const t = current.toLowerCase();
   if (/\b(?:pr|pull request)\b/.test(t)) return false;
   return /\b(create|open|add|file|make)\b.{0,90}\b(task|ticket|issue|bug|story)\b/.test(t) ||
-    /\b(task|ticket|issue|bug)\b.{0,40}\b(in|on)\s+jira\b/.test(t);
+    /\b(task|ticket|issue|bug)\b.{0,40}\b(in|on)\s+jira\b/.test(t) ||
+    // Right after one task: "and open one for me to ...", "create another for Dana".
+    /\b(create|open|add|file|make)\s+(?:one|another|one more)\s+(?:for|to|about|on)\b/.test(t);
 }
 export function isExplicitPRRequest(current: string): boolean {
   return /\b(create|open|prepare|draft|make)\b.{0,90}\b(pr|pull request)\b/i.test(current);
@@ -49,6 +51,9 @@ const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|which\
 const ADDRESS_LEAD = String.raw`hey|hi|hello|okay|ok|please|excuse me|thanks|thank you|um|uh|erm|so|and|no|oh|well|yeah|yes|alright|right|sorry`;
 // Speech recognition often writes a comma after the greeting: "Hey, Nogita, ...".
 const initialAddress = new RegExp(String.raw`^(?:(?:${ADDRESS_LEAD}),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+// A question that opens with her name, when recognition drops the comma: "Nogita should this go in a queue?",
+// "Nogita in one sentence, what is this?". Third-person questions ("Nogita was down?") do not count.
+const questionAddress = new RegExp(String.raw`^(?:(?:${ADDRESS_LEAD}),?\s+)?nogita\s+(?!(?:is|was|has|had|said|did|does)\b)[^.!?]*\?\s*$`, 'i');
 const laterAddress = new RegExp(String.raw`[.!?;]\s+(?:(?:${ADDRESS_LEAD}),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
 // The name between commas right before a question or request: "So for the retry logic, Nogita, what happens...".
 // A list ("Dana, Nogita, and Avi") does not match because "and" is not a follow word.
@@ -84,6 +89,7 @@ export function normalizeWakeWord(text: string): string {
 export function directlyAddressesNogita(text: string): boolean {
   const s = text.trim();
   return initialAddress.test(s)
+    || questionAddress.test(s)
     || laterAddress.test(s)
     || vocativeAddress.test(s)
     || /^(?:how are you|are you|can you|could you|would you|what do you think|how about you),?\s+nogita\b/i.test(s)
@@ -91,6 +97,7 @@ export function directlyAddressesNogita(text: string): boolean {
 }
 export function removeAddress(text: string): string {
   if (initialAddress.test(text)) return text.replace(initialAddress, '').trim();
+  if (questionAddress.test(text)) return text.replace(/^[^]*?nogita\s+/i, '').trim();
   if (laterAddress.test(text)) return text.slice(text.search(laterAddress)).replace(laterAddress, '').trim();
   return text.replace(/,?\s*nogita\s*,?/i, ' ').replace(/\s+([?!.])/g, '$1').replace(/\s+/g, ' ').trim();
 }

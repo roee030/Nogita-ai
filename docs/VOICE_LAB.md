@@ -10,13 +10,17 @@ npm run voice-lab -- --list                        # what is available
 npm run voice-lab -- --scenario stump,cafe-loud --judge
 npm run voice-lab -- --noise cafe --snr 0          # same questions, louder room
 npm run voice-lab -- --stt flux-english            # compare speech recognition modes
+npm run voice-lab -- --eot 0.8                     # Flux end-of-turn threshold (default 0.8)
+npm run voice-lab -- --scenario actions --live-writes   # really create the Jira tasks it asks for
 ```
 
 **Requirements in `.env`:** `NOGITA_MODE=live`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY` and
 `AUTHORIZED_ACTOR_IDS`. The GitHub, Jira and Slack settings are optional; the lab uses whichever are configured.
 
-**Writes:** Jira task creation and Slack posts are intercepted. They are logged and answered with a placeholder
-link, so a run never changes your board or channels. Reads are live.
+**Writes:** Jira task creation and Slack posts are intercepted by default. They are logged with their full title
+and description and answered with a placeholder link, so a run never changes your board or channels. With
+`--live-writes` they really happen, and the report shows the real task key and link. Reads are always live, and
+every lookup (`search_tasks`, `search_code`, `read_file`, `recent_commits`...) is logged with its query.
 
 ## What is real and what is simulated
 
@@ -51,6 +55,11 @@ any noise suppression the platform applies, are not included.
 | `follow-up` | "Open a task" with no details; she asks, and the answer comes without her name |
 | `context-memory` | Questions that lean on her previous answer ("and what starts it?") |
 | `hand-raise` | The team agrees to log secrets and make a bucket public; she should raise her hand and explain when given the floor |
+| `solo-quick` | One person, quiet room, questions she can answer without lookups; her answer must start within 2.5 s |
+| `thinking-bridge` | Questions that need Jira or the code: a short "let me check" within 2 s, the right lookup, then the answer |
+| `stalled-speaker` | A long "um" mid-question, a question abandoned with "never mind", and a sentence cut off halfway |
+| `multi-question` | Two questions in one sentence, and a second person asking before she answered the first |
+| `proactive-gap` | The team agrees a bug matters and moves on with no owner; she should raise her hand and offer a task |
 
 **Noise kinds:** `quiet`, `white`, `pink`, `brown`, `hum`, `keyboard`, `office`, `cafe`, `street`. The office and
 cafe profiles mix real synthesized background chatter in other voices. Noise is set by SNR against a fixed speech
@@ -63,12 +72,19 @@ say, an optional pause, gap, barge-in or overlap with the previous speaker, and 
 - the phrases it must not mention;
 - the write it should or should not attempt, and what that write must contain;
 - whether she must have raised her hand earlier;
+- the lookups she must make (for example `search_tasks`: she went to the board);
+- how soon some sound, and how soon her own words, must start;
 - a note for the judge.
 
 ## What a report contains
 
 Reports go to `.voice-lab/reports/<time>/`:
-- `report.html`: summary tiles and one timing bar per turn.
+- `report.html`: summary tiles, one timing bar per turn, and every conversation in order (scenarios with a
+  failure open first).
+- `transcript.md`: the conversations as text. Each turn shows what the person said, what speech recognition
+  heard, then everything Nogita did with its delay: a bridge ("One sec."), her own sentences, each lookup,
+  chat messages, a raised hand, the Jira task or Slack message with its full text, the result of each check
+  and the judge's comment.
 - `report.md`: the same as a table.
 - `report.json`: every event.
 - one stereo WAV per scenario: the room on the left and Nogita on the right, so you can listen to the conversation.
@@ -133,6 +149,34 @@ latest report:
     opens the window.
 11. **Fillers delayed ready answers.** A 2 s filler started just before the model's first sentence, which then
     waited behind it. Agent fillers are now short ("One sec.") and stay out of chat.
+
+12. **Time to her own words** (19 scenarios, Flux, Haiku). Median 2.4 s from the last word, p90 4.4 s. Of that,
+    end-of-turn detection takes about 1.1 s, the model about 1.2 s and the voice 0.26 s.
+    - **Thinking off by default.** Haiku answered without thinking first; the median was 2.6 s with thinking off
+      but before the other fixes, and 3.0 s with thinking on. Judged correctness was the same.
+    - **Warm voice connection.** It opens when the meeting audio connects and again right after an interruption.
+      Voice time fell from 0.7-1.4 s on a cold connection to 0.26 s.
+    - **Warm prompt cache.** The stable prompt and tools are cached when the session starts and refreshed while
+      the meeting is quiet, so the first question does not pay for a cold cache.
+13. **Flux threshold 0.7 was worse.** Deepgram's default ended turns at the pause after "Nogita,", so she
+    answered her own name and was cut off by the rest of the question (51/74 passed against 61/74 at 0.8).
+    It stays at 0.8.
+14. **Reasoning spoken aloud.** Without thinking, the model sometimes said its reasoning ("This question is about
+    the meaning of life, so..."). The prompt now says everything it writes is spoken, and keeps the lead-in
+    before a lookup to six words.
+15. **The name without a comma.** "Nogita should reminder emails go through a queue?" and "Nogita in one
+    sentence, what is this?" were not taken as addressed. A question that opens with her name now is, unless
+    it is about her ("Nogita was down?").
+16. **Asking twice.** After getting the details of a task she asked whether to open it "as is". She now acts
+    once she has what the request needs. "Open one for me to ..." after an earlier task is now an explicit
+    request.
+
+**Known open issues:**
+- A second person's question interrupts the "let me check" for the first one. The first answer then goes to
+  chat only and is never spoken.
+- On an open microphone in an office, nearby talk merges into the speaker's turn and delays the answer
+  (up to 5 s).
+- The `aura-2-arcas-en` lab voice is often heard as "The guitar" instead of "Nogita".
 
 **Simulation caveats found along the way:**
 - Deepgram's TTS occasionally returns a near-silent, unintelligible clip. The lab now rejects clips that peak

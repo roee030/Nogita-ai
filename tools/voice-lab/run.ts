@@ -1,13 +1,13 @@
 /**
  * Nogita voice lab: spoken conversations with background noise against the real voice pipeline, outside any
  * meeting. Measures the silence between the end of each question and Nogita's first sound, and checks what
- * she did. Jira and Slack writes are intercepted; reads are live.
+ * she did. Jira and Slack writes are intercepted unless --live-writes is given; reads are live.
  *
- *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english]
+ *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
  *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
- * Output: .voice-lab/reports/<time>/ (report.md, report.html, report.json, one WAV per scenario).
+ * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
  */
 import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
@@ -26,6 +26,7 @@ const { values } = parseArgs({ options: {
   scenario: { type: 'string' }, judge: { type: 'boolean', default: false }, list: { type: 'boolean', default: false },
   stt: { type: 'string' }, noise: { type: 'string' }, snr: { type: 'string' },
   'router-quiet-ms': { type: 'string' }, 'frame-ms': { type: 'string' }, out: { type: 'string' },
+  'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' },
 } });
 
 if (values.list) {
@@ -60,14 +61,35 @@ const sttMode = (values.stt ?? env.DEEPGRAM_STT_MODE) === 'flux-english' ? 'flux
 const routerQuietMs = values['router-quiet-ms'] ? Number(values['router-quiet-ms']) : undefined;
 const frameMs = values['frame-ms'] ? Number(values['frame-ms']) : 20;
 
-// Writes never leave the lab: they are logged on the running rig and answered with a placeholder receipt.
+// Writes are logged on the running rig. By default they never leave the lab and get a placeholder receipt;
+// with --live-writes they really create the task or post the message.
 let rig: VoiceRig | undefined;
 let writes = 0;
+const liveWrites = values['live-writes'];
+const createTask = dependencies.board.createTask.bind(dependencies.board);
 dependencies.board.createTask = async (input): Promise<ActionReceipt> => {
   writes++;
-  rig?.log('write', { text: `task: ${input.title}${input.assigneeId ? ` (assignee ${input.assigneeId})` : ''} — ${input.description.slice(0, 300)}` });
-  return { provider: 'voice-lab', kind: 'task', label: `LAB-${writes}`, url: `https://example.invalid/LAB-${writes}` };
+  const receipt = liveWrites ? await createTask(input)
+    : { provider: 'voice-lab', kind: 'task' as const, label: `LAB-${writes}`, url: `https://example.invalid/LAB-${writes}` };
+  rig?.log('write', { text: `task: ${input.title}${input.assigneeId ? ` (assignee ${input.assigneeId})` : ''} — ${input.description.slice(0, 300)}`,
+    detail: liveWrites ? `${receipt.label} ${receipt.url}` : 'intercepted' });
+  return receipt;
 };
+
+// Every lookup is logged under the agent's tool name, so a report shows where she looked ("search_tasks: ...").
+function traceReads(port: object, tools: Record<string, string>): void {
+  const target = port as Record<string, unknown>;
+  for (const [method, tool] of Object.entries(tools)) {
+    const original = target[method];
+    if (typeof original !== 'function') continue;
+    target[method] = async (...args: unknown[]) => {
+      rig?.log('tool', { text: `${tool}: ${args.filter(arg => typeof arg === 'string' || typeof arg === 'number').join(', ').slice(0, 160)}` });
+      return (original as (...a: unknown[]) => unknown).apply(port, args);
+    };
+  }
+}
+traceReads(dependencies.code, { findEvidence: 'search_code', readFile: 'read_file', listFiles: 'list_files', recentCommits: 'recent_commits' });
+traceReads(dependencies.board, { searchTasks: 'search_tasks', getTask: 'get_task' });
 const realChat = dependencies.chat;
 const chat: ChatPort | undefined = realChat && { name: realChat.name,
   listChannels: () => realChat.listChannels(), readChannel: (c, l) => realChat.readChannel(c, l),
@@ -75,9 +97,12 @@ const chat: ChatPort | undefined = realChat && { name: realChat.name,
   ...(realChat.readThread ? { readThread: (c: string, t: string) => realChat.readThread!(c, t) } : {}),
   postMessage: async (channel, text): Promise<ActionReceipt> => {
     writes++;
-    rig?.log('write', { text: `message: #${channel}: ${text.slice(0, 120)}` });
-    return { provider: 'voice-lab', kind: 'message', label: `message ${writes}`, url: `https://example.invalid/msg-${writes}` };
+    const receipt = liveWrites ? await realChat.postMessage(channel, text)
+      : { provider: 'voice-lab', kind: 'message' as const, label: `message ${writes}`, url: `https://example.invalid/msg-${writes}` };
+    rig?.log('write', { text: `message: #${channel}: ${text.slice(0, 120)}`, detail: liveWrites ? receipt.url : 'intercepted' });
+    return receipt;
   } };
+if (chat) traceReads(chat, { listChannels: 'list_channels', readChannel: 'read_channel', searchMessages: 'search_messages', readThread: 'read_thread' });
 
 const synthesize = deepgramSynthesizer(env.DEEPGRAM_API_KEY, resolve('.voice-lab/cache'));
 const needsBabble = scenarios.some(s => s.noise.kind === 'office' || s.noise.kind === 'cafe');
@@ -94,7 +119,8 @@ if (dependencies.code.prepare) await dependencies.code.prepare();
 
 const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
-  routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs) };
+  routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
+  eot: values.eot ?? '0.8', thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
 for (const scenario of scenarios) {
   console.log(`\n▶ ${scenario.title}`);
@@ -102,7 +128,7 @@ for (const scenario of scenarios) {
   const audio: Float32Array[] = [];
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
-    dependencies: { ...dependencies, chat }, routerQuietMs, frameMs,
+    dependencies: { ...dependencies, chat }, routerQuietMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
     engineOptions: { handRaiseFallback: 'chat' } });
   const errors: string[] = [];

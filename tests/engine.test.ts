@@ -40,6 +40,11 @@ test('sentence-later and second-person vocatives wake Nogita without waking thir
   assert.equal(directlyAddressesNogita('Nogita was helpful today.'), false);
   assert.equal(removeAddress('We finished. Nogita was helpful. Nogita, explain this.'), 'explain this.');
   assert.equal(directlyAddressesNogita('How are you, Nogita, today?'), true);
+  // Recognition drops the comma after the name in a question (voice lab).
+  assert.equal(directlyAddressesNogita('Nogita should reminder emails go through a queue or a cron job?'), true);
+  assert.equal(removeAddress('Nogita in one sentence, what is this project?'), 'in one sentence, what is this project?');
+  assert.equal(directlyAddressesNogita('Nogita was down yesterday?'), false);
+  assert.equal(directlyAddressesNogita('Nogita should handle that.'), false);
 });
 test('no speech without name; relevant concern only raises hand', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);
@@ -840,4 +845,6 @@ test('ending a session drains in-flight speech and refuses new utterances', asyn
 test('create task request is recognized, question not treated as request', () => {
   assert.equal(isExplicitCreateRequest('create a jira task'), true);
   assert.equal(isExplicitCreateRequest('Do we have a task about auth?'), false);
+  assert.equal(isExplicitCreateRequest('and open one for me to write tests for the socket reconnect'), true);
+  assert.equal(isExplicitCreateRequest('open one file for me'), false);
 });

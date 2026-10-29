@@ -497,3 +497,44 @@ test('realtime audio rejects unsupported voice model identifiers before joining 
     signingSecret: 'test-secret', deepgramApiKey: 'test-key', ttsModel: 'flux-alexis-en',
     onTranscript: () => {} }), /TTS model/i);
 });
+
+test('with warm speech the TTS connection opens when meeting audio connects and again after an interruption', async () => {
+  class FakeTts extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Deepgram accepts the speech request. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  const sockets: FakeTts[] = [];
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {}, warmSpeech: true,
+    createWebSocket: () => {
+      const socket = new FakeTts();
+      sockets.push(socket);
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('warm-test');
+  hub.bindBot('warm-test', 'bot_warm');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'warm-test'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  try {
+    await once(client, 'open');
+    await new Promise<void>(resolve => setTimeout(resolve, 30));
+    assert.equal(sockets.length, 1, 'opened before anything was said');
+    const speaking = hub.speak('warm-test', 'Hello there.');
+    void speaking.catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(sockets.length, 1, 'the first answer reuses the warm connection');
+    assert.equal(hub.interruptSpeech('warm-test'), true);
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+    assert.equal(sockets.length, 2, 'a fresh connection is ready for the next answer');
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

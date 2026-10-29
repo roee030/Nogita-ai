@@ -28,6 +28,12 @@ export interface Expectation {
   writeIncludes?: string[];
   /** Nogita must have raised her hand (chat fallback) earlier in the meeting. */
   handRaisedBefore?: boolean;
+  /** She must have used at least one of these tools (for example search_tasks: she went to the board). */
+  tools?: string[];
+  /** Some sound (a short "let me check" counts) within this many ms of the last word. */
+  firstSoundWithinMs?: number;
+  /** Her own words (not a canned filler) within this many ms of the last word. */
+  contentWithinMs?: number;
   /** What a good answer looks like, for the optional LLM judge. */
   note?: string;
 }
@@ -43,6 +49,8 @@ export interface Turn {
   bargeIn?: { afterAudioMs: number };
   /** Start this long after the previous speaker started, talking over them (two people at once). */
   overlapPreviousMs?: number;
+  /** Start this long after the previous speaker finished, without waiting for Nogita (a second question queued). */
+  afterPreviousMs?: number;
   expect: Expectation;
 }
 
@@ -256,6 +264,75 @@ SCENARIOS.push(
       { speaker: 'roee', say: 'Nogita, go ahead.', gapMs: 8000,
         expect: { respond: 'speak', handRaisedBefore: true, mentions: [['token', 'secret', 'credential', 'public', 'email']],
           note: 'She raised her hand about leaking secrets and personal data; she should explain the risk briefly.' } },
+    ],
+  },
+);
+
+SCENARIOS.push(
+  {
+    name: 'solo-quick', title: 'One person, quick questions: speed check', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [roee],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, what does HTTP status 429 mean?',
+        expect: { respond: 'speak', mentions: [['too many', 'rate']], contentWithinMs: 2_500 } },
+      { speaker: 'roee', say: 'Nogita, should reminder emails go through a queue or a cron job?',
+        expect: { respond: 'speak', mentions: [['queue', 'cron']], contentWithinMs: 2_500 } },
+      { speaker: 'roee', say: 'Nogita, in one sentence, what is this project?',
+        expect: { respond: 'speak', mentions: [['meeting', 'teammate', 'assistant']], contentWithinMs: 3_000 } },
+      { speaker: 'roee', say: 'Thanks Nogita.', expect: { respond: 'any', note: 'A brief reply or silence; no long answer.' } },
+    ],
+  },
+  {
+    name: 'thinking-bridge', title: 'Questions that need a lookup: a quick "let me check", then the answer',
+    noise: { kind: 'office', snrDb: 25 }, participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: "Nogita, look at the board and tell me what's in progress right now.",
+        expect: { respond: 'speak', tools: ['search_tasks'], firstSoundWithinMs: 2_000,
+          note: 'A short acknowledgement first ("let me check the board"), then the in-progress tasks from Jira.' } },
+      { speaker: 'dana', say: 'Nogita, find where we verify the Slack request signature, and tell me if it checks the timestamp.',
+        expect: { respond: 'speak', tools: ['search_code', 'read_file'], firstSoundWithinMs: 2_000,
+          mentions: [['timestamp', 'time']], note: 'She should read the code and say whether old requests are rejected.' } },
+      { speaker: 'roee', say: 'Nogita, what changed in the last three commits?',
+        expect: { respond: 'speak', tools: ['recent_commits'], firstSoundWithinMs: 2_000 } },
+    ],
+  },
+  {
+    name: 'stalled-speaker', title: 'The speaker hesitates, gives up, or stops mid-sentence', noise: { kind: 'pink', snrDb: 25 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: ['Nogita, can you check', 'um,', 'which file starts the server?'], pauseMs: 1_400,
+        expect: { respond: 'speak', mentions: [['server', 'index', 'main']],
+          note: 'One answer to the whole question, not a reply to the first fragment.' } },
+      { speaker: 'dana', say: 'Nogita, what about the, uh... actually, never mind.',
+        expect: { respond: 'any', write: 'none', note: 'She stays silent or acknowledges in a few words; she must not invent a question to answer.' } },
+      { speaker: 'roee', say: 'Nogita, how many open', gapMs: 2_000,
+        expect: { respond: 'any', write: 'none', note: 'The sentence was cut off. A short question back ("How many open what?") is right; a long guessed answer is wrong.' } },
+    ],
+  },
+  {
+    name: 'multi-question', title: 'Several questions at once, and a second person asking before she answers',
+    noise: { kind: 'keyboard', snrDb: 25 }, participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, two things: what language is this project written in, and where do we track tasks?',
+        expect: { respond: 'speak', mentions: [['typescript'], ['jira', 'board']], note: 'Both questions answered.' } },
+      { speaker: 'dana', say: 'Nogita, which speech recognition provider do we use?',
+        expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, and which file has the meeting engine?', afterPreviousMs: 500,
+        expect: { respond: 'speak', mentions: [['deepgram'], ['engine']],
+          note: "Roee asked right after Dana, before she answered. Both answers are expected: Dana's (Deepgram) and Roee's (engine.ts)." } },
+    ],
+  },
+  {
+    name: 'proactive-gap', title: 'The team closes a topic without an owner or a date', noise: { kind: 'pink', snrDb: 30 },
+    participants: [roee, dana, avi],
+    turns: [
+      { speaker: 'dana', say: 'The payment retries are failing for some customers since Monday.', expect: { respond: 'silent' } },
+      { speaker: 'roee', say: 'Yeah, someone should look into the retry worker before the release.', gapMs: 400, expect: { respond: 'any' } },
+      { speaker: 'avi', say: 'The release is Thursday, right?', gapMs: 400, expect: { respond: 'any' } },
+      { speaker: 'dana', say: "Right. Okay, let's move on to the design review.", gapMs: 400, expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, you wanted to add something?', gapMs: 8_000,
+        expect: { respond: 'speak', handRaisedBefore: true, mentions: [['owner', 'who', 'assign', 'task', 'ticket']],
+          note: 'Nobody took the payment retry bug before Thursday. She should point that out and offer to open a task.' } },
     ],
   },
 );

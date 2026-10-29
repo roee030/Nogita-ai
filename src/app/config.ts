@@ -48,7 +48,7 @@ export function createDependencies(env: NodeJS.ProcessEnv = process.env): { boar
         model: env.ANTHROPIC_AGENT_MODEL,
         inputUsdPerMillion: Number(env.ANTHROPIC_AGENT_INPUT_USD_PER_MILLION ?? '0.10'),
         outputUsdPerMillion: Number(env.ANTHROPIC_AGENT_OUTPUT_USD_PER_MILLION ?? '0.50'),
-        thinking: env.ANTHROPIC_AGENT_THINKING === 'off' ? 'off' : 'default',
+        thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'default' : 'off',
       })
     : new DemoBrain();
   // The tool-using agent answers direct requests in live mode; NOGITA_AGENT=off keeps the one-shot planner.

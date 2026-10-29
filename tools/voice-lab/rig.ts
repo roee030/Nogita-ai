@@ -19,7 +19,7 @@ export type LabEventType =
   | 'speech_start' | 'speech_end' | 'mic_on' | 'mic_off'
   | 'stt_activity' | 'stt_final' | 'utterance' | 'engine_done' | 'engine_error'
   | 'speak_call' | 'speak_done' | 'speak_error' | 'chat'
-  | 'audio_start' | 'audio_stop' | 'write' | 'error';
+  | 'audio_start' | 'audio_stop' | 'write' | 'tool' | 'error';
 
 export interface LabEvent { t: number; type: LabEventType; participant?: string; text?: string; detail?: string }
 
@@ -31,6 +31,8 @@ export interface RigOptions {
   ttsModel?: string;
   dependencies: EngineDependencies;
   engineOptions?: NogitaEngineOptions;
+  /** Flux end-of-turn threshold; production defaults to 0.8. */
+  eotThreshold?: number;
   /** Router quiet window; production uses 1200 ms. */
   routerQuietMs?: number;
   /** Microphone frame length sent to the hub. */
@@ -125,7 +127,7 @@ export class VoiceRig {
     const actors = new Map<string, Actor>();
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
-      deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel,
+      deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel, warmSpeech: true, fluxEndOfTurnThreshold: this.options.eotThreshold,
       createWebSocket: this.options.createWebSocket ?? ((url, options) => {
         // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
         const socket = new WebSocket(url, { ...options, handshakeTimeout: 10_000, maxPayload: 100_000 });

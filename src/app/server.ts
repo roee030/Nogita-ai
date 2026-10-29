@@ -126,7 +126,8 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
       deepgramApiKey: env.DEEPGRAM_API_KEY,
       sttMode: env.DEEPGRAM_STT_MODE === 'flux-english' ? 'flux-english' : 'nova3-multilingual',
-      ttsModel: env.DEEPGRAM_TTS_MODEL,
+      ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true,
+      ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
       onTranscript: async (sessionId, participantUuid, text, participant) => {
         const mapped = participant?.attendeeUserUuid
           ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;

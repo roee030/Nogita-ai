@@ -1,11 +1,11 @@
 /**
- * Voice lab output: report.json (everything), report.md (readable summary), report.html (timing chart)
- * and one stereo WAV per scenario (left: the room's microphones, right: Nogita) to listen back.
+ * Voice lab output: report.html (summary, timing chart and every conversation), transcript.md (the conversations),
+ * report.md (summary table), report.json (everything) and one stereo WAV per scenario (left: the room's microphones, right: Nogita) to listen back.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { wav } from './audio.ts';
-import type { TurnRecord } from './conversation.ts';
+import { FILLERS, type TurnRecord } from './conversation.ts';
 import { stats, type Stats, type TurnScore } from './score.ts';
 import type { Scenario } from './scenarios.ts';
 
@@ -100,6 +100,73 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
   return lines.join('\n');
 }
 
+export interface TranscriptLine {
+  /** Seconds after the end of the question; undefined for the question itself. */
+  at?: number;
+  kind: 'person' | 'heard' | 'bridge' | 'nogita' | 'cut' | 'tool' | 'chat' | 'hand' | 'task' | 'message' | 'verdict' | 'judge';
+  who?: string;
+  text: string;
+}
+
+/**
+ * The conversation as it happened, turn by turn: what each person said and what the recognizer heard, every
+ * sentence Nogita spoke (filler or her own words) with its delay, every lookup, chat line and action, and the
+ * verdict of each check in plain words.
+ */
+export function transcriptLines(result: ScenarioResult): TranscriptLine[][] {
+  const names = new Map(result.scenario.participants.map(p => [p.id, p.name]));
+  return result.turns.map(({ record, score }) => {
+    const end = record.timing.speechEnd;
+    const at = (t: number) => Math.round((t - end) / 100) / 10;
+    const lines: TranscriptLine[] = [{ kind: 'person', who: names.get(record.turn.speaker) ?? record.turn.speaker, text: record.script }];
+    if (record.heard !== record.script) lines.push({ kind: 'heard', text: record.heard ?? '(nothing reached Nogita)' });
+    const cut = new Set(record.events.filter(e => e.type === 'speak_error' && /interrupt/i.test(e.detail ?? '')).map(e => e.text));
+    const spoken = new Set(record.spoken);
+    for (const event of record.events) {
+      const text = event.text ?? '';
+      if (event.type === 'speak_call' && event.t >= end) {
+        lines.push({ at: at(event.t), kind: cut.has(text) ? 'cut' : FILLERS.has(text) ? 'bridge' : 'nogita', text });
+      } else if (event.type === 'tool') lines.push({ at: at(event.t), kind: 'tool', text });
+      else if (event.type === 'write') {
+        lines.push({ at: at(event.t), kind: text.startsWith('task:') ? 'task' : 'message',
+          text: `${text.replace(/^(?:task|message): /, '')}${event.detail ? ` [${event.detail}]` : ''}` });
+      } else if (event.type === 'chat' && !spoken.has(text)) {
+        lines.push({ at: at(event.t), kind: /has something to add/i.test(text) ? 'hand' : 'chat', text });
+      }
+    }
+    const verdicts = score.checks.map(check => `${check.ok ? '✓' : '✗'} ${check.name}${check.detail && !check.ok ? ` (${check.detail})` : check.detail && /within/.test(check.name) ? ` (${check.detail})` : ''}`);
+    lines.push({ kind: 'verdict', text: `${score.passed ? 'PASS' : 'FAIL'}${verdicts.length ? ` · ${verdicts.join(' · ')}` : ''}` });
+    const j = score.judgement;
+    if (j) lines.push({ kind: 'judge', text: `correct ${j.correct}/5 · natural ${j.natural}/5 · concise ${j.concise}/5: ${j.comment}` });
+    return lines;
+  });
+}
+
+const LABEL: Record<TranscriptLine['kind'], string> = { person: '', heard: 'heard', bridge: 'Nogita (bridge)', nogita: 'Nogita',
+  cut: 'Nogita (cut off)', tool: 'lookup', chat: 'chat', hand: 'hand raised', task: 'Jira task', message: 'Slack message',
+  verdict: 'result', judge: 'judge' };
+
+export function transcriptMarkdown(results: ScenarioResult[]): string {
+  const out = ['# Nogita voice lab: conversations', '',
+    'Each turn: what the person said, what speech recognition heard (when different), then everything Nogita did in order.',
+    'Times are seconds after the person stopped talking. "bridge" is a canned "One sec."; "lookup" is a tool call she made.', ''];
+  for (const result of results) {
+    const s = result.scenario;
+    const passed = result.turns.filter(turn => turn.score.passed).length;
+    out.push(`## ${s.title}`, '', `\`${s.name}\` · noise: ${s.noise.kind}${s.noise.kind === 'quiet' ? '' : ` at ${s.noise.snrDb} dB`} · ` +
+      `people: ${s.participants.map(p => `${p.name}${p.authorized ? '' : ' (guest)'}`).join(', ')} · passed ${passed}/${result.turns.length}`, '');
+    for (const error of result.errors) out.push(`> error: ${error}`, '');
+    for (const lines of transcriptLines(result)) {
+      for (const line of lines) {
+        if (line.kind === 'person') out.push(`**${line.who}:** ${line.text}  `);
+        else out.push(`${line.at === undefined ? '' : `\`+${line.at.toFixed(1)}s\` `}*${LABEL[line.kind]}:* ${line.text}  `);
+      }
+      out.push('');
+    }
+  }
+  return out.join('\n');
+}
+
 const escape = (text: string) => text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
 export function html(summary: RunSummary, results: ScenarioResult[]): string {
@@ -119,6 +186,18 @@ export function html(summary: RunSummary, results: ScenarioResult[]): string {
 <div class="said">${escape(record.spoken.join(' ').slice(0, 280) || (record.chat[0] ?? '—'))}</div>${failed ? `<div class="fail">✗ ${escape(failed)}</div>` : ''}</td>
 <td class="bar"><div class="track">${bars}</div></td><td class="num">${ms(t.firstAudio)}</td></tr>`;
   }).join('\n');
+  const conversations = results.map(result => {
+    const passed = result.turns.filter(turn => turn.score.passed).length;
+    const s = result.scenario;
+    const turns = transcriptLines(result).map((lines, i) => `<div class="turn ${result.turns[i]!.score.passed ? 'ok' : 'bad'}">${lines.map(line =>
+      line.kind === 'person' ? `<div class="line person"><b>${escape(line.who ?? '')}:</b> ${escape(line.text)}</div>`
+        : `<div class="line ${line.kind}">${line.at === undefined ? '<span class="at"></span>' : `<span class="at">+${line.at.toFixed(1)}s</span>`}` +
+          `<span class="tag">${LABEL[line.kind]}</span> ${escape(line.text)}</div>`).join('')}</div>`).join('');
+    return `<details${passed < result.turns.length ? ' open' : ''}><summary><b>${escape(s.title)}</b> <span class="muted">${escape(s.name)} · ` +
+      `${escape(s.noise.kind)}${s.noise.kind === 'quiet' ? '' : ` ${s.noise.snrDb} dB`} · ${s.participants.length} ${s.participants.length === 1 ? 'person' : 'people'}</span> ` +
+      `<span class="${passed === result.turns.length ? 'pass' : 'failc'}">${passed}/${result.turns.length}</span></summary>` +
+      `${result.errors.map(error => `<div class="line error">error: ${escape(error)}</div>`).join('')}${turns}</details>`;
+  }).join('\n');
   const tile = (label: string, value: string) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Nogita Voice Lab</title><style>
@@ -136,6 +215,14 @@ table{width:100%;border-collapse:collapse;margin-top:10px}td{border-top:1px soli
 .seg.stt{background:var(--stt)}.seg.router{background:var(--router)}.seg.think{background:var(--think)}.seg.voice{background:var(--voice)}
 .num{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}tr.bad .num{color:var(--bad)}
 @media (max-width:700px){.bar{display:none}}
+h2{font-size:17px;margin:28px 0 8px}.muted{color:var(--muted);font-size:12px}details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:8px 0;padding:8px 12px}
+summary{cursor:pointer}.pass{color:var(--voice);font-weight:600}.failc{color:var(--bad);font-weight:600}
+.turn{border-left:3px solid var(--voice);padding:6px 0 6px 10px;margin:10px 0}.turn.bad{border-left-color:var(--bad)}
+.line{font-size:13px;margin:2px 0;overflow-wrap:anywhere}.at{display:inline-block;width:52px;color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
+.tag{display:inline-block;min-width:96px;color:var(--muted);font-size:12px}.line.person{font-size:14px}.line.heard{color:var(--muted)}
+.line.nogita .tag{color:var(--think);font-weight:600}.line.bridge .tag{color:var(--router)}.line.cut{color:var(--bad)}
+.line.tool .tag,.line.task .tag,.line.message .tag{color:var(--stt);font-weight:600}.line.hand .tag{color:var(--router);font-weight:600}
+.line.verdict{margin-top:4px;font-size:12px}.turn.bad .line.verdict{color:var(--bad)}.line.judge{font-size:12px;color:var(--muted)}.line.error{color:var(--bad)}
 </style></head><body><main>
 <h1>Nogita voice lab</h1><div class="sub">${escape(summary.startedAt)} · ${escape(Object.entries(summary.settings).map(([k, v]) => `${k} ${v}`).join(' · '))}</div>
 <div class="tiles">${tile('Response gap p50', ms(summary.responseGap.p50))}${tile('Response gap p90', ms(summary.responseGap.p90))}${tile('Real content p50', ms(summary.contentGap.p50))}
@@ -143,13 +230,16 @@ ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recogn
 ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? tile('Judge correct/natural', `${summary.judge.correct} / ${summary.judge.natural}`) : ''}</div>
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>
 <span><i style="background:var(--think)"></i>thinking to first sentence</span><span><i style="background:var(--voice)"></i>voice synthesis to first sound</span></div>
-<table>${rows}</table></main></body></html>`;
+<table>${rows}</table>
+<h2>Conversations</h2><div class="muted">Everything that happened, in order. Times are seconds after the person stopped talking. Scenarios with a failure are open.</div>
+${conversations}</main></body></html>`;
 }
 
 export async function writeReport(dir: string, summary: RunSummary, results: ScenarioResult[]): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'report.md'), markdown(summary, results));
   await writeFile(join(dir, 'report.html'), html(summary, results));
+  await writeFile(join(dir, 'transcript.md'), transcriptMarkdown(results));
   await writeFile(join(dir, 'report.json'), JSON.stringify({ summary, scenarios: results.map(result => ({
     name: result.scenario.name, errors: result.errors,
     turns: result.turns.map(({ record, score }) => ({ ...record, turn: undefined, expect: record.turn.expect, score,
