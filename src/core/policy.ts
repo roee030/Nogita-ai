@@ -79,6 +79,9 @@ function editDistance(a: string, b: string): number {
  * Mid-sentence mentions are left alone.
  */
 export function normalizeWakeWord(text: string): string {
+  // Two-word mishearings from a live Meet: "No, Gita", "no guitar", "Now, git", "the guitar".
+  text = text.replace(new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:${ADDRESS_LEAD}),?\s+)?)(?:no|now|the)[,.]?\s+g(?:ita|eeta|uitar|it)\b(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW})|\s*$)`, 'gi'),
+    (_match, lead: string, greeting: string) => `${lead}${greeting}Nogita`);
   return text.replace(
     new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:${ADDRESS_LEAD}),?\s+)?)(no\s+g[a-z]{2,3}|[nlm][a-z]{4,6})(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW}))`, 'gi'),
     (match, lead: string, greeting: string, word: string) =>

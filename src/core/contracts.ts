@@ -129,6 +129,11 @@ export interface CodePort {
   /** Small, stable repository map used to prime the agent prompt. */
   overview?(): Promise<{ paths: string[]; readme?: string; revision?: string }>;
 }
+/** Something Nogita puts on her shared screen when asked (a task, a task list, or code). */
+export type ScreenCard =
+  | { kind: 'task'; key: string; title: string; status?: string; assignee?: string; type?: string; priority?: string; description?: string; url: string }
+  | { kind: 'tasks'; title: string; items: Array<{ key: string; title: string; status?: string; assignee?: string }> }
+  | { kind: 'code'; path: string; startLine: number; lines: string[]; url: string };
 export interface CodeFile { path: string; url: string; text: string; startLine: number; endLine: number; totalLines: number }
 export type Plan =
   | { kind: 'answer'; message: string; evidence?: Evidence; evidenceQuote?: string }

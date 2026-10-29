@@ -8,6 +8,7 @@
  * - error: a real failure (a provider error, an answer that failed); it clears by itself
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import type { ScreenCard } from '../core/contracts.ts';
 
 export type PresenceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'leaving';
 
@@ -39,7 +40,11 @@ interface PresenceSession {
   /** Speaker whose words named Nogita, and until when that counts as listening. */
   addressedBy?: string;
   addressedUntil: number;
+  /** When the audio sent so far finishes playing. */
+  audioEnd: number;
   speakingUntil: number;
+  card?: ScreenCard;
+  cardShownAt: number;
   waiting: boolean;
   problem?: { tone: 'warning' | 'error'; text: string; until: number };
   leaving: boolean;
@@ -54,6 +59,7 @@ const TERMINAL = new Set(['answered', 'chat_only', 'cancelled', 'stopped', 'fail
 const SAMPLE_RATE = 16_000;
 /** Speech level frames for the page (one value per 40 ms of audio). */
 const FRAME_MS = 40;
+const CARD_MS = 5 * 60_000;
 
 export interface PresenceOptions {
   now?: () => number;
@@ -113,7 +119,7 @@ export class PresenceHub {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing.key;
     const key = randomBytes(24).toString('base64url');
-    this.sessions.set(sessionId, { key, questions: new Map(), addressedUntil: 0, speakingUntil: 0, waiting: false,
+    this.sessions.set(sessionId, { key, questions: new Map(), addressedUntil: 0, audioEnd: 0, speakingUntil: 0, cardShownAt: 0, waiting: false,
       leaving: false, subscribers: new Set(), inputLevel: 0, inputSentAt: 0 });
     return key;
   }
@@ -145,6 +151,7 @@ export class PresenceHub {
     if (!session) return undefined;
     session.subscribers.add(send);
     send('state', this.snapshot(session));
+    if (session.card) send('card', { card: session.card });
     return () => { session.subscribers.delete(send); };
   }
 
@@ -223,13 +230,25 @@ export class PresenceHub {
     if (!session || !pcm.length) return;
     const durationMs = (pcm.length >> 1) * 1000 / SAMPLE_RATE;
     const wasSpeaking = session.speakingUntil > this.now();
-    session.speakingUntil = Math.max(session.speakingUntil, this.now()) + durationMs + 350;
+    // Chunks are sent at playback pace: each one plays after the audio before it, then a short tail.
+    session.audioEnd = Math.max(session.audioEnd, this.now()) + durationMs;
+    session.speakingUntil = session.audioEnd + 350;
     if (session.subscribers.size) {
       const levels = pcmLevels(pcm);
       for (const send of session.subscribers) send('out', { f: FRAME_MS, l: levels });
     }
     if (!wasSpeaking) this.update(sessionId, session);
     else this.wake(sessionId, session);
+  }
+
+  /** A card she was asked to show (a task, a task list, code) beside her orb; undefined clears it. */
+  show(sessionId: string, card: ScreenCard | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.card = card;
+    session.cardShownAt = this.now();
+    for (const send of session.subscribers) send('card', { card: card ?? null });
+    this.wake(sessionId, session);
   }
 
   /** A real failure: shown for a while, then the screen goes back to the true state. */
@@ -287,6 +306,11 @@ export class PresenceHub {
   }
 
   private update(sessionId: string, session: PresenceSession): void {
+    // A shown card stays for a few minutes unless replaced or cleared.
+    if (session.card && this.now() >= session.cardShownAt + CARD_MS) {
+      session.card = undefined;
+      for (const send of session.subscribers) send('card', { card: null });
+    }
     const snapshot = this.snapshot(session);
     const serialized = JSON.stringify(snapshot);
     if (serialized !== session.last) {
@@ -301,6 +325,7 @@ export class PresenceHub {
     if (session.timer !== undefined) { this.cancel(session.timer); session.timer = undefined; }
     const now = this.now();
     const deadlines = [session.speakingUntil, session.addressedUntil, session.problem?.until ?? 0,
+      session.card ? session.cardShownAt + CARD_MS : 0,
       ...[...session.questions.values()].map(q => q.since + 1_500)].filter(at => at > now);
     if (!deadlines.length) return;
     session.timer = this.schedule(() => {

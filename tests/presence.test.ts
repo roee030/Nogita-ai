@@ -154,3 +154,23 @@ test('the Attendee bot shares the presence page as a screen share, or as its cam
       ? { url: 'https://nogita.example/presence/s?k=abc' } : { screenshare_url: 'https://nogita.example/presence/s?k=abc' });
   }
 });
+
+test('speaking ends when her audio has played, however many chunks it came in', () => {
+  const { hub, last, advance } = rig();
+  // 100 chunks of 40 ms sent at playback pace: 4 s of speech.
+  for (let i = 0; i < 100; i++) { hub.outputAudio('s', tone(40, 0.2)); advance(40); }
+  assert.equal(last().state, 'speaking');
+  advance(400);
+  assert.equal(last().state, 'idle');
+});
+
+test('a card she was asked to show reaches the page, new subscribers too, and can be cleared', () => {
+  const { hub, events } = rig();
+  hub.show('s', { kind: 'task', key: 'KAN-20', title: 'Privacy approval', url: 'https://jira.example/KAN-20' });
+  assert.deepEqual(events.at(-1), ['card', { card: { kind: 'task', key: 'KAN-20', title: 'Privacy approval', url: 'https://jira.example/KAN-20' } }]);
+  const late: Array<[string, unknown]> = [];
+  hub.subscribe('s', (event, data) => late.push([event, data]));
+  assert.equal(late[1]![0], 'card');
+  hub.show('s', undefined);
+  assert.deepEqual(events.at(-1), ['card', { card: null }]);
+});

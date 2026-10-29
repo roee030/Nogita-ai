@@ -66,6 +66,7 @@ const presencePage = readFileSync(new URL('./presence-page.html', import.meta.ur
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
     onQuestion: (sessionId, event) => presence.question(sessionId, event),
+    onScreen: (sessionId, card) => presence.show(sessionId, card),
     onActivity: (sessionId, activity) => {
       if (activity.kind === 'tool') presence.tool(sessionId, activity.questionId, activity.tools);
       else presence.waiting(sessionId, activity.waiting);

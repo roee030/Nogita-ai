@@ -308,3 +308,23 @@ test('"Stop." then a new request without her name: she stops and answers the req
   await first;
   assert.deepEqual(f.meeting.spoken, ['First the bot joins.', 'It is src/core/engine.ts.']);
 });
+
+test('a live conversation goes on without her name; in a group, an unnamed question to someone else is left alone', async () => {
+  const model = new RoutedModel([
+    { match: /open tasks/, steps: [{ text: 'Two tasks are open.' }] },
+    { match: /which one is older/, steps: [{ text: 'KAN-11 is older.' }] },
+    { match: /lunch/, steps: [{ text: '' }] },
+  ]);
+  const f = fixture(model);
+  await f.engine.startSession('s', f.meeting);
+  // Just Roee and Nogita: a question without her name is for her.
+  await f.engine.onUtterance('s', { text: 'What are the open tasks in Jira?', eventId: '1', actor: roee });
+  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.']);
+  await f.engine.onUtterance('s', { text: 'And which one is older?', eventId: '2', actor: roee });
+  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'KAN-11 is older.']);
+  // Dana joins the talk: Dana's unnamed question goes to the room, not to Nogita.
+  const before = model.requests.length;
+  await f.engine.onUtterance('s', { text: 'Roee, do you want lunch?', eventId: '3', actor: dana });
+  assert.equal(model.requests.length, before);
+  assert.equal(f.meeting.spoken.length, 2);
+});

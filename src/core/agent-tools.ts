@@ -1,4 +1,4 @@
-import type { ActionReceipt, Actor, BoardPort, ChatPort, CodePort, Evidence, PolicyPort } from './contracts.ts';
+import type { ActionReceipt, Actor, BoardPort, ChatPort, CodePort, Evidence, PolicyPort, ScreenCard } from './contracts.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
@@ -25,6 +25,8 @@ export interface ToolboxContext {
   /** Idempotency memory shared across retries of the same event. */
   completed: Map<string, ActionReceipt>;
   recordAction?: (action: 'create_task' | 'code_lookup') => void;
+  /** Puts a card on the meeting's shared screen (undefined clears it). Voice meetings with a presence screen only. */
+  show?: (card: ScreenCard | undefined) => void;
 }
 
 /** Things the engine needs after the turn: the best source link and the receipts that were posted. */
@@ -151,6 +153,45 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         `Description:\n${task.description || '(empty)'}`,
         task.comments.length ? `Recent comments:\n${task.comments.map(c => `- ${c.author ?? 'someone'}${c.created ? ` (${c.created})` : ''}: ${c.text}`).join('\n')}` : '',
       ].filter(Boolean).join('\n') };
+    });
+    if (context.show && (board.getTask || board.searchTasks || code.readFile)) add({ name: 'show_on_screen',
+      description: 'Put something on your shared screen in the meeting, only when someone asks you to show, share or put it on screen: ' +
+        'one task (key), a list of tasks (text or jql), or lines of a file (path, start_line, end_line). what="nothing" clears the screen. ' +
+        'Then say briefly that it is on the screen and give the one or two points that matter; do not read it all out.',
+      input_schema: { type: 'object', properties: { what: { type: 'string', enum: ['task', 'tasks', 'file', 'nothing'] },
+        key: { type: 'string' }, text: { type: 'string' }, jql: { type: 'string' }, title: { type: 'string', description: 'Heading for a task list.' },
+        path: { type: 'string' }, start_line: { type: 'integer' }, end_line: { type: 'integer' } }, required: ['what'] } },
+    async input => {
+      const show = context.show!;
+      if (input.what === 'nothing') { show(undefined); return { content: 'The screen is back to your presence view.' }; }
+      if (input.what === 'task' && board.getTask) {
+        const key = str(input.key, 40)?.toUpperCase();
+        if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
+        const task = await board.getTask(key);
+        if (!task) return { content: `${key} was not found or is outside the configured project.`, isError: true };
+        show({ kind: 'task', key: task.key, title: task.title, status: task.status, assignee: task.assignee, type: task.type,
+          priority: task.priority, description: task.description.slice(0, 1_200), url: task.url });
+        return { content: `On screen: ${task.key} ${task.title} [${task.status ?? '?'}], ${task.assignee ?? 'unassigned'}.` };
+      }
+      if (input.what === 'tasks' && board.searchTasks) {
+        const tasks = await board.searchTasks({ text: str(input.text, 300), jql: str(input.jql, 600), limit: 8 });
+        if (!tasks.length) return { content: 'No matching tasks; nothing was shown.' };
+        show({ kind: 'tasks', title: str(input.title, 80) ?? `${board.name} tasks`,
+          items: tasks.map(task => ({ key: task.key, title: task.title, status: task.status, assignee: task.assignee })) });
+        return { content: `On screen: ${tasks.map(task => `${task.key} [${task.status ?? '?'}] ${task.title}`).join('; ')}` };
+      }
+      if (input.what === 'file' && code.readFile) {
+        const path = str(input.path, 400);
+        if (!path) return { content: 'path is required', isError: true };
+        const start = int(input.start_line, 1, 1_000_000);
+        const file = await code.readFile(path, start, int(input.end_line, 1, 1_000_000) ?? (start ?? 1) + 21);
+        if (!file) return { content: `No file named ${path}. Use list_files or search_code to find the right path.`, isError: true };
+        const numbered = file.text.split('\n').slice(0, 24);
+        const lines = numbered.map(line => line.replace(/^\d+: ?/, ''));
+        show({ kind: 'code', path: file.path, startLine: file.startLine, lines, url: file.url });
+        return { content: `On screen: ${file.path} lines ${file.startLine}-${file.startLine + lines.length - 1}:\n${numbered.join('\n')}` };
+      }
+      return { content: 'That cannot be shown here.', isError: true };
     });
     if (chat) {
       add({ name: 'list_channels', description: `List the ${chat.name} channels Nogita can read and post in.`,

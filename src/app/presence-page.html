@@ -36,6 +36,35 @@
   #queue { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; justify-content: center; align-items: center; gap: 10px;
     font-size: 13px; letter-spacing: 0.12em; color: rgba(226, 232, 240, 0.45); transition: opacity 600ms ease; }
   #queue .dots { display: flex; gap: 6px; }
+  /* A card she was asked to show: the orb moves left, the card takes the right. */
+  .copy { transition: left 700ms cubic-bezier(.2,.7,.2,1), right 700ms cubic-bezier(.2,.7,.2,1), top 700ms ease; }
+  body.with-card .copy { left: 40px; right: 700px; top: 470px; }
+  body.with-card #title { font-size: 30px; }
+  body.with-card #status { font-size: 18px; margin-top: 12px; }
+  body.with-card #about { font-size: 16px; max-width: 520px; }
+  #card { position: absolute; left: 640px; top: 96px; width: 584px; height: 528px; padding: 30px 34px; border-radius: 20px;
+    background: linear-gradient(160deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.78));
+    border: 1px solid rgba(148, 163, 184, 0.18); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    opacity: 0; transform: translateX(40px) scale(0.98); transition: opacity 600ms ease, transform 700ms cubic-bezier(.2,.7,.2,1);
+    overflow: hidden; display: flex; flex-direction: column; }
+  body.with-card #card { opacity: 1; transform: none; }
+  #card .kicker { font-size: 12px; letter-spacing: 0.28em; text-transform: uppercase; color: rgba(148, 163, 184, 0.75); display: flex; gap: 12px; align-items: center; }
+  #card .pill { letter-spacing: 0.08em; text-transform: none; font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent); color: rgba(241, 245, 249, 0.9); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  #card h2 { margin-top: 16px; font-size: 26px; line-height: 1.3; font-weight: 400; color: rgba(248, 250, 252, 0.96); }
+  #card .meta { margin-top: 14px; display: flex; gap: 22px; font-size: 14px; color: rgba(203, 213, 225, 0.7); }
+  #card .meta b { font-weight: 400; color: rgba(241, 245, 249, 0.9); }
+  #card .body { margin-top: 20px; font-size: 16px; line-height: 1.6; color: rgba(226, 232, 240, 0.78); white-space: pre-wrap;
+    overflow: hidden; flex: 1; mask-image: linear-gradient(#000 80%, transparent); }
+  #card .rows { margin-top: 18px; display: flex; flex-direction: column; gap: 4px; }
+  #card .row { display: grid; grid-template-columns: 96px 1fr auto; gap: 14px; align-items: baseline; padding: 11px 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1); font-size: 16px; color: rgba(241, 245, 249, 0.9); }
+  #card .row .key { font-size: 13px; color: rgba(148, 163, 184, 0.85); letter-spacing: 0.04em; }
+  #card .row .st { font-size: 12px; color: rgba(203, 213, 225, 0.75); }
+  #card .row .who { grid-column: 2 / 4; font-size: 13px; color: rgba(148, 163, 184, 0.7); margin-top: -4px; }
+  #card pre { margin-top: 16px; flex: 1; overflow: hidden; font: 16px/1.6 "JetBrains Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    color: rgba(226, 232, 240, 0.88); mask-image: linear-gradient(#000 88%, transparent); }
+  #card pre i { font-style: normal; display: inline-block; width: 52px; color: rgba(100, 116, 139, 0.8); user-select: none; }
   #queue .dots b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.8; }
 </style>
 </head>
@@ -49,12 +78,15 @@
     <div id="status" class="line"></div>
     <div id="about" class="line"></div>
   </div>
+  <div id="card"></div>
   <div id="queue" style="opacity:0"><span class="dots"></span><span class="label"></span></div>
 </div>
 <script>
 (() => {
   'use strict';
-  const W = 1280, H = 720, CX = 640, CY = 300, R = 112;
+  const W = 1280, H = 720;
+  // Orb position and size: centered, or on the left while a card is shown.
+  let CX = 640, CY = 300, R = 112, layout = 0, cardShown = 0;
 
   // Visual identity of each state.
   const LOOKS = {
@@ -130,6 +162,26 @@
     el._t = setTimeout(() => { el.textContent = text; el.classList.remove('out'); }, 260);
   }
 
+  const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  function showCard(card) {
+    const el = document.getElementById('card');
+    if (!card) { document.body.classList.remove('with-card'); cardShown = 0; return; }
+    if (card.kind === 'task') {
+      el.innerHTML = `<div class="kicker">${esc(card.key)}${card.status ? `<span class="pill">${esc(card.status)}</span>` : ''}</div>
+        <h2>${esc(card.title)}</h2>
+        <div class="meta"><span>Assignee <b>${esc(card.assignee || 'Unassigned')}</b></span>${card.priority ? `<span>Priority <b>${esc(card.priority)}</b></span>` : ''}${card.type ? `<span>${esc(card.type)}</span>` : ''}</div>
+        <div class="body">${esc(card.description || 'No description.')}</div>`;
+    } else if (card.kind === 'tasks') {
+      el.innerHTML = `<div class="kicker">${esc(card.title)}</div><div class="rows">${card.items.map(item =>
+        `<div class="row"><span class="key">${esc(item.key)}</span><span>${esc(item.title)}</span><span class="st">${esc(item.status || '')}</span>` +
+        `<span class="who">${esc(item.assignee || 'Unassigned')}</span></div>`).join('')}</div>`;
+    } else if (card.kind === 'code') {
+      el.innerHTML = `<div class="kicker">${esc(card.path)}</div><pre>${card.lines.map((line, i) =>
+        `<i>${card.startLine + i}</i>${esc(line)}`).join('\n')}</pre>`;
+    }
+    document.body.classList.add('with-card'); cardShown = 1;
+  }
+
   function speech(frameMs, levels) {
     const now = performance.now() + OUT_DELAY;
     let at = Math.max(now, outCursor);
@@ -153,7 +205,8 @@
       source.addEventListener('state', e => { lostAt = 0; clearTimeout(failTimer); apply(JSON.parse(e.data)); });
       source.addEventListener('in', e => { inTarget = Math.max(inTarget, JSON.parse(e.data).l); });
       source.addEventListener('out', e => { const d = JSON.parse(e.data); speech(d.f, d.l); });
-      source.addEventListener('end', () => { source.close(); apply({ state: 'leaving', status: 'Leaving the meeting', open: 0 }); });
+      source.addEventListener('card', e => showCard(JSON.parse(e.data).card));
+      source.addEventListener('end', () => { source.close(); showCard(null); apply({ state: 'leaving', status: 'Leaving the meeting', open: 0 }); });
       source.onerror = () => {
         if (current.state === 'leaving') { source.close(); return; }
         if (!lostAt) {
@@ -197,6 +250,8 @@
     for (let i = 0; i < 3; i++) { col.a[i] = mix(col.a[i], ta[i], k); col.b[i] = mix(col.b[i], tb[i], k); }
     col.energy = mix(col.energy, look.energy, k);
     for (const name in weight) weight[name] = mix(weight[name], name === state ? 1 : 0, 1 - Math.pow(0.015, dt));
+    layout = mix(layout, cardShown, 1 - Math.pow(0.01, dt));
+    CX = mix(640, 320, layout); CY = mix(300, 290, layout); R = mix(112, 88, layout);
 
     // Live levels: incoming speech decays quickly; outgoing follows her actual audio frames.
     inLevel = mix(inLevel, inTarget, 1 - Math.pow(0.0005, dt));
@@ -367,14 +422,21 @@
       [{ state: 'thinking', status: 'Checking Jira', about: 'why does the login time out after an hour', open: 2 }, 2500],
       [{ state: 'speaking', status: 'Answering', about: 'why does the login time out after an hour', open: 1 }, 6000, 'out'],
       [{ state: 'thinking', status: 'Ready to answer · waiting for a pause', about: 'the release date', open: 1 }, 3000],
+      [{ state: 'speaking', status: 'Answering', about: 'show me the open tasks', open: 1 }, 7000, 'out', { kind: 'tasks', title: 'Open tasks', items: [
+        { key: 'KAN-20', title: 'Complete Attendee privacy approval and enroll a real speaker identity', status: 'In Progress' },
+        { key: 'KAN-11', title: 'Durable, privacy-safe event queue and idempotency ledger', status: 'In Review', assignee: 'Roee Angel' }] }],
+      [{ state: 'idle', status: 'Ready', open: 0 }, 2500, undefined, { kind: 'code', path: 'src/core/speech-floor.ts', startLine: 84, lines: [
+        '  /** The owner’s stretch of speech ended: others may speak. */', '  release(owner: number): void {',
+        '    if (this.holder === owner) this.holder = undefined;', '    this.pump();', '  }'] }],
       [{ state: 'error', tone: 'warning', status: 'Connection issue', open: 0 }, 3500],
     ];
     // ?state=thinking holds one state (for a still look at it).
-    const hold = steps.findIndex(([snapshot]) => snapshot.state === params.get('state'));
+    const hold = params.has('step') ? Number(params.get('step')) : steps.findIndex(([snapshot]) => snapshot.state === params.get('state'));
     let i = Math.max(0, hold), synth;
     const next = () => {
-      const [snapshot, ms, kind] = steps[i % steps.length]; if (hold < 0) i++;
+      const [snapshot, ms, kind, card] = steps[i % steps.length]; if (hold < 0) i++;
       apply(snapshot);
+      showCard(card || null);
       clearInterval(synth);
       if (kind === 'in') synth = setInterval(() => { inTarget = Math.max(inTarget, Math.random() < 0.7 ? 0.35 + Math.random() * 0.5 : 0.05); }, 90);
       if (kind === 'out') synth = setInterval(() => {

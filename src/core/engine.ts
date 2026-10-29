@@ -1,4 +1,4 @@
-import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
+import { CodeLookupRateLimitError, SpeechFallbackSentError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type PolicyPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type ChatModel } from './agent.ts';
 import { buildToolbox, type PeopleDirectory } from './agent-tools.ts';
@@ -13,6 +13,8 @@ interface Session {
   pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number };
   /** Someone said only her name ("Nogita."); their next words are for her even without it. */
   calledBy?: { actorId: string; until: number };
+  /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
+  heard?: Map<string, number>;
   activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
   lastArrivalSequence: number;
   eventIds: Set<string>;
@@ -90,6 +92,8 @@ export interface NogitaEngineOptions {
   /** Every change in a voice question's status (the voice lab logs them). */
   onQuestion?: (sessionId: string, event: QuestionEvent) => void;
   /** What she is doing right now, for the presence screen: a tool a question runs, or an answer waiting for a pause. */
+  /** Puts a card on the meeting's presence screen (undefined clears it); enables the show_on_screen tool. */
+  onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
   onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }) => void;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
@@ -97,6 +101,15 @@ export interface NogitaEngineOptions {
 
 /** "Stop", "wait", "hold on": stop talking now (the answer stays in chat). */
 export function isStopCommand(text: string): boolean {
+  if (isPlainStop(text)) return true;
+  // Said while she talks over someone: "Stop stop for a second!", "Hello, I'm talking to you, stop.", "Stop speaking."
+  if (text.trim().endsWith('?')) return false;
+  const t = text.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').replace(/\b(?:nogitas?|no gita|hey|hello)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t || t.split(' ').length > 8 || /^(?:how|what|why|where|when|who|which|can|could|should|do|does|did|is|are)\b/.test(t)) return false;
+  return /\b(?:stop|be quiet|shut up|enough|hold on|hang on)\b/.test(t) &&
+    !/\b(?:don't|do not|not|never) stop\b|\bstop (?:the|a|an|this|that|my|our|your)\b/.test(t);
+}
+function isPlainStop(text: string): boolean {
   return /^(?:(?:ok(?:ay)?|no|sorry|please)[,.]?\s+)?(?:stop|wait|hold on|hang on|enough|that's enough)(?:\s+(?:please|now|talking|a sec(?:ond)?|for a sec(?:ond)?|there))?[.!]?$/i
     .test(text.trim());
 }
@@ -153,6 +166,15 @@ function firstWords(text: string, max: number): string {
   }
   return out.trim();
 }
+/** "Yeah", "okay", "mm-hmm": listening noises, not a turn of their own. */
+function isBackchannel(text: string): boolean {
+  return /^(?:yeah|yes|yep|yup|ok(?:ay)?|right|sure|mm+(?:-?hmm)?|hmm+|uh[- ]?huh|got it|i see|cool|nice|great|exactly|true|go on)[.!,]?(?:\s+(?:yeah|ok(?:ay)?|right|sure))?[.!]?$/i.test(text.trim());
+}
+/** Words that read as a question or a request (for a turn that did not use her name). */
+function looksLikeRequest(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t.endsWith('?') || /^(?:(?:so|okay|ok|and|um|uh|well|now|hey|also|then)[,\s]+)*(?:what|what's|why|where|when|who|which|how|can|could|would|will|is|are|do|does|did|should|please|tell|show|share|open|create|add|give|list|find|check|explain|put|move|i want|i need|i'd like|let's)\b/.test(t);
+}
 /** True when the answer asks the listener something; instructions may follow the question. */
 function asksQuestion(answer: string): boolean {
   // A quoted example (like "Nogita, how does auth work?") is not a question to the listener.
@@ -190,6 +212,7 @@ export class NogitaEngine {
   private readonly now: () => number;
   private readonly onQuestion?: NogitaEngineOptions['onQuestion'];
   private readonly onActivity?: NogitaEngineOptions['onActivity'];
+  private readonly onScreen?: NogitaEngineOptions['onScreen'];
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   constructor(private readonly dependencies: {
     board: BoardPort;
@@ -212,6 +235,7 @@ export class NogitaEngine {
     this.now = options.now ?? Date.now;
     this.onQuestion = options.onQuestion;
     this.onActivity = options.onActivity;
+    this.onScreen = options.onScreen;
     this.floorOptions = options.floor ?? {};
   }
 
@@ -646,7 +670,7 @@ export class NogitaEngine {
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
     const writeScope = pending ? `${pending.request}\n${request}` : request;
-    let userText = pending ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
+    let userText = pending?.question ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
     // A quick in-memory search runs alongside the repository map, so most code questions need one lookup round fewer.
     const [repository, prefetched] = authorized
       ? await Promise.all([this.repositoryOverview(), this.prefetchEvidence(request)])
@@ -661,6 +685,7 @@ export class NogitaEngine {
       chat: this.dependencies.chat, people: this.dependencies.people, completed: this.completed,
       onReceipt: receipt => s.meeting.sendCompletion(receipt),
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
+      ...(s.floor && this.onScreen ? { show: (card: ScreenCard | undefined) => this.onScreen!(sessionId, card) } : {}),
     });
     // A text thread carries its own history (including messages that never addressed Nogita).
     let transcript = history ?? s.history.slice(0, -1).map(turn => turn.text);
@@ -821,6 +846,11 @@ export class NogitaEngine {
     if (asksQuestion(answer)) {
       s.pendingFollowUp = { actorId: utterance.actor.id, request: writeScope, question: answer,
         expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence };
+    } else if (s.floor) {
+      // A live conversation: the person she just answered goes on without her name ("and the other one?").
+      // The agent stays silent when it was not for her; a write still needs the new words to ask for it.
+      s.pendingFollowUp = { actorId: utterance.actor.id, request: '', question: answer,
+        expiresAt: this.now() + 30_000, afterSequence: s.lastArrivalSequence };
     }
     const codeTools = result.toolCalls.some(name => ['search_code', 'read_file', 'recent_commits'].includes(name));
     const reference = report.codeReferences[0];
@@ -883,7 +913,15 @@ export class NogitaEngine {
       }
     }
     const directlyAddressed = directlyAddressesNogita(current) || called || wholeRequest !== undefined;
-    const pending = s.pendingFollowUp;
+    const heard = s.heard ??= new Map();
+    heard.set(utterance.actor.id, this.now());
+    for (const [actorId, at] of heard) if (this.now() - at > 5 * 60_000) heard.delete(actorId);
+    // Only one person and Nogita in the call: their questions are for her, name or not (the agent stays silent otherwise).
+    const oneToOne = !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && heard.size === 1 && looksLikeRequest(current);
+    let pending = s.pendingFollowUp;
+    if (oneToOne && !(pending?.actorId === utterance.actor.id && this.now() <= pending.expiresAt)) {
+      pending = { actorId: utterance.actor.id, request: '', question: '', expiresAt: this.now() + 1, afterSequence: arrivalSequence - 1 };
+    }
     const continuation = !directlyAddressed && pending !== undefined &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
       this.now() <= pending.expiresAt &&
@@ -897,6 +935,13 @@ export class NogitaEngine {
         // "Stop. Just tell me the file name.": what the same person says next is still for her.
         if (command === 'answered') s.calledBy = { actorId: utterance.actor.id, until: this.now() + 6_000 };
         return command;
+      }
+      // The person she was answering cut her off and went on talking: they moved on, so she does not pick the
+      // answer up again over them ("As I was saying..."); it is in the chat. A "yeah" or "okay" is not moving on.
+      const cut = s.questions.find(other => other.id === s.floor!.interrupted);
+      if (cut && cut.actorId === utterance.actor.id && !isBackchannel(current)) {
+        s.floor.drop(cut.id);
+        this.reportQuestion(sessionId, cut, 'chat_only', 'the asker went on talking; the rest is in chat');
       }
     }
     if (!directlyAddressed && !continuation) {
