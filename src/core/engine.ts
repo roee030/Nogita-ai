@@ -89,6 +89,8 @@ export interface NogitaEngineOptions {
   now?: () => number;
   /** Every change in a voice question's status (the voice lab logs them). */
   onQuestion?: (sessionId: string, event: QuestionEvent) => void;
+  /** What she is doing right now, for the presence screen: a tool a question runs, or an answer waiting for a pause. */
+  onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }) => void;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
@@ -187,6 +189,7 @@ export class NogitaEngine {
   private readonly random: () => number;
   private readonly now: () => number;
   private readonly onQuestion?: NogitaEngineOptions['onQuestion'];
+  private readonly onActivity?: NogitaEngineOptions['onActivity'];
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   constructor(private readonly dependencies: {
     board: BoardPort;
@@ -208,6 +211,7 @@ export class NogitaEngine {
     this.random = options.random ?? Math.random;
     this.now = options.now ?? Date.now;
     this.onQuestion = options.onQuestion;
+    this.onActivity = options.onActivity;
     this.floorOptions = options.floor ?? {};
   }
 
@@ -237,6 +241,7 @@ export class NogitaEngine {
           } else this.setStatus(sessionId, session, owner, 'interrupted');
         },
         onResumed: owner => this.setStatus(sessionId, session, owner, 'answering', 'resumed'),
+        onWaiting: waiting => this.onActivity?.(sessionId, { kind: 'waiting', waiting }),
         onDrop: (owner, _text, reason) => {
           const question = session.questions.find(q => q.id === owner);
           if (question && reason === 'no_opening') this.setStatus(sessionId, session, owner, question.status, 'speech dropped: no opening');
@@ -732,8 +737,9 @@ export class NogitaEngine {
         }, 6_000);
       }
     };
-    const onToolUse = (_names: string[], step: number) => {
+    const onToolUse = (names: string[], step: number) => {
       leadInSteps.add(step);
+      this.onActivity?.(sessionId, { kind: 'tool', ...(q ? { questionId: q.id } : {}), tools: names });
       if (!floor || !q) return;
       // What she said so far was a lead-in: while the lookup runs, others may speak.
       floor.markLeadIns(q.id);

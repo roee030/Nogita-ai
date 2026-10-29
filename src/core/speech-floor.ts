@@ -37,6 +37,8 @@ export interface SpeechFloorOptions {
   onDrop?: (owner: number, text: string, reason: DropReason) => void;
   onInterrupted?: (owner: number) => void;
   onResumed?: (owner: number) => void;
+  /** An answer (not a lead-in) is ready but waits for people to stop talking, or no longer waits. */
+  onWaiting?: (waiting: boolean) => void;
 }
 
 /** "About the login bug, " + "It is open." -> "About the login bug, it is open." (names keep their capital). */
@@ -58,6 +60,7 @@ export class SpeechFloor {
   private heardSinceInterrupt = false;
   private timer?: unknown;
   private closed = false;
+  private waitingReported = false;
   private readonly now: () => number;
   private readonly schedule: (work: () => void, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
@@ -135,8 +138,14 @@ export class SpeechFloor {
     item.resolve(outcome);
   }
 
+  private reportWaiting(waiting: boolean): void {
+    if (waiting === this.waitingReported) return;
+    this.waitingReported = waiting;
+    this.options.onWaiting?.(waiting);
+  }
+
   private pump(): void {
-    if (this.speaking || this.closed || !this.queue.length) return;
+    if (this.speaking || this.closed || !this.queue.length) { if (!this.queue.length) this.reportWaiting(false); return; }
     if (this.timer !== undefined) { this.cancel(this.timer); this.timer = undefined; }
     const now = this.now();
     let openingAt = this.pausedUntil;
@@ -146,18 +155,21 @@ export class SpeechFloor {
     }
     if (openingAt > now) {
       this.blockedSince ??= now;
+      this.reportWaiting(this.queue.some(item => !item.leadIn));
       if (now - this.blockedSince >= (this.options.maxWaitMs ?? 25_000)) {
         // The room moved on; the answers are in chat.
         for (const item of this.queue.splice(0)) this.finish(item, 'dropped', 'no_opening');
         this.holder = undefined;
         this.interruptedOwner = undefined;
         this.blockedSince = undefined;
+        this.reportWaiting(false);
         return;
       }
       this.timer = this.schedule(() => { this.timer = undefined; this.pump(); }, Math.min(openingAt - now, 1_000));
       return;
     }
     this.blockedSince = undefined;
+    this.reportWaiting(false);
     // An answer in progress keeps the floor until it ends, so two answers never interleave.
     if (this.holder !== undefined && !this.queue.some(item => item.owner === this.holder)) {
       const holdMs = this.options.holdMs ?? 6_000;

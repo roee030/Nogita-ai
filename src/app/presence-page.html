@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nogita</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #e2e8f0;
+    --accent: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #03050a; cursor: none; }
+  body { font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif; color: var(--ink);
+    -webkit-font-smoothing: antialiased; user-select: none; }
+  /* A 1280x720 stage (Attendee's screen-share size), scaled to fit any window. */
+  #stage { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform-origin: center center; overflow: hidden; }
+  canvas { position: absolute; inset: 0; width: 1280px; height: 720px; }
+  .mark { position: absolute; top: 40px; left: 52px; display: flex; align-items: center; gap: 14px;
+    font-size: 13px; font-weight: 400; letter-spacing: 0.55em; color: rgba(226, 232, 240, 0.55); }
+  .mark i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 12px var(--accent); transition: background 900ms ease, box-shadow 900ms ease; }
+  .tag { position: absolute; top: 38px; right: 52px; font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: rgba(226, 232, 240, 0.35); border: 1px solid rgba(226, 232, 240, 0.15); padding: 6px 12px; border-radius: 999px; }
+  .copy { position: absolute; left: 0; right: 0; top: 508px; text-align: center; }
+  .line { transition: opacity 450ms ease, transform 450ms ease; }
+  .line.out { opacity: 0; transform: translateY(6px); }
+  #title { font-size: 40px; font-weight: 200; letter-spacing: 0.38em; text-transform: uppercase; padding-left: 0.38em;
+    color: rgba(241, 245, 249, 0.94); text-shadow: 0 0 28px color-mix(in srgb, var(--accent) 45%, transparent); }
+  #status { margin-top: 18px; font-size: 21px; font-weight: 300; letter-spacing: 0.02em; color: rgba(226, 232, 240, 0.72); min-height: 28px; }
+  #about { margin: 12px auto 0; max-width: 820px; font-size: 18px; font-weight: 300; font-style: italic;
+    color: rgba(203, 213, 225, 0.5); min-height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #queue { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; justify-content: center; align-items: center; gap: 10px;
+    font-size: 13px; letter-spacing: 0.12em; color: rgba(226, 232, 240, 0.45); transition: opacity 600ms ease; }
+  #queue .dots { display: flex; gap: 6px; }
+  #queue .dots b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.8; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="scene" width="1280" height="720"></canvas>
+  <div class="mark"><i></i>NOGITA</div>
+  <div class="tag" id="tag" hidden>Preview</div>
+  <div class="copy">
+    <div id="title" class="line">Ready</div>
+    <div id="status" class="line"></div>
+    <div id="about" class="line"></div>
+  </div>
+  <div id="queue" style="opacity:0"><span class="dots"></span><span class="label"></span></div>
+</div>
+<script>
+(() => {
+  'use strict';
+  const W = 1280, H = 720, CX = 640, CY = 300, R = 112;
+
+  // Visual identity of each state.
+  const LOOKS = {
+    idle:      { a: '#475569', b: '#94a3b8', energy: 0.15 },
+    listening: { a: '#2dd4bf', b: '#67e8f9', energy: 0.55 },
+    thinking:  { a: '#6366f1', b: '#a78bfa', energy: 0.7 },
+    speaking:  { a: '#22c55e', b: '#4ade80', energy: 1 },
+    warning:   { a: '#f59e0b', b: '#fcd34d', energy: 0.35 },
+    error:     { a: '#ef4444', b: '#fca5a5', energy: 0.35 },
+    leaving:   { a: '#334155', b: '#64748b', energy: 0.05 },
+  };
+  const TITLES = { idle: 'Ready', listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking', leaving: 'Goodbye' };
+  const SUBTITLES = {
+    idle: 'Say “Nogita” to ask me something',
+    listening: 'Go ahead — I’m listening',
+    leaving: 'Leaving the meeting',
+  };
+
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const SKY = hex('#38bdf8');
+  const mix = (x, y, t) => x + (y - x) * t;
+  const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+  // Scale the 1280x720 stage to the window.
+  const stage = document.getElementById('stage');
+  const fit = () => {
+    const s = Math.min(innerWidth / W, innerHeight / H);
+    stage.style.transform = `translate(-50%, -50%) scale(${s})`;
+  };
+  addEventListener('resize', fit); fit();
+
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.min(2, Math.max(1, devicePixelRatio * Math.min(innerWidth / W, innerHeight / H)));
+  canvas.width = W * dpr; canvas.height = H * dpr;
+
+  // ---- State and live signals ----
+  let current = { state: 'idle', status: 'Ready', open: 0 };
+  let lookKey = 'idle';
+  const col = { a: hex(LOOKS.idle.a), b: hex(LOOKS.idle.b), energy: LOOKS.idle.energy };
+  // Layer weights cross-fade between states.
+  const weight = { idle: 1, listening: 0, thinking: 0, speaking: 0, error: 0 };
+  let inLevel = 0, inTarget = 0, outLevel = 0;
+  const outFrames = [];
+  let outCursor = 0;
+  const OUT_DELAY = 150; // Attendee plays audio a moment after we send it.
+
+  function apply(next) {
+    current = next;
+    lookKey = next.state === 'error' ? (next.tone === 'error' ? 'error' : 'warning') : next.state;
+    const look = LOOKS[lookKey] || LOOKS.idle;
+    document.documentElement.style.setProperty('--accent', look.b);
+    const title = next.state === 'error' ? next.status : (TITLES[next.state] || 'Ready');
+    const status = next.state === 'error' ? (next.tone === 'error' ? 'Please try again in a moment' : 'Trying to recover')
+      : next.state === 'thinking' || next.state === 'speaking' ? next.status : (SUBTITLES[next.state] || '');
+    const about = (next.state === 'thinking' || next.state === 'speaking') && next.about ? `“${next.about}”` : '';
+    swap('title', title); swap('status', status); swap('about', about);
+    const queue = document.getElementById('queue');
+    if (next.open > 1) {
+      queue.querySelector('.dots').innerHTML = '<b></b>'.repeat(Math.min(next.open, 5));
+      queue.querySelector('.label').textContent = `${next.open} questions in progress`;
+      queue.style.opacity = 1;
+    } else queue.style.opacity = 0;
+  }
+
+  const shown = {};
+  function swap(id, text) {
+    if (shown[id] === text) return;
+    shown[id] = text;
+    const el = document.getElementById(id);
+    el.classList.add('out');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.textContent = text; el.classList.remove('out'); }, 260);
+  }
+
+  function speech(frameMs, levels) {
+    const now = performance.now() + OUT_DELAY;
+    let at = Math.max(now, outCursor);
+    for (const level of levels) { outFrames.push({ at, level }); at += frameMs; }
+    outCursor = at;
+  }
+
+  // ---- Connection to the meeting runtime ----
+  const params = new URLSearchParams(location.search);
+  const sessionId = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
+  const key = params.get('k');
+  const preview = params.has('preview') || !key;
+
+  if (preview) {
+    document.getElementById('tag').hidden = false;
+    runPreview();
+  } else {
+    let lostAt = 0, failTimer;
+    const connect = () => {
+      const source = new EventSource(`/presence/${encodeURIComponent(sessionId)}/events?k=${encodeURIComponent(key)}`);
+      source.addEventListener('state', e => { lostAt = 0; clearTimeout(failTimer); apply(JSON.parse(e.data)); });
+      source.addEventListener('in', e => { inTarget = Math.max(inTarget, JSON.parse(e.data).l); });
+      source.addEventListener('out', e => { const d = JSON.parse(e.data); speech(d.f, d.l); });
+      source.addEventListener('end', () => { source.close(); apply({ state: 'leaving', status: 'Leaving the meeting', open: 0 }); });
+      source.onerror = () => {
+        if (current.state === 'leaving') { source.close(); return; }
+        if (!lostAt) {
+          lostAt = Date.now();
+          // A short blip is not worth alarming anyone; a real loss is.
+          failTimer = setTimeout(() => apply({ state: 'error', tone: 'warning', status: 'Connection issue', open: 0 }), 4000);
+        }
+        if (source.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
+      };
+    };
+    connect();
+  }
+
+  // ---- Scene ----
+  const dust = Array.from({ length: 70 }, () => ({
+    x: Math.random() * W, y: Math.random() * H, r: Math.random() * 1.4 + 0.3,
+    vx: (Math.random() - 0.5) * 0.06, vy: -Math.random() * 0.08 - 0.02, a: Math.random() * 0.35 + 0.05,
+  }));
+  const orbiters = Array.from({ length: 16 }, (_, i) => ({
+    angle: Math.random() * Math.PI * 2, speed: 0.25 + Math.random() * 0.55, radius: R * (1.18 + Math.random() * 0.55),
+    tilt: 0.35 + Math.random() * 0.5, size: 1 + Math.random() * 1.8, phase: i,
+  }));
+  const ripples = [];
+  const bars = Array.from({ length: 96 }, () => ({ v: 0, seed: Math.random() * 100 }));
+  let lastRipple = 0, prevIn = 0, prevOut = 0;
+  let last = performance.now();
+
+  function noise(t, s) {
+    return Math.sin(t * 1.7 + s) * 0.5 + Math.sin(t * 2.9 + s * 1.3) * 0.3 + Math.sin(t * 4.3 + s * 0.7) * 0.2;
+  }
+
+  function frame(nowMs) {
+    const dt = Math.min(0.05, (nowMs - last) / 1000); last = nowMs;
+    const t = nowMs / 1000;
+    const state = current.state === 'leaving' ? 'idle' : current.state;
+
+    // Blend colors, energy and layer weights toward the current state.
+    const look = LOOKS[lookKey] || LOOKS.idle;
+    const k = 1 - Math.pow(0.02, dt);
+    const ta = hex(look.a), tb = hex(look.b);
+    for (let i = 0; i < 3; i++) { col.a[i] = mix(col.a[i], ta[i], k); col.b[i] = mix(col.b[i], tb[i], k); }
+    col.energy = mix(col.energy, look.energy, k);
+    for (const name in weight) weight[name] = mix(weight[name], name === state ? 1 : 0, 1 - Math.pow(0.015, dt));
+
+    // Live levels: incoming speech decays quickly; outgoing follows her actual audio frames.
+    inLevel = mix(inLevel, inTarget, 1 - Math.pow(0.0005, dt));
+    inTarget *= Math.pow(0.08, dt);
+    const nowPerf = performance.now();
+    let target = 0;
+    while (outFrames.length && outFrames[0].at + 40 < nowPerf) outFrames.shift();
+    if (outFrames.length && outFrames[0].at <= nowPerf) target = outFrames[0].level;
+    outLevel = mix(outLevel, target, 1 - Math.pow(target > outLevel ? 0.00001 : 0.002, dt));
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Background: deep night with a faint pool of the state's color.
+    const bg = ctx.createRadialGradient(CX, CY, 40, CX, CY + 60, 820);
+    bg.addColorStop(0, '#0b1120'); bg.addColorStop(0.55, '#060913'); bg.addColorStop(1, '#020308');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    const pool = ctx.createRadialGradient(CX, CY, 0, CX, CY, 560);
+    pool.addColorStop(0, rgba(col.a, 0.16 + 0.1 * col.energy)); pool.addColorStop(1, rgba(col.a, 0));
+    ctx.fillStyle = pool; ctx.fillRect(0, 0, W, H);
+
+    // Drifting dust.
+    for (const d of dust) {
+      d.x += d.vx * (1 + col.energy * 2); d.y += d.vy * (1 + col.energy * 2);
+      if (d.y < -4) { d.y = H + 4; d.x = Math.random() * W; }
+      if (d.x < -4) d.x = W + 4; if (d.x > W + 4) d.x = -4;
+      ctx.fillStyle = rgba(col.b, d.a * (0.5 + 0.5 * Math.sin(t * 0.7 + d.x)));
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = 'lighter';
+    const breathe = 1 + Math.sin(t * (Math.PI * 2 / 5.5)) * 0.018 * (weight.idle + weight.error * 0.6)
+      + inLevel * 0.06 * weight.listening + outLevel * 0.085 * weight.speaking
+      + Math.sin(t * 2.2) * 0.012 * weight.thinking;
+    const r = R * breathe;
+
+    // Aura.
+    const aura = ctx.createRadialGradient(CX, CY, r * 0.6, CX, CY, r * 3.1);
+    aura.addColorStop(0, rgba(col.a, 0.4 + 0.25 * col.energy + outLevel * 0.3 * weight.speaking));
+    aura.addColorStop(0.35, rgba(col.a, 0.08 + 0.06 * col.energy));
+    aura.addColorStop(1, rgba(col.a, 0));
+    ctx.fillStyle = aura; ctx.beginPath(); ctx.arc(CX, CY, r * 3.1, 0, Math.PI * 2); ctx.fill();
+
+    // Ripples (listening and speaking): born on real level peaks.
+    const level = weight.listening > 0.5 ? inLevel : weight.speaking > 0.5 ? outLevel : 0;
+    const prev = weight.listening > 0.5 ? prevIn : prevOut;
+    if (level > 0.35 && level - prev > 0.04 && t - lastRipple > 0.35) { ripples.push({ born: t, power: level }); lastRipple = t; }
+    prevIn = inLevel; prevOut = outLevel;
+    if (weight.idle > 0.6 && t - lastRipple > 5.5) { ripples.push({ born: t, power: 0.25 }); lastRipple = t; }
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const age = t - ripples[i].born, life = 2.4;
+      if (age > life) { ripples.splice(i, 1); continue; }
+      const p = age / life;
+      ctx.strokeStyle = rgba(col.b, (1 - p) * 0.35 * ripples[i].power);
+      ctx.lineWidth = 1.5 * (1 - p) + 0.4;
+      ctx.beginPath(); ctx.arc(CX, CY, r * (1.15 + p * 1.5), 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // Reactive ring: calm when idle, shaped by incoming voice when listening.
+    const ringW = weight.idle + weight.listening + weight.error * 0.8;
+    if (ringW > 0.02) {
+      ctx.beginPath();
+      const amp = 1.4 * weight.idle + (3 + inLevel * 26) * weight.listening + 2 * weight.error;
+      for (let i = 0; i <= 200; i++) {
+        const a = (i / 200) * Math.PI * 2;
+        const d = noise(t * (0.6 + inLevel * 2.5), a * 3) * amp + Math.sin(a * 6 + t * 1.3) * amp * 0.35;
+        const rr = r * 1.32 + d;
+        const x = CX + Math.cos(a) * rr, y = CY + Math.sin(a) * rr;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.strokeStyle = rgba(col.b, 0.5 * ringW);
+      ctx.lineWidth = 1.6;
+      if (weight.error > 0.3) ctx.setLineDash([14, 12]);
+      ctx.lineDashOffset = -t * 12;
+      ctx.stroke(); ctx.setLineDash([]);
+      // A second, fainter ring for depth.
+      ctx.strokeStyle = rgba(col.a, 0.22 * ringW);
+      ctx.beginPath(); ctx.arc(CX, CY, r * 1.55 + inLevel * 10 * weight.listening, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // Thinking: orbiting arcs and particles.
+    if (weight.thinking > 0.02) {
+      const w = weight.thinking;
+      const arcs = [[1.28, 0.9, 1.3, 3.2], [1.44, -0.55, 0.75, 2.4], [1.62, 0.35, 1.9, 1.6]];
+      for (const [scale, speed, len, width] of arcs) {
+        const start = t * speed * 1.6 + scale * 4;
+        const g = ctx.createLinearGradient(CX - r * scale, CY, CX + r * scale, CY);
+        g.addColorStop(0, rgba(col.a, 0.9 * w)); g.addColorStop(1, rgba(col.b, 0.9 * w));
+        ctx.strokeStyle = g; ctx.lineWidth = width; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.arc(CX, CY, r * scale, start, start + len); ctx.stroke();
+        ctx.strokeStyle = rgba(col.b, 0.12 * w); ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(CX, CY, r * scale, 0, Math.PI * 2); ctx.stroke();
+      }
+      for (const o of orbiters) {
+        o.angle += o.speed * dt * 1.4;
+        const x = CX + Math.cos(o.angle) * o.radius;
+        const y = CY + Math.sin(o.angle) * o.radius * o.tilt;
+        const front = Math.sin(o.angle) > 0 ? 1 : 0.45;
+        ctx.fillStyle = rgba(col.b, 0.75 * w * front);
+        ctx.beginPath(); ctx.arc(x, y, o.size * front, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // Speaking: a radial equalizer driven by her real speech level.
+    if (weight.speaking > 0.02) {
+      const w = weight.speaking;
+      ctx.lineCap = 'round'; ctx.lineWidth = 3;
+      for (let i = 0; i < bars.length; i++) {
+        const a = (i / bars.length) * Math.PI * 2 - Math.PI / 2;
+        const shape = 0.45 + 0.55 * Math.abs(noise(t * 3.2, bars[i].seed));
+        const want = 4 + outLevel * 52 * shape;
+        bars[i].v = mix(bars[i].v, want, 1 - Math.pow(0.0002, dt));
+        const r1 = r * 1.22, r2 = r1 + bars[i].v;
+        const mixT = (Math.cos(a) + 1) / 2;
+        // Emerald bars with electric-blue tips.
+        const c = [mix(col.b[0], SKY[0], mixT), mix(col.b[1], SKY[1], mixT), mix(col.b[2], SKY[2], mixT)];
+        ctx.strokeStyle = rgba(c, (0.35 + 0.6 * Math.min(1, bars[i].v / 30)) * w);
+        ctx.beginPath();
+        ctx.moveTo(CX + Math.cos(a) * r1, CY + Math.sin(a) * r1);
+        ctx.lineTo(CX + Math.cos(a) * r2, CY + Math.sin(a) * r2);
+        ctx.stroke();
+      }
+    }
+
+    // The orb.
+    ctx.globalCompositeOperation = 'source-over';
+    const core = ctx.createRadialGradient(CX - r * 0.35, CY - r * 0.4, r * 0.05, CX, CY, r);
+    core.addColorStop(0, rgba(col.b.map(v => mix(v, 255, 0.12)), 0.98));
+    core.addColorStop(0.5, rgba(col.a, 0.96));
+    core.addColorStop(1, rgba(col.a.map(v => v * 0.18), 0.98));
+    ctx.fillStyle = core; ctx.beginPath(); ctx.arc(CX, CY, r, 0, Math.PI * 2); ctx.fill();
+
+    // Inner light: a slow swirl while thinking, a pulse of voice while speaking.
+    ctx.save();
+    ctx.beginPath(); ctx.arc(CX, CY, r, 0, Math.PI * 2); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      const a = t * (0.25 + i * 0.18 + weight.thinking * 0.6) + i * 2.1;
+      const x = CX + Math.cos(a) * r * 0.42, y = CY + Math.sin(a * 1.3) * r * 0.35;
+      const glow = ctx.createRadialGradient(x, y, 0, x, y, r * 0.9);
+      glow.addColorStop(0, rgba(col.b, 0.08 + 0.12 * weight.thinking + outLevel * 0.25 * weight.speaking));
+      glow.addColorStop(1, rgba(col.b, 0));
+      ctx.fillStyle = glow; ctx.fillRect(CX - r, CY - r, r * 2, r * 2);
+    }
+    ctx.restore();
+
+    // Rim light.
+    ctx.strokeStyle = rgba(col.b.map(v => mix(v, 255, 0.4)), 0.35);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(CX, CY, r - 0.6, Math.PI * 1.05, Math.PI * 1.75); ctx.stroke();
+
+    // Vignette.
+    const v = ctx.createRadialGradient(CX, H / 2, 300, CX, H / 2, 900);
+    v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---- Preview: a labelled walk through the states with synthetic levels (no meeting data) ----
+  function runPreview() {
+    const steps = [
+      [{ state: 'idle', status: 'Ready', open: 0 }, 4500],
+      [{ state: 'listening', status: 'Listening', open: 0 }, 4000, 'in'],
+      [{ state: 'thinking', status: 'Got it', about: 'why does the login time out after an hour', open: 1 }, 1500],
+      [{ state: 'thinking', status: 'Searching the code', about: 'why does the login time out after an hour', open: 1 }, 3000],
+      [{ state: 'thinking', status: 'Checking Jira', about: 'why does the login time out after an hour', open: 2 }, 2500],
+      [{ state: 'speaking', status: 'Answering', about: 'why does the login time out after an hour', open: 1 }, 6000, 'out'],
+      [{ state: 'thinking', status: 'Ready to answer · waiting for a pause', about: 'the release date', open: 1 }, 3000],
+      [{ state: 'error', tone: 'warning', status: 'Connection issue', open: 0 }, 3500],
+    ];
+    // ?state=thinking holds one state (for a still look at it).
+    const hold = steps.findIndex(([snapshot]) => snapshot.state === params.get('state'));
+    let i = Math.max(0, hold), synth;
+    const next = () => {
+      const [snapshot, ms, kind] = steps[i % steps.length]; if (hold < 0) i++;
+      apply(snapshot);
+      clearInterval(synth);
+      if (kind === 'in') synth = setInterval(() => { inTarget = Math.max(inTarget, Math.random() < 0.7 ? 0.35 + Math.random() * 0.5 : 0.05); }, 90);
+      if (kind === 'out') synth = setInterval(() => {
+        const syllable = Array.from({ length: 5 }, (_, j) => Math.max(0, Math.sin((j / 4) * Math.PI) * (0.45 + Math.random() * 0.45)));
+        speech(40, Math.random() < 0.15 ? [0.05, 0.05, 0.05, 0.05, 0.05] : syllable);
+      }, 200);
+      setTimeout(next, ms);
+    };
+    next();
+  }
+})();
+</script>
+</body>
+</html>

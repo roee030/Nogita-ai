@@ -88,6 +88,24 @@ flowchart LR
   (`DEEPGRAM_EAGER_EOT_THRESHOLD`, default 0.5). Until the turn is confirmed with the same words, its speech waits
   behind a gate and write tools are blocked; TurnResumed or different words abort it (the model request too).
 
+## Presence screen (2026-10-29)
+
+Attendee loads `GET /presence/<session>?k=<key>` (`src/app/presence-page.html`) in its browser and shares it
+(`voice_agent_settings.screenshare_url`, or `url` for the webcam with `NOGITA_PRESENCE=camera`). The page is silent;
+speech keeps using the realtime audio path. It reads one Server-Sent Events stream, `/presence/<session>/events?k=`,
+from `PresenceHub` (`src/app/presence.ts`), which derives a single state only from real signals:
+
+| State | Comes from |
+|---|---|
+| listening | live words that address Nogita (`directlyAddressesNogita` on interim transcripts), kept while that person's voice continues; an early-start question not confirmed yet |
+| thinking | a confirmed open question (`onQuestion`), with the tool it is running (`onActivity`), or "waiting for a pause" when the speech floor holds a ready answer |
+| speaking | her speech PCM leaving for the meeting (paced at playback), with its loudness for the equalizer |
+| error | a failed answer, an Attendee bot error or fatal state; clears by itself. The page shows "Connection issue" if its stream is lost for 4 s |
+| idle | none of the above |
+
+The key is random per meeting and the stream carries only the state, a short status, the open question's topic or
+opening words, and audio levels. `/presence/x?preview` shows a labelled walk through the states with synthetic levels.
+
 ## Future multi-tool provider design
 
 Add `Registry` with per-workspace provider connections, supported-capability discovery and credentials references (encrypted secrets manager). A task should be routed by configured project and provider, not by whichever brand happens to be named in casual speech.

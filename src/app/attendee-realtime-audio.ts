@@ -118,6 +118,12 @@ export interface RealtimeAudioOptions {
   onSpeechActivity?: (sessionId: string, participantUuid: string) => void;
   /** A participant's own voice on their microphone (audio level, within about 100 ms; no transcript). */
   onVoice?: (sessionId: string, participantUuid: string) => void;
+  /** Live (not yet final) words of a participant's turn. */
+  onInterim?: (sessionId: string, participantUuid: string, text: string) => void;
+  /** RMS level of a participant's own-voice audio frame (for the presence screen). */
+  onInputLevel?: (sessionId: string, rms: number) => void;
+  /** Nogita's speech audio as it is sent to the meeting, at playback pace. */
+  onOutputAudio?: (sessionId: string, pcm: Buffer) => void;
   /** Flux EagerEndOfTurn: the speaker is probably done with these words. */
   onEagerTranscript?: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string }) => void;
@@ -445,6 +451,7 @@ export class AttendeeRealtimeAudioHub {
     // level; the room's loudest speaker keeps that talk from counting (it must also be within 12 dB of them).
     session.voicePeak = Math.max(speaker.speechPeak, session.voicePeak * 0.999998 ** frameMs);
     const own = level >= speaker.speechPeak * 0.5 && level >= session.voicePeak * 0.25;
+    if (own) this.options.onInputLevel?.(session.sessionId, level);
     speaker.loudRunMs = own ? speaker.loudRunMs + frameMs : Math.max(0, speaker.loudRunMs - frameMs / 2);
     if (speaker.loudRunMs >= 100) {
       // Recognition results trail the audio, so speech vouches for the next 1.5 s of results.
@@ -523,6 +530,8 @@ export class AttendeeRealtimeAudioHub {
       try { message = JSON.parse(data.toString()) as unknown; } catch { return; }
       const ownVoice = this.now() <= speaker.loudUntil;
       if (flux ? hasFluxSpeechActivity(message) : hasNova3SpeechActivity(message)) {
+        const interim = liveTranscript(message);
+        if (interim) this.options.onInterim?.(sessionId, participantUuid, interim);
         if (ownVoice) {
           this.interruptSpeech(sessionId);
           this.options.onSpeechActivity?.(sessionId, participantUuid);
@@ -669,6 +678,7 @@ export class AttendeeRealtimeAudioHub {
       session.ttsPending.reject(new Error('Attendee audio output failed'));
       return;
     }
+    this.options.onOutputAudio?.(session.sessionId, audio);
     // Pace PCM near playback time so an interruption can discard audio still queued locally.
     const durationMs = audio.length / (AUDIO_SAMPLE_RATE * 2) * 1000;
     session.ttsTimer = setTimeout(() => {
@@ -713,6 +723,17 @@ export function hasNova3SpeechActivity(message: unknown): boolean {
   const first = Array.isArray(alternatives) ? alternatives[0] : undefined;
   return !!first && typeof first === 'object' && typeof (first as Record<string, unknown>).transcript === 'string'
     && ((first as Record<string, unknown>).transcript as string).trim().length > 0;
+}
+
+/** The words of a live recognition result (Flux TurnInfo or a Nova-3 result), if any. */
+export function liveTranscript(message: unknown): string | undefined {
+  if (!message || typeof message !== 'object') return undefined;
+  const result = message as Record<string, unknown>;
+  if (typeof result.transcript === 'string') return result.transcript.trim() || undefined;
+  const channel = result.channel;
+  const alternatives = channel && typeof channel === 'object' ? (channel as Record<string, unknown>).alternatives : undefined;
+  const first = Array.isArray(alternatives) ? alternatives[0] as Record<string, unknown> | undefined : undefined;
+  return typeof first?.transcript === 'string' ? first.transcript.trim() || undefined : undefined;
 }
 
 export function hasFluxSpeechActivity(message: unknown): boolean {

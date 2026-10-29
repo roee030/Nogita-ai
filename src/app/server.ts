@@ -25,6 +25,9 @@ import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry } from './slack-conversations.ts';
 import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
+import { PresenceHub } from './presence.ts';
+import { directlyAddressesNogita } from '../core/policy.ts';
+import { readFileSync } from 'node:fs';
 
 loadDotEnv();
 const env = process.env;
@@ -53,8 +56,20 @@ const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
   Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'));
+const presence = new PresenceHub({ boardName: dependencies.board.name, chatName: dependencies.chat?.name });
+// The presence page is shared in Attendee meetings unless NOGITA_PRESENCE=off; "camera" shows it as her webcam.
+const presenceMode = env.NOGITA_PRESENCE === 'off' ? undefined : env.NOGITA_PRESENCE === 'camera' ? 'camera' as const : 'screenshare' as const;
+const publicBaseUrl = (() => {
+  try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
+})();
+const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage },
-  { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none' });
+  { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
+    onQuestion: (sessionId, event) => presence.question(sessionId, event),
+    onActivity: (sessionId, activity) => {
+      if (activity.kind === 'tool') presence.tool(sessionId, activity.questionId, activity.tools);
+      else presence.waiting(sessionId, activity.waiting);
+    } });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
@@ -145,7 +160,15 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       onEagerTranscript: (sessionId, participantUuid, text, participant) =>
         attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant)),
       onTurnResumed: (sessionId, participantUuid) => attendeeCommands.resumeTurn(sessionId, participantUuid),
-      onVoice: (sessionId, participantUuid) => nogita.noteVoice(sessionId, participantUuid),
+      onVoice: (sessionId, participantUuid) => {
+        nogita.noteVoice(sessionId, participantUuid);
+        presence.voice(sessionId, participantUuid);
+      },
+      onInterim: (sessionId, participantUuid, text) => {
+        if (directlyAddressesNogita(text)) presence.addressed(sessionId, participantUuid);
+      },
+      onInputLevel: (sessionId, rms) => presence.inputLevel(sessionId, rms),
+      onOutputAudio: (sessionId, pcm) => presence.outputAudio(sessionId, pcm),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
@@ -176,6 +199,7 @@ function transcriptRequest(sessionId: string, participantUuid: string, text: str
 }
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
+  presence.close(sessionId);
   attendeeCommands.endSession(sessionId);
   attendeeMeetingsBySession.delete(sessionId);
   attendeeBotsBySession.delete(sessionId);
@@ -295,6 +319,7 @@ async function processAttendee(payload: Record<string, unknown>): Promise<void> 
     if (lifecycle) {
       restoreAttendeeSession(lifecycle.sessionId, lifecycle.botId);
       const meeting = attendeeMeetingsBySession.get(lifecycle.sessionId);
+      if (lifecycle.kind === 'fatal') presence.problem(lifecycle.sessionId, 'error', 'Connection lost');
       const message = lifecycle.kind === 'fatal'
         ? 'Nogita hit a fatal meeting-connection error and has left the call. Please add her again to restart.'
         : lifecycle.eventType === 'post_processing_completed'
@@ -312,6 +337,7 @@ async function processAttendee(payload: Record<string, unknown>): Promise<void> 
     } else if (botLog) {
       restoreAttendeeSession(botLog.sessionId, botLog.botId);
       const meeting = attendeeMeetingsBySession.get(botLog.sessionId);
+      presence.problem(botLog.sessionId, 'warning', 'Connection issue · recovering');
       try {
         await meeting?.sendStatus('I hit a meeting-service error. I’m trying to recover, so my reply may be delayed.');
       } catch { console.error('attendee_error_notice_failed'); }
@@ -411,6 +437,28 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/health') {
       respond(res, 200, { ok: true, service: 'nogita', sessions: nogita.sessionCount() }); return;
     }
+    const presenceMatch = pathname.match(/^\/presence\/([^/]+)(\/events)?$/);
+    if (req.method === 'GET' && presenceMatch) {
+      const sessionId = decodeURIComponent(presenceMatch[1]!);
+      if (!presenceMatch[2]) {
+        // The page holds no data; it shows the state only with the meeting's key (or a labelled preview).
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+        res.end(presencePage); return;
+      }
+      const key = new URL(req.url ?? '/', 'http://localhost').searchParams.get('k');
+      if (!presence.authorized(sessionId, key)) { respond(res, 404, { error: 'unknown presence' }); return; }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store',
+        'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 2000\n\n');
+      const unsubscribe = presence.subscribe(sessionId, (event, data) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        if (event === 'end') res.end();
+      });
+      const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
+      req.on('close', () => { clearInterval(keepAlive); unsubscribe?.(); });
+      return;
+    }
     if (req.method === 'POST' && pathname === '/slack/events') {
       const raw = await readRaw(req);
       if (!verifySlackSignature(env.SLACK_SIGNING_SECRET ?? '',
@@ -468,6 +516,8 @@ const server = createServer(async (req, res) => {
         ? attendeeCommands.beginSession(payload.id, owner)
         : undefined;
       const realtimeAudioUrl = provider === 'attendee' && realtimeAudio ? realtimeAudio.register(payload.id) : undefined;
+      const presencePageUrl = provider === 'attendee' && presenceMode && publicBaseUrl
+        ? `${publicBaseUrl}/presence/${encodeURIComponent(payload.id)}?k=${presence.open(payload.id)}` : undefined;
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
@@ -476,13 +526,15 @@ const server = createServer(async (req, res) => {
               ? `To verify your identity for this meeting, please say: ${attendeeChallenge}`
               : undefined, synthesizeLocalMp3,
             (stage, durationMs) => sessionUsage.recordSpeechStage(payload.id!, stage, durationMs),
-            realtimeAudioUrl, realtimeAudio ? text => realtimeAudio.speak(payload.id!, text) : undefined)
+            realtimeAudioUrl, realtimeAudio ? text => realtimeAudio.speak(payload.id!, text) : undefined,
+            presencePageUrl && presenceMode ? { url: presencePageUrl, mode: presenceMode } : undefined)
         : new DemoMeeting(payload.id);
       try {
         await nogita.startSession(payload.id, meeting, payload.meetingUrl);
       } catch (error) {
         if (provider === 'attendee') attendeeCommands.endSession(payload.id);
         realtimeAudio?.closeSession(payload.id);
+        presence.close(payload.id);
         throw error;
       }
       sessionUsage.start(payload.id, provider, provider === 'attendee' && Boolean(realtimeAudio));

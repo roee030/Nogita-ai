@@ -39,8 +39,9 @@ export function isRepositoryQuestion(current: string): boolean {
 export function isExplicitLeaveRequest(current: string): boolean {
   const text = current.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
   if (current.trim().endsWith('?') && !/^(?:please\s+)?(?:can you|could you|would you)\s+/.test(text)) return false;
-  return /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:leave|exit|disconnect)(?:\s+(?:this|the)\s+(?:call|meeting))?(?:\s+(?:now|please))?$/.test(text)
-    || /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:drop|end)\s+(?:this|the)\s+(?:call|meeting)(?:\s+(?:now|please))?$/.test(text);
+  // "You can drop", "drop from this meeting" and "dropped from the call" (as recognition hears it) mean leave too.
+  return /^(?:(?:ok(?:ay)?|now|please|you can|can you|could you|would you)[,\s]+)*(?:leave|exit|disconnect|get\s+off|drop(?:ped)?(?:\s+(?:off|out))?)(?:\s+(?:from|of))?(?:\s+(?:this|the)\s+(?:call|meeting))?(?:[,\s]+(?:now|please))*$/.test(text)
+    || /^(?:(?:please|you can|can you|could you|would you)\s+)*end\s+(?:this|the)\s+(?:call|meeting)(?:\s+(?:now|please))?$/.test(text);
 }
 
 // Words that may follow the name without punctuation and still make it an address.

@@ -25,8 +25,11 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly recordSpeechDuration?: (stage: SpeechStage, durationMs: number) => void,
     private readonly realtimeAudioUrl?: string,
     private readonly streamSpeech?: (text: string) => Promise<void>,
+    /** Nogita's presence page, shown as a screen share (or her camera) for the whole meeting. */
+    private readonly presence?: { url: string; mode: 'screenshare' | 'camera' },
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
+    if (presence && new URL(presence.url).protocol !== 'https:') throw new Error('Presence page URL must use HTTPS');
     if (webhookUrl) {
       const url = new URL(webhookUrl);
       if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Attendee webhook URL must use HTTPS');
@@ -93,6 +96,9 @@ export class AttendeeMeeting implements MeetingPort {
       ...(this.realtimeAudioUrl ? { websocket_settings: { per_participant_audio: {
         url: this.realtimeAudioUrl, sample_rate: AUDIO_SAMPLE_RATE,
       } } } : {}),
+      // Attendee loads the page in its browser (1280x720) and shares it; the page itself is silent.
+      ...(this.presence ? { voice_agent_settings: this.presence.mode === 'camera'
+        ? { url: this.presence.url } : { screenshare_url: this.presence.url } } : {}),
     }) as { id?: string } | undefined;
     if (!data?.id || !/^bot_[a-zA-Z0-9_-]+$/.test(data.id)) {
       throw new Error('Attendee bot creation did not return a valid ID');
