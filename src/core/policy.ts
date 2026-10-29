@@ -42,10 +42,17 @@ export function isExplicitLeaveRequest(current: string): boolean {
 }
 
 // Words that may follow the name without punctuation and still make it an address.
-const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b`;
+// Imperatives are included because recognition often drops the comma ("Nogita summarize the standup"), and
+// "and" only before a question word ("Nogita and what starts it?").
+const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|which\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b|summarize\b|open\b|create\b|add\b|give\b|list\b|find\b|look\b|search\b|post\b|send\b|remind\b|repeat\b|go\b|stop\b|wait\b|read\b|make\b|write\b|and\s+(?:what|why|how|where|when|who|which)\b`;
+// Greetings and spoken fillers that may come before the name ("Um, Nogita", "No, Nogita, ...", "So Nogita").
+const ADDRESS_LEAD = String.raw`hey|hi|hello|okay|ok|please|excuse me|thanks|thank you|um|uh|erm|so|and|no|oh|well|yeah|yes|alright|right|sorry`;
 // Speech recognition often writes a comma after the greeting: "Hey, Nogita, ...".
-const initialAddress = new RegExp(String.raw`^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
-const laterAddress = new RegExp(String.raw`[.!?;]\s+(?:(?:hey|hi|hello|okay|ok|please),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+const initialAddress = new RegExp(String.raw`^(?:(?:${ADDRESS_LEAD}),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+const laterAddress = new RegExp(String.raw`[.!?;]\s+(?:(?:${ADDRESS_LEAD}),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+// The name between commas right before a question or request: "So for the retry logic, Nogita, what happens...".
+// A list ("Dana, Nogita, and Avi") does not match because "and" is not a follow word.
+const vocativeAddress = new RegExp(String.raw`,\s+nogita\s*,\s+(?=${ADDRESS_FOLLOW})`, 'i');
 
 function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -60,14 +67,14 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
- * Speech recognition hears the wake word as "Nokita", "Notita", "Nikita" or "No Gita" even with keyterm
+ * Speech recognition hears the wake word as "Nokita", "Notita", "Nikita", "Lokita" or "No Gita" even with keyterm
  * prompting (measured in the voice lab). Where an address can stand (start of a turn, after a greeting or a
  * sentence end), a word within two edits of "nogita" is restored, so the address rules below still apply.
  * Mid-sentence mentions are left alone.
  */
 export function normalizeWakeWord(text: string): string {
   return text.replace(
-    new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you),?\s+)?)(no\s+g[a-z]{2,3}|n[a-z]{4,6})(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW}))`, 'gi'),
+    new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:${ADDRESS_LEAD}),?\s+)?)(no\s+g[a-z]{2,3}|[nlm][a-z]{4,6})(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW}))`, 'gi'),
     (match, lead: string, greeting: string, word: string) =>
       word.toLowerCase() !== 'nogita' && editDistance(word.toLowerCase().replace(/\s+/g, ''), 'nogita') <= 2
         ? `${lead}${greeting}Nogita` : match);
@@ -78,6 +85,7 @@ export function directlyAddressesNogita(text: string): boolean {
   const s = text.trim();
   return initialAddress.test(s)
     || laterAddress.test(s)
+    || vocativeAddress.test(s)
     || /^(?:how are you|are you|can you|could you|would you|what do you think|how about you),?\s+nogita\b/i.test(s)
     || /\b(?:can you|could you|would you|what do you think|how about you),?\s+nogita[?!.]?$/i.test(s);
 }

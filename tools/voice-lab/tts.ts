@@ -10,6 +10,25 @@ import { SPEECH_RMS } from './noise.ts';
 export type Synthesize = (voice: string, text: string) => Promise<Float32Array>;
 
 export function deepgramSynthesizer(apiKey: string, cacheDir: string, http: typeof fetch = fetch): Synthesize {
+  const once = synthesizeOnce(apiKey, cacheDir, http);
+  return async (voice, text) => {
+    // Aura occasionally returns a near-silent, unintelligible clip ("Nogita, go ahead." peaked at -21 dBFS and
+    // no recognizer heard a word). Such a clip would be blamed on Nogita, so retry with a variant spelling.
+    for (const variant of [text, `${text.replace(/[.!?]+$/, '')}!`, `${text} `]) {
+      const pcm = await once(voice, variant);
+      if (peak(pcm) >= 0.18) return normalizeSpeech(pcmToFloat(pcm));
+    }
+    throw new Error(`speech synthesis produced unusable audio for "${text}"`);
+  };
+}
+
+function peak(pcm: Buffer): number {
+  let max = 0;
+  for (let i = 0; i + 1 < pcm.length; i += 2) max = Math.max(max, Math.abs(pcm.readInt16LE(i)));
+  return max / 32768;
+}
+
+function synthesizeOnce(apiKey: string, cacheDir: string, http: typeof fetch): (voice: string, text: string) => Promise<Buffer> {
   return async (voice, text) => {
     if (!/^aura-2-[a-z]+-en$/.test(voice)) throw new Error(`unsupported voice ${voice}`);
     const key = createHash('sha256').update(`${voice}\0${text}`).digest('hex').slice(0, 32);
@@ -36,7 +55,7 @@ export function deepgramSynthesizer(apiKey: string, cacheDir: string, http: type
       await mkdir(cacheDir, { recursive: true });
       await writeFile(file, pcm);
     }
-    return normalizeSpeech(pcmToFloat(pcm));
+    return pcm;
   };
 }
 

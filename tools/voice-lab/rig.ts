@@ -105,6 +105,7 @@ export class VoiceRig {
   private lastAudioAt = -Infinity;
   private audioPlaying = false;
   private stopped = false;
+  private socketCount = 0;
 
   constructor(private readonly options: RigOptions) {
     this.frameSamples = Math.max(FRAME_SAMPLES, msToSamples(options.frameMs ?? 20));
@@ -125,7 +126,39 @@ export class VoiceRig {
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
       deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel,
-      createWebSocket: this.options.createWebSocket,
+      createWebSocket: this.options.createWebSocket ?? ((url, options) => {
+        // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
+        const socket = new WebSocket(url, { ...options, handshakeTimeout: 10_000, maxPayload: 100_000 });
+        const kind = url.includes('/speak') ? 'tts' : 'stt';
+        socket.on('close', (code, reason) => {
+          if (!this.stopped) this.log('error', { detail: `deepgram ${kind} closed ${code} ${reason.toString().slice(0, 120)}` });
+        });
+        if (process.env.VOICE_LAB_TRACE) {
+          const id = ++this.socketCount;
+          this.log('error', { detail: `trace ${kind}#${id} open ${url.slice(0, 60)}` });
+          let sent = 0;
+          let reported = performance.now();
+          const send = socket.send.bind(socket);
+          socket.send = ((data: Buffer, ...rest: unknown[]) => {
+            sent += data.length;
+            if (performance.now() - reported > 5_000) {
+              reported = performance.now();
+              this.log('error', { detail: `trace ${kind}#${id} sent ${Math.round(sent / 1000)} kB state ${socket.readyState} buffered ${socket.bufferedAmount}` });
+            }
+            return (send as (...args: unknown[]) => void)(data, ...rest);
+          }) as typeof socket.send;
+          socket.on('message', (data, binary) => {
+            if (binary) return;
+            const text = data.toString();
+            if (!text.includes('"Update"')) this.log('error', { detail: `trace ${kind}#${id} ${text.slice(0, 160)}` });
+          });
+        }
+        socket.on('unexpected-response', (_request, response) => {
+          this.log('error', { detail: `deepgram ${kind} handshake HTTP ${response.statusCode}` });
+          socket.terminate();
+        });
+        return socket;
+      }),
       onTranscript: async (sessionId, participantUuid, text) => {
         const actor = actors.get(participantUuid);
         this.log('stt_final', { participant: participantUuid, text });
@@ -144,7 +177,10 @@ export class VoiceRig {
     this.engine = new NogitaEngine(this.options.dependencies, this.options.engineOptions ?? {});
     this.router = new AttendeeCommandRouter(
       async (sessionId, utterance) => {
-        this.log('utterance', { participant: utterance.actor.id, text: utterance.text });
+        // The router does not say whose microphone this was; the latest final transcript it ends with does.
+        const source = this.events.filter(event => event.type === 'stt_final' && event.text &&
+          utterance.text.endsWith(event.text.slice(-12))).at(-1);
+        this.log('utterance', { participant: source?.participant ?? utterance.actor.id, text: utterance.text });
         this.pendingEngine++;
         try {
           const result = await this.engine.onUtterance(sessionId, utterance);
@@ -190,8 +226,9 @@ export class VoiceRig {
     }, 5);
   }
 
-  /** Speaks `samples` on a participant's mic from the next frame; resolves with the mic time of the last word. */
-  say(participantId: string, samples: Float32Array): Promise<{ start: number; end: number }> {
+  /** Speaks `samples` on a participant's mic from the next frame: when the first word starts, and a promise
+   *  of the mic time of the last word. */
+  say(participantId: string, samples: Float32Array): { start: number; ended: Promise<number> } {
     const mic = this.mics.get(participantId);
     if (!mic) throw new Error(`unknown participant ${participantId}`);
     if (mic.speech) throw new Error(`${participantId} is already speaking`);
@@ -200,9 +237,8 @@ export class VoiceRig {
     const at = this.micPosition + this.frameSamples + lead;
     mic.openUntil = Math.max(mic.openUntil, at + samples.length + msToSamples(2500));
     const start = this.micTime(at);
-    return new Promise(resolve => {
-      mic.speech = { samples, at, resolve: end => resolve({ start, end }) };
-    });
+    const ended = new Promise<number>(resolve => { mic.speech = { samples, at, resolve }; });
+    return { start, ended };
   }
 
   /** True while Nogita is producing or playing anything for the current turn. */

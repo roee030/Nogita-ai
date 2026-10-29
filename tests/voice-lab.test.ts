@@ -17,6 +17,7 @@ test('speech recognition variants of the wake word are restored only where someo
     ['No Gita, what is this project?', 'Nogita, what is this project?'],
     ['So for the retry. Notita, what happens when Jira is down?', 'So for the retry. Nogita, what happens when Jira is down?'],
     ['Hey, Nikita, can you check?', 'Hey, Nogita, can you check?'],
+    ['Lokita, what are the open tasks?', 'Nogita, what are the open tasks?'],
   ]) {
     assert.equal(normalizeWakeWord(heard!), expected);
     assert.equal(directlyAddressesNogita(normalizeWakeWord(heard!)), true, heard);
@@ -26,6 +27,9 @@ test('speech recognition variants of the wake word are restored only where someo
   }
   assert.equal(directlyAddressesNogita('Hey, Nogita, what changed?'), true);
   assert.equal(directlyAddressesNogita('Thanks, Nogita. That is all.'), true);
+  assert.equal(directlyAddressesNogita('No Nogita, open a task.'), true);
+  assert.equal(directlyAddressesNogita('So for the retry logic, Nogita, what happens when Jira is down?'), true);
+  assert.equal(directlyAddressesNogita('Dana, Nogita, and Avi joined the call.'), false);
 });
 
 test('a finished question to Nogita skips the long router quiet window; other speech keeps it', async () => {
@@ -75,7 +79,7 @@ test('every built-in scenario names its own participants and a known noise kind'
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
   return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [],
-    interruptedByNoise: false, events: [], timing: { speechStart: 0, speechEnd: 0 }, ...fields };
+    interruptedByNoise: false, handRaisedBefore: false, events: [], timing: { speechStart: 0, speechEnd: 0 }, ...fields };
 }
 
 test('scoring checks hearing, silence, required phrases, writes and interruptions', () => {

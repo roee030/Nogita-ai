@@ -8,6 +8,13 @@ import { WebSocket } from 'ws';
 import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasFluxSpeechActivity, hasNova3SpeechActivity, parseAttendeeAudioFrame,
   verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub } from '../src/app/attendee-realtime-audio.ts';
 
+/** 100 ms of a speaking-level tone; silence would be rejected by the own-voice gate. */
+function voiceChunk(amplitude = 0.2): string {
+  const pcm = Buffer.alloc(3200);
+  for (let i = 0; i < 1600; i++) pcm.writeInt16LE(Math.round(amplitude * 32767 * Math.sin(2 * Math.PI * 220 * i / 16000)), i * 2);
+  return pcm.toString('base64');
+}
+
 test('audio socket URL is WSS-only and signed for one meeting session', () => {
   const url = createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'meeting-1');
   const parsed = new URL(url);
@@ -95,7 +102,7 @@ test('English Flux socket waits for EndOfTurn and keeps multilingual Nova-3 as t
     try {
       await once(client, 'open');
       client.send(JSON.stringify({ bot_id: 'bot_test', trigger: 'realtime_audio.per_participant', data: {
-        participant_uuid: 'participant_one', sample_rate: 16000, chunk: Buffer.alloc(3200).toString('base64'),
+        participant_uuid: 'participant_one', sample_rate: 16000, chunk: voiceChunk(),
       } }));
       const { url, socket } = await sttCreated;
       assert.match(url, sttMode === 'flux-english' ? /\/v2\/listen\?model=flux-general-en/ : /\/v1\/listen\?model=nova-3/);
@@ -128,6 +135,119 @@ test('Nova-3 exposes only non-empty interim/final-segment speech activity to the
     channel: { alternatives: [{ transcript: 'finished' }] } }), false);
   assert.equal(hasNova3SpeechActivity({ is_final: false, speech_final: false,
     channel: { alternatives: [{ transcript: '' }] } }), false);
+});
+
+test('Nova-3 closes a turn on UtteranceEnd when steady noise keeps speech_final from arriving', () => {
+  const segments: string[] = [];
+  assert.equal(assembleNova3Turn({ is_final: true, speech_final: false,
+    channel: { alternatives: [{ transcript: 'Nogita, what changed' }] } }, segments), null);
+  assert.equal(assembleNova3Turn({ is_final: true, speech_final: false,
+    channel: { alternatives: [{ transcript: 'in the last commits?' }] } }, segments), null);
+  assert.equal(assembleNova3Turn({ type: 'UtteranceEnd', last_word_end: 3.1 }, segments), 'Nogita, what changed in the last commits?');
+  assert.equal(assembleNova3Turn({ type: 'UtteranceEnd', last_word_end: 3.1 }, segments), null);
+});
+
+test('a slow Deepgram handshake keeps the first seconds of speech instead of reopening the stream', async () => {
+  class SlowStt extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    readonly sent: Buffer[] = [];
+    closed = false;
+    send(audio: Buffer): void { this.sent.push(audio); }
+    close(): void { this.closed = true; this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const sockets: Array<{ url: string; socket: SlowStt }> = [];
+  const server = createServer();
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    createWebSocket: url => { const socket = new SlowStt(); sockets.push({ url, socket }); return socket as unknown as WebSocket; } });
+  hub.register('slow-stt');
+  hub.bindBot('slow-stt', 'bot_test');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'slow-stt'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  try {
+    await once(client, 'open');
+    // Two seconds of 20 ms frames while the recognizer is still connecting.
+    for (let i = 0; i < 100; i++) {
+      client.send(JSON.stringify({ bot_id: 'bot_test', trigger: 'realtime_audio.per_participant', data: {
+        participant_uuid: 'participant_one', sample_rate: 16000, chunk: Buffer.alloc(640, i % 250).toString('base64') } }));
+    }
+    for (let i = 0; i < 50 && !(sockets.length && sockets[0]!.socket.listenerCount('open')); i++) await new Promise(r => setTimeout(r, 10));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(sockets.length, 1);
+    assert.equal(sockets[0]!.socket.closed, false);
+    assert.match(sockets[0]!.url, /keyterm=Nogita/);
+    assert.match(sockets[0]!.url, /utterance_end_ms=1000/);
+    sockets[0]!.socket.readyState = WebSocket.OPEN;
+    sockets[0]!.socket.emit('open');
+    assert.equal(sockets[0]!.socket.sent.length, 100);
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+async function hubWithFakeStt(sttMode?: 'flux-english') {
+  class FakeStt extends EventEmitter {
+    readyState: number = WebSocket.OPEN;
+    readonly sent: Buffer[] = [];
+    send(audio: Buffer): void { this.sent.push(audio); }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const sockets: FakeStt[] = [];
+  const received: string[] = [];
+  const server = createServer();
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode,
+    onTranscript: (_s, _p, text) => { received.push(text); },
+    createWebSocket: () => { const socket = new FakeStt(); sockets.push(socket); return socket as unknown as WebSocket; } });
+  hub.register('fake-stt');
+  hub.bindBot('fake-stt', 'bot_test');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'fake-stt'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  await once(client, 'open');
+  const frame = (amplitude: number) => client.send(JSON.stringify({ bot_id: 'bot_test', trigger: 'realtime_audio.per_participant',
+    data: { participant_uuid: 'participant_one', sample_rate: 16000, chunk: voiceChunk(amplitude) } }));
+  const close = async () => { client.terminate(); hub.close(); await new Promise<void>(resolve => server.close(() => resolve())); };
+  return { sockets, received, frame, close };
+}
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+test('when a participant mutes right after speaking, the recognizer gets silence so it can end the turn', async () => {
+  const lab = await hubWithFakeStt();
+  try {
+    for (let i = 0; i < 5; i++) lab.frame(0.2);
+    await wait(700);
+    const sent = lab.sockets[0]!.sent;
+    const silent = sent.filter(audio => audio.length === 3_200 && audio.every(byte => byte === 0));
+    assert.ok(sent.length - silent.length >= 5);
+    assert.ok(silent.length >= 3, `silence frames: ${silent.length}`);
+  } finally { await lab.close(); }
+});
+
+test('Flux ends a turn when the speaker goes quiet, without waiting for its own timeout, and only once', async () => {
+  const lab = await hubWithFakeStt('flux-english');
+  try {
+    for (let i = 0; i < 5; i++) lab.frame(0.2);
+    await wait(50);
+    const stt = lab.sockets[0]!;
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'StartOfTurn', turn_index: 0, transcript: '' })), false);
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', turn_index: 0,
+      transcript: 'Nogita, who is blocked?' })), false);
+    // Background noise only: well below the speaker's own level.
+    for (let i = 0; i < 14; i++) { lab.frame(0.01); await wait(100); }
+    assert.deepEqual(lab.received, ['Nogita, who is blocked?']);
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'EndOfTurn', turn_index: 0,
+      transcript: 'Nogita, who is blocked?' })), false);
+    assert.deepEqual(lab.received, ['Nogita, who is blocked?']);
+  } finally { await lab.close(); }
 });
 
 test('signed Attendee socket reconnect restores only a bot/session pair confirmed by persisted binding', async () => {
@@ -373,7 +493,7 @@ test('default multilingual speech activity interrupts an in-progress spoken answ
   await once(client, 'open');
   try {
     client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
-      participant_uuid: 'human_one', sample_rate: 16000, chunk: Buffer.alloc(3200).toString('base64'),
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(),
     } }));
     while (!stt) await new Promise<void>(resolve => setImmediate(resolve));
     const speaking = hub.speak('nova-barge-in', 'A long answer.');

@@ -1,5 +1,5 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
-  type MeetingPort, type PolicyPort, type UsagePort, type Utterance } from './contracts.ts';
+  type MeetingPort, type PolicyPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type ChatModel } from './agent.ts';
 import { buildToolbox, type PeopleDirectory } from './agent-tools.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
@@ -47,7 +47,11 @@ function isAffirmativeFollowUp(text: string): boolean {
   return /^(?:yes|yes please|yeah|yeah please|sure|sure please|please do|go ahead|i want to know(?: the answer(?: to (?:that|the question))?)?|i would like to know(?: the answer)?)$/.test(normalized);
 }
 
-const progressPhrases = [
+// The agent usually speaks its own lead-in first; when it is late, a filler must be short, because the
+// answer queues behind it (the voice lab measured a 2 s filler delaying a ready answer by 2 s).
+export const agentProgressPhrases = ['One sec.', 'Let me check.', 'Checking.', 'Hmm, one moment.', 'Looking.'];
+
+export const progressPhrases = [
   'Let me think for a moment.',
   'One second, I’m checking that.',
   'Hmm, I want to get this right.',
@@ -70,7 +74,7 @@ function withCodeCoverageNotice(code: CodePort, message: string): string {
   return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
 }
 const MAX_SPOKEN_WORDS = 60;
-const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
+export const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
 /** Whole sentences up to about `max` words (at least the first sentence). */
 function firstWords(text: string, max: number): string {
   const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [text];
@@ -80,6 +84,11 @@ function firstWords(text: string, max: number): string {
     out += sentence;
   }
   return out.trim();
+}
+/** True when one of the last two sentences is a question to the listener. */
+function asksQuestion(answer: string): boolean {
+  const sentences = answer.trim().match(/[^.!?]+[.!?]*/g) ?? [];
+  return sentences.slice(-2).some(sentence => sentence.trim().endsWith('?'));
 }
 /** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
 function speakable(text: string): string {
@@ -211,14 +220,14 @@ export class NogitaEngine {
     }
   }
 
-  private async deliverSpeech(sessionId: string, meeting: MeetingPort, message: string): Promise<void> {
+  private async deliverSpeech(sessionId: string, meeting: MeetingPort, message: string, options?: SpeakOptions): Promise<void> {
     const active = this.sessions.get(sessionId)?.activeRequest;
     if (active && !active.firstSpeechRecorded) {
       active.firstSpeechRecorded = true;
       this.dependencies.usage?.recordResponseStage?.(sessionId, 'turn_to_first_speech_attempt', performance.now() - active.startedAt);
     }
     try {
-      await meeting.speak(message);
+      await (options ? meeting.speak(message, options) : meeting.speak(message));
       this.dependencies.usage?.recordTts(sessionId, true);
     } catch (error) {
       this.dependencies.usage?.recordTts(sessionId, false);
@@ -238,16 +247,17 @@ export class NogitaEngine {
     session.progressTimer = undefined;
   }
 
-  private beginProgressAcknowledgment(sessionId: string, session: Session, delayMs = this.progressDelayMs): void {
+  private beginProgressAcknowledgment(sessionId: string, session: Session, delayMs = this.progressDelayMs,
+    phrases: readonly string[] = progressPhrases, options?: SpeakOptions): void {
     session.progressSpeech = undefined;
     session.progressTimer = this.schedule(() => {
       session.progressTimer = undefined;
       if (this.sessions.get(sessionId) !== session || session.ending) return;
-      const choices = progressPhrases.filter(phrase => phrase !== session.lastProgressPhrase);
+      const choices = phrases.filter(phrase => phrase !== session.lastProgressPhrase);
       const selected = Math.min(choices.length - 1, Math.max(0, Math.floor(this.random() * choices.length)));
       const phrase = choices[selected]!;
       session.lastProgressPhrase = phrase;
-      session.progressSpeech = this.deliverSpeech(sessionId, session.meeting, phrase).catch(() => undefined);
+      session.progressSpeech = this.deliverSpeech(sessionId, session.meeting, phrase, options).catch(() => undefined);
       return session.progressSpeech;
     }, delayMs);
   }
@@ -455,7 +465,9 @@ export class NogitaEngine {
     } else {
       await this.speakOrChat(sessionId, s.meeting, answer);
     }
-    if (answer.trim().endsWith('?')) {
+    // A question in the last sentences invites a reply without the name, even when the answer ends with
+    // instructions ("What should the task be about? Give me a title...") — the voice lab caught that case.
+    if (asksQuestion(answer)) {
       s.pendingFollowUp = { actorId: utterance.actor.id, request: writeScope, question: answer,
         expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence };
     }
@@ -520,7 +532,9 @@ export class NogitaEngine {
     s.pendingFollowUp = undefined;
     if (this.dependencies.agent) {
       // In a text thread the answer arrives in seconds; a "one second" message would only add noise.
-      if (s.meeting.capabilities.has('speak')) this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs);
+      if (s.meeting.capabilities.has('speak')) {
+        this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs, agentProgressPhrases, { chatMirror: false });
+      }
       const agentRequest = directlyAddressed ? removeAddress(current) : current;
       s.activeRequest = { actorId: utterance.actor.id, request: agentRequest, startedAt: processingStartedAt, firstSpeechRecorded: false };
       const outcome = await this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined);

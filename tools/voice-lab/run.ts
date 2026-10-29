@@ -58,7 +58,7 @@ let rig: VoiceRig | undefined;
 let writes = 0;
 dependencies.board.createTask = async (input): Promise<ActionReceipt> => {
   writes++;
-  rig?.log('write', { text: `task: ${input.title}${input.assigneeId ? ` (assignee ${input.assigneeId})` : ''}` });
+  rig?.log('write', { text: `task: ${input.title}${input.assigneeId ? ` (assignee ${input.assigneeId})` : ''} — ${input.description.slice(0, 300)}` });
   return { provider: 'voice-lab', kind: 'task', label: `LAB-${writes}`, url: `https://example.invalid/LAB-${writes}` };
 };
 const realChat = dependencies.chat;
@@ -96,7 +96,8 @@ for (const scenario of scenarios) {
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
     dependencies: { ...dependencies, chat }, routerQuietMs, frameMs,
-    engineOptions: { handRaiseFallback: 'none' } });
+    // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
+    engineOptions: { handRaiseFallback: 'chat' } });
   const errors: string[] = [];
   let records: Awaited<ReturnType<typeof playScenario>> = [];
   try {
@@ -120,6 +121,7 @@ for (const scenario of scenarios) {
     const model = env.VOICE_LAB_JUDGE_MODEL || 'claude-sonnet-5-5';
     await Promise.all(turns.map(async turn => { turn.score.judgement = await judge(turn.record, env.ANTHROPIC_API_KEY!, model).catch(() => undefined); }));
   }
+  for (const error of errors) console.log(`  ! ${error}`);
   for (const { record, score } of turns) {
     const gap = record.timing.firstAudio === undefined ? '   —   ' : `${(record.timing.firstAudio / 1000).toFixed(2)} s`;
     console.log(`  ${score.passed ? '✓' : '✗'} #${record.index + 1} gap ${gap}  heard: "${record.heard ?? ''}"`);

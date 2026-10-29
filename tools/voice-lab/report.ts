@@ -21,6 +21,8 @@ export interface RunSummary {
   startedAt: string;
   settings: Record<string, string>;
   responseGap: Stats;
+  /** First sound that is not a canned filler. */
+  contentGap: Stats;
   breakdown: { endpointing: Stats; router: Stats; thinking: Stats; voice: Stats };
   answerLength: Stats;
   bargeInStop: Stats;
@@ -44,6 +46,7 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
   return {
     startedAt, settings,
     responseGap: stats(t.map(timing => timing.firstAudio)),
+    contentGap: stats(t.map(timing => timing.firstContentAudio)),
     breakdown: {
       endpointing: stats(t.map(timing => timing.sttFinal)),
       router: stats(t.map(timing => diff(timing.utterance, timing.sttFinal))),
@@ -69,6 +72,7 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     Object.entries(summary.settings).map(([key, value]) => `${key}: \`${value}\``).join(' · '), '',
     '## Response time (end of question → first sound from Nogita)', '',
     `- **Response gap:** ${statLine(summary.responseGap)}`,
+    `- **Until real content** (her own words, not a filler such as "One sec."): ${statLine(summary.contentGap)}`,
     `- Speech recognition endpointing: ${statLine(summary.breakdown.endpointing)}`,
     `- Router quiet window: ${statLine(summary.breakdown.router)}`,
     `- Thinking (engine + model to first sentence): ${statLine(summary.breakdown.thinking)}`,
@@ -134,7 +138,7 @@ table{width:100%;border-collapse:collapse;margin-top:10px}td{border-top:1px soli
 @media (max-width:700px){.bar{display:none}}
 </style></head><body><main>
 <h1>Nogita voice lab</h1><div class="sub">${escape(summary.startedAt)} · ${escape(Object.entries(summary.settings).map(([k, v]) => `${k} ${v}`).join(' · '))}</div>
-<div class="tiles">${tile('Response gap p50', ms(summary.responseGap.p50))}${tile('Response gap p90', ms(summary.responseGap.p90))}
+<div class="tiles">${tile('Response gap p50', ms(summary.responseGap.p50))}${tile('Response gap p90', ms(summary.responseGap.p90))}${tile('Real content p50', ms(summary.contentGap.p50))}
 ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recognized', `${summary.addressHeard.heard}/${summary.addressHeard.total}`)}
 ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? tile('Judge correct/natural', `${summary.judge.correct} / ${summary.judge.natural}`) : ''}</div>
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>

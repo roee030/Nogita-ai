@@ -68,6 +68,11 @@ export function scoreTurn(record: TurnRecord): TurnScore {
     const ok = expect.write === 'none' ? kinds.length === 0 : kinds.includes(expect.write);
     checks.push({ name: expect.write === 'none' ? 'no write' : `${expect.write} written`, ok, detail: record.writes.join('; ') || undefined });
   }
+  if (expect.writeIncludes) {
+    const hit = expect.writeIncludes.find(phrase => record.writes.some(write => write.toLowerCase().includes(phrase.toLowerCase())));
+    checks.push({ name: `write mentions ${expect.writeIncludes.slice(0, 3).join('/')}`, ok: !!hit, detail: record.writes.join('; ') || 'no write' });
+  }
+  if (expect.handRaisedBefore) checks.push({ name: 'raised hand earlier', ok: record.handRaisedBefore });
   if (record.interruptedByNoise) checks.push({ name: 'not cut off', ok: false, detail: 'speech was interrupted without anyone talking over her' });
   if (record.turn.bargeIn) {
     const stop = record.timing.bargeInStop;
