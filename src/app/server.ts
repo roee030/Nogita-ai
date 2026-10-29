@@ -23,10 +23,15 @@ import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry } from './slack-conversations.ts';
-import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD } from './attendee-realtime-audio.ts';
+import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 import { PresenceHub } from './presence.ts';
-import { directlyAddressesNogita } from '../core/policy.ts';
+import { TurnLog, parseTurnLogMode } from './turn-log.ts';
+import { FileMissionStore } from './mission-store.ts';
+import { MissionRunner, OPEN_MISSION, type Mission } from '../core/missions.ts';
+import { buildToolbox } from '../core/agent-tools.ts';
+import type { ActionReceipt } from '../core/contracts.ts';
+import { directlyAddressesNogita, normalizeWakeWord } from '../core/policy.ts';
 import { readFileSync } from 'node:fs';
 
 loadDotEnv();
@@ -56,24 +61,81 @@ const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
   Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'));
-const presence = new PresenceHub({ boardName: dependencies.board.name, chatName: dependencies.chat?.name });
-// The presence page is shared in Attendee meetings unless NOGITA_PRESENCE=off; "camera" shows it as her webcam.
-const presenceMode = env.NOGITA_PRESENCE === 'off' ? undefined : env.NOGITA_PRESENCE === 'camera' ? 'camera' as const : 'screenshare' as const;
+const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+const turnLog = new TurnLog(stateDirectory, parseTurnLogMode(env.NOGITA_TURN_LOG),
+  env.ATTENDEE_WEBHOOK_SECRET ?? env.NOGITA_ADMIN_TOKEN ?? '');
+const presence = new PresenceHub({ boardName: dependencies.board.name, chatName: dependencies.chat?.name,
+  // A key derived from the webhook secret survives a restart, so the shared page reconnects instead of failing.
+  ...(env.ATTENDEE_WEBHOOK_SECRET ? { keySecret: env.ATTENDEE_WEBHOOK_SECRET } : {}),
+  onState: (sessionId, snapshot) => turnLog.record(sessionId, { type: 'ui', state: snapshot.state, status: snapshot.status, open: snapshot.open }),
+  onStale: (sessionId, id) => turnLog.record(sessionId, { type: 'stale_question', id }) });
+/**
+ * Delegated missions: durable (NOGITA_STATE_DIR/missions), independent of any meeting, resumed after a restart.
+ * Reads run on their own with the owner's access; every write waits for the owner's approval.
+ */
+const missionCompleted = new Map<string, ActionReceipt>();
+const missionRunner = dependencies.agent ? new MissionRunner({ model: dependencies.agent, store: new FileMissionStore(stateDirectory),
+  toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
+    request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
+    policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat, people: dependencies.people,
+    completed: missionCompleted, writesApproved: true,
+    onReceipt: receipt => notifyMission(mission, `${mission.id}: ${receipt.label}: ${receipt.url}`) }).toolbox,
+  notify: (mission, text) => notifyMission(mission, text),
+  onChange: mission => {
+    if (mission.sessionId) {
+      showMission(mission.sessionId);
+      turnLog.record(mission.sessionId, { type: 'mission', id: mission.id, status: mission.status, ...(mission.activity ? { activity: mission.activity } : {}) });
+    }
+  } }) : undefined;
+
+/** Progress goes to the meeting or thread it came from while that is open, else to NOGITA_MISSION_CHANNEL if set. */
+async function notifyMission(mission: Mission, text: string): Promise<void> {
+  if (mission.sessionId && await nogita.announce(mission.sessionId, text)) return;
+  const channel = env.NOGITA_MISSION_CHANNEL;
+  if (channel && dependencies.chat) { await dependencies.chat.postMessage(channel, text); return; }
+  console.log('mission_update', mission.id, mission.status);
+}
+
+/** The presence screen shows the meeting's most relevant open mission (one waiting for approval first). */
+function showMission(sessionId: string): void {
+  const open = missionRunner?.list({ sessionId, open: true }) ?? [];
+  const mission = open.find(m => m.status === 'awaiting_approval') ?? open.find(m => m.status === 'blocked') ?? open[0];
+  presence.mission(sessionId, mission && { id: mission.id, goal: mission.goal, status: mission.status,
+    ...(mission.activity ? { activity: mission.activity } : {}), ...(mission.pending ? { pending: mission.pending.summary } : {}) });
+}
+
+/** Meeting participants by session (participant uuid -> mapped to a team member), for who can see the shared screen. */
+const participantsBySession = new Map<string, Map<string, boolean>>();
+// In Attendee meetings the presence page is her webcam (a normal participant tile) unless NOGITA_PRESENCE says
+// screenshare or off. Attendee mixes the (silent) page audio with our realtime speech, so the voice path is unchanged.
+const presenceMode = env.NOGITA_PRESENCE === 'off' ? undefined : env.NOGITA_PRESENCE === 'screenshare' ? 'screenshare' as const : 'camera' as const;
 const publicBaseUrl = (() => {
   try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
 })();
 const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
-    onQuestion: (sessionId, event) => presence.question(sessionId, event),
+    onQuestion: (sessionId, event) => {
+      presence.question(sessionId, event);
+      turnLog.record(sessionId, { type: 'question', id: event.id, status: event.status, speaker: turnLog.person(event.speaker),
+        ...(event.detail ? { detail: event.detail } : {}), request: event.request });
+    },
     onScreen: (sessionId, card) => presence.show(sessionId, card),
     onActivity: (sessionId, activity) => {
-      if (activity.kind === 'tool') presence.tool(sessionId, activity.questionId, activity.tools);
-      else presence.waiting(sessionId, activity.waiting);
+      if (activity.kind === 'tool') {
+        presence.tool(sessionId, activity.questionId, activity.tools);
+        turnLog.record(sessionId, { type: 'tool', ...(activity.questionId !== undefined ? { id: activity.questionId } : {}), tools: activity.tools });
+      } else presence.waiting(sessionId, activity.waiting);
+    },
+    onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, phase: event.phase,
+      ...(event.outcome ? { outcome: event.outcome } : {}), ...(event.heardMs !== undefined ? { heardMs: event.heardMs } : {}) }),
+    ...(missionRunner ? { missions: missionRunner } : {}),
+    screenAudience: sessionId => {
+      const participants = participantsBySession.get(sessionId);
+      return participants ? { unverified: [...participants.values()].filter(verified => !verified).length } : undefined;
     } });
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
-const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
 const MAX_SLACK_CONVERSATIONS = 500;
 const slackConversations = new SlackConversationRegistry(MAX_SLACK_CONVERSATIONS);
 let providerQueue: EncryptedFileEventQueue | undefined;
@@ -88,6 +150,11 @@ const attendeeBindings = new FileBindingRegistry(stateDirectory);
 const attendeeBotsBySession = new Map<string, string>();
 const attendeeMeetingsBySession = new Map<string, AttendeeMeeting>();
 const realtimeAudioEnabled = env.NOGITA_REALTIME_AUDIO_ENABLED === 'true';
+const meetingLanguages = parseLanguages(env.NOGITA_LANGUAGES);
+const stt = chooseSttMode(env.DEEPGRAM_STT_MODE, meetingLanguages);
+// Flux would silently lose Hebrew: refuse it and keep Nova-3 multilingual.
+if (stt.refused) console.error('flux_disabled_language_unsupported', stt.refused);
+const fluxStt = stt.mode === 'flux-english';
 if (env.NOGITA_REALTIME_AUDIO_ENABLED !== undefined && !['true', 'false'].includes(env.NOGITA_REALTIME_AUDIO_ENABLED)) {
   providerConfigValid = false;
   console.error('realtime_audio_configuration_invalid');
@@ -107,8 +174,16 @@ let slackSocketConnected = false;
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
 const attendeeCommands = new AttendeeCommandRouter(
   async (sessionId, utterance, context) => {
-    await nogita.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
-      ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+    const startedAt = Date.now();
+    let result = 'error';
+    try {
+      result = await nogita.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
+        ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+    } finally {
+      turnLog.record(sessionId, { type: 'turn', speaker: turnLog.person(utterance.actor.displayName),
+        addressed: directlyAddressesNogita(utterance.text), words: utterance.text.trim().split(/\s+/).length, result,
+        ms: Date.now() - startedAt, text: utterance.text });
+    }
   },
   async (sessionId, message) => {
     const meeting = attendeeMeetingsBySession.get(sessionId);
@@ -119,7 +194,7 @@ const attendeeCommands = new AttendeeCommandRouter(
     onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
     onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
     chatAck: !realtimeAudioEnabled,
-    ...(env.DEEPGRAM_STT_MODE === 'flux-english' && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
+    ...(fluxStt && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
       ? { speculate: (sessionId: string, utterance: Utterance) => nogita.speculate(sessionId, utterance) } : {}),
     onLeave: async sessionId => {
       const meeting = attendeeMeetingsBySession.get(sessionId);
@@ -147,14 +222,17 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       baseUrl: env.ATTENDEE_AUDIO_WEBSOCKET_URL,
       signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
       deepgramApiKey: env.DEEPGRAM_API_KEY,
-      sttMode: env.DEEPGRAM_STT_MODE === 'flux-english' ? 'flux-english' : 'nova3-multilingual',
+      sttMode: stt.mode, languages: meetingLanguages,
       ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
       ...(env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
         ? { fluxEagerEndOfTurnThreshold: Number(env.DEEPGRAM_EAGER_EOT_THRESHOLD || DEFAULT_EAGER_EOT_THRESHOLD) } : {}),
-      onTranscript: async (sessionId, participantUuid, text, participant) => {
+      onTranscript: async (sessionId, participantUuid, text, participant, recognition) => {
         const request = transcriptRequest(sessionId, participantUuid, text, participant);
-        if (env.DEEPGRAM_STT_MODE === 'flux-english') await attendeeCommands.acceptCompletedTurn(request);
+        turnLog.record(sessionId, { type: 'heard', speaker: turnLog.person(request.utterance.actor.displayName),
+          addressed: directlyAddressesNogita(normalizeWakeWord(text)), verified: request.utterance.actor.verified,
+          words: text.trim().split(/\s+/).length, ...(recognition?.confidence !== undefined ? { confidence: recognition.confidence } : {}), text });
+        if (fluxStt) await attendeeCommands.acceptCompletedTurn(request);
         else await attendeeCommands.acceptFinal(request);
       },
       onSpeechActivity: (sessionId, participantUuid) => attendeeCommands.noteSpeechActivity(sessionId, participantUuid),
@@ -170,6 +248,13 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       },
       onInputLevel: (sessionId, rms) => presence.inputLevel(sessionId, rms),
       onOutputAudio: (sessionId, pcm) => presence.outputAudio(sessionId, pcm),
+      onSpeechStart: sessionId => turnLog.record(sessionId, { type: 'audio', phase: 'start' }),
+      onSpeechEnd: (sessionId, end) => {
+        presence.speechEnded(sessionId);
+        turnLog.record(sessionId, { type: 'audio', phase: 'end', outcome: end.outcome, playedMs: end.playedMs });
+      },
+      onInterrupt: (sessionId, interrupt) => turnLog.record(sessionId, { type: 'interrupt', cause: interrupt.cause,
+        playedMs: interrupt.playedMs, ...(interrupt.latencyMs !== undefined ? { latencyMs: interrupt.latencyMs } : {}) }),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
@@ -200,6 +285,8 @@ function transcriptRequest(sessionId: string, participantUuid: string, text: str
 }
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
+  turnLog.record(sessionId, { type: 'session', phase: 'end' });
+  participantsBySession.delete(sessionId);
   presence.close(sessionId);
   attendeeCommands.endSession(sessionId);
   attendeeMeetingsBySession.delete(sessionId);
@@ -208,14 +295,27 @@ async function forgetAttendeeSession(sessionId: string, botId?: string): Promise
   if (botId) await attendeeBindings.remove(sessionId, botId);
 }
 
+/** Who is in the call, for the shared-screen check. Nogita's own bot is not an audience member. */
+function noteParticipant(sessionId: string, participantUuid: string, eventType: 'join' | 'leave', attendeeUserUuid?: string, displayName?: string): void {
+  const participants = participantsBySession.get(sessionId) ?? new Map<string, boolean>();
+  participantsBySession.set(sessionId, participants);
+  if (eventType === 'leave') { participants.delete(participantUuid); return; }
+  if (displayName?.trim().toLowerCase() === 'nogita') return;
+  participants.set(participantUuid, Boolean(attendeeUserUuid && dependencies.identities.fromAttendee(attendeeUserUuid)));
+}
+
 function restoreAttendeeSession(sessionId: string, botId: string): void {
   if (nogita.hasSession(sessionId)) return;
   const meeting = new AttendeeMeeting(sessionId, env.ATTENDEE_API_KEY ?? '',
     env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL, undefined, synthesizeLocalMp3,
     (stage, durationMs) => sessionUsage.recordSpeechStage(sessionId, stage, durationMs), undefined,
-    realtimeAudio ? text => realtimeAudio.speak(sessionId, text) : undefined);
+    realtimeAudio ? text => realtimeAudio.speak(sessionId, text) : undefined, undefined,
+    realtimeAudio ? () => realtimeAudio.interruptSpeech(sessionId) : undefined);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
+  // The shared page keeps its URL across a restart (derived key): reopen its state so it reconnects.
+  if (presenceMode) { presence.open(sessionId); showMission(sessionId); }
+  turnLog.record(sessionId, { type: 'session', phase: 'restore' });
   if (realtimeAudio && !realtimeAudio.hasSession(sessionId)) realtimeAudio.register(sessionId);
   if (realtimeAudio) realtimeAudio.bindBot(sessionId, botId);
   sessionUsage.start(sessionId, 'attendee', Boolean(realtimeAudio));
@@ -349,6 +449,7 @@ async function processAttendee(payload: Record<string, unknown>): Promise<void> 
         if (participant.eventType === 'join') realtimeAudio?.bindParticipant(participant.sessionId,
           participant.participantUuid, { attendeeUserUuid: participant.attendeeUserUuid, displayName: participant.displayName });
         else realtimeAudio?.participantLeft(participant.sessionId, participant.participantUuid);
+        noteParticipant(participant.sessionId, participant.participantUuid, participant.eventType, participant.attendeeUserUuid, participant.displayName);
       }
       const transcript = parseAttendeeTranscript(payload, dependencies.identities);
       if (transcript) {
@@ -438,6 +539,20 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/health') {
       respond(res, 200, { ok: true, service: 'nogita', sessions: nogita.sessionCount() }); return;
     }
+    // Mission dashboard data (admin token): every mission with its status and history, without the model transcript.
+    const missionMatch = pathname.match(/^\/missions(?:\/(M-[A-Z0-9]{1,20}))?$/);
+    if (req.method === 'GET' && missionMatch) {
+      if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
+      const view = ({ messages: _messages, pending, ...mission }: Mission) =>
+        ({ ...mission, ...(pending ? { pending: { tool: pending.tool, summary: pending.summary, requestedAt: pending.requestedAt } } : {}) });
+      if (missionMatch[1]) {
+        const mission = missionRunner?.get(missionMatch[1]);
+        if (!mission) { respond(res, 404, { error: 'unknown mission' }); return; }
+        respond(res, 200, view(mission)); return;
+      }
+      respond(res, 200, { missions: (missionRunner?.list() ?? []).map(m => ({ ...view(m), steps: m.steps.slice(-5) })),
+        open: (missionRunner?.list() ?? []).filter(m => OPEN_MISSION.has(m.status)).length }); return;
+    }
     const presenceMatch = pathname.match(/^\/presence\/([^/]+)(\/events)?$/);
     if (req.method === 'GET' && presenceMatch) {
       const sessionId = decodeURIComponent(presenceMatch[1]!);
@@ -518,7 +633,7 @@ const server = createServer(async (req, res) => {
         : undefined;
       const realtimeAudioUrl = provider === 'attendee' && realtimeAudio ? realtimeAudio.register(payload.id) : undefined;
       const presencePageUrl = provider === 'attendee' && presenceMode && publicBaseUrl
-        ? `${publicBaseUrl}/presence/${encodeURIComponent(payload.id)}?k=${presence.open(payload.id)}` : undefined;
+        ? `${publicBaseUrl}/presence/${encodeURIComponent(payload.id)}?k=${presence.open(payload.id)}${presenceMode === 'camera' ? '&view=camera' : ''}` : undefined;
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
@@ -528,7 +643,8 @@ const server = createServer(async (req, res) => {
               : undefined, synthesizeLocalMp3,
             (stage, durationMs) => sessionUsage.recordSpeechStage(payload.id!, stage, durationMs),
             realtimeAudioUrl, realtimeAudio ? text => realtimeAudio.speak(payload.id!, text) : undefined,
-            presencePageUrl && presenceMode ? { url: presencePageUrl, mode: presenceMode } : undefined)
+            presencePageUrl && presenceMode ? { url: presencePageUrl, mode: presenceMode } : undefined,
+            realtimeAudio ? () => realtimeAudio.interruptSpeech(payload.id!) : undefined)
         : new DemoMeeting(payload.id);
       try {
         await nogita.startSession(payload.id, meeting, payload.meetingUrl);
@@ -539,6 +655,7 @@ const server = createServer(async (req, res) => {
         throw error;
       }
       sessionUsage.start(payload.id, provider, provider === 'attendee' && Boolean(realtimeAudio));
+      turnLog.record(payload.id, { type: 'session', phase: 'start' });
       if (meeting instanceof DemoMeeting) meetingHandles.set(payload.id, meeting);
       if (meeting instanceof AttendeeMeeting) {
         const botId = meeting.botIdentifier;
@@ -592,6 +709,9 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 const host = env.HOST ?? '127.0.0.1';
+// Missions that were working when the server stopped go on from their last saved step.
+void missionRunner?.resumeAll().then(count => { if (count) console.log('missions_resumed', count); })
+  .catch(() => console.error('missions_resume_failed'));
 const port = Number(env.PORT ?? '8787');
 server.listen(port, host, () => console.log(`Nogita dev server listening on http://${host}:${port}`));
 

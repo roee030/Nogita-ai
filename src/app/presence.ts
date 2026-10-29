@@ -7,10 +7,13 @@
  * - speaking: her speech audio is being sent to the meeting right now
  * - error: a real failure (a provider error, an answer that failed); it clears by itself
  */
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ScreenCard } from '../core/contracts.ts';
 
-export type PresenceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error' | 'leaving';
+export type PresenceState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'blocked' | 'error' | 'leaving';
+
+/** A delegated mission as the screen shows it (the most relevant open one for this meeting). */
+export interface PresenceMission { id: string; goal: string; status: string; activity?: string; pending?: string }
 
 export interface PresenceSnapshot {
   state: PresenceState;
@@ -20,6 +23,9 @@ export interface PresenceSnapshot {
   about?: string;
   /** Questions still open (more than one shows a small queue indicator). */
   open: number;
+  /** While thinking, what kind of work is happening, from the tool actually running: making sense of the request,
+   *  looking things up (reads), or changing something (writes). */
+  phase?: 'understanding' | 'investigating' | 'executing';
   tone?: 'warning' | 'error';
 }
 
@@ -32,7 +38,7 @@ export interface PresenceQuestion {
 
 type Send = (event: string, data: unknown) => void;
 
-interface OpenQuestion { request: string; topic?: string; status: string; since: number; tool?: string }
+interface OpenQuestion { request: string; topic?: string; status: string; since: number; tool?: string; updatedAt: number }
 
 interface PresenceSession {
   key: string;
@@ -45,6 +51,7 @@ interface PresenceSession {
   speakingUntil: number;
   card?: ScreenCard;
   cardShownAt: number;
+  mission?: PresenceMission;
   waiting: boolean;
   problem?: { tone: 'warning' | 'error'; text: string; until: number };
   leaving: boolean;
@@ -56,10 +63,15 @@ interface PresenceSession {
 }
 
 const TERMINAL = new Set(['answered', 'chat_only', 'cancelled', 'stopped', 'failed', 'rolled_back', 'superseded', 'duplicate']);
+/** Tools that change something outside Nogita (the screen shows "executing" while they run). */
+const WRITE_TOOLS = new Set(['create_task', 'post_message']);
 const SAMPLE_RATE = 16_000;
 /** Speech level frames for the page (one value per 40 ms of audio). */
 const FRAME_MS = 40;
-const CARD_MS = 5 * 60_000;
+/** A card is temporary: it clears itself after two minutes unless replaced or cleared. */
+const CARD_MS = 2 * 60_000;
+/** A question with no news for this long is dropped from the screen (the engine's own deadline is 45 s). */
+const STALE_QUESTION_MS = 120_000;
 
 export interface PresenceOptions {
   now?: () => number;
@@ -70,6 +82,12 @@ export interface PresenceOptions {
   chatName?: string;
   /** How long a named speaker still counts as talking to her after their last sound. */
   addressedMs?: number;
+  /** Derives each meeting's page key, so the shared page reconnects after a server restart. Unset: random keys. */
+  keySecret?: string;
+  /** Every change of what the screen shows (per-turn diagnostics). */
+  onState?: (sessionId: string, snapshot: PresenceSnapshot) => void;
+  /** A question was dropped from the screen because it stopped reporting. */
+  onStale?: (sessionId: string, questionId: number) => void;
 }
 
 /** 0..1 from an RMS level: -50 dBFS is silence, -10 dBFS is loud speech. */
@@ -118,7 +136,9 @@ export class PresenceHub {
   open(sessionId: string): string {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing.key;
-    const key = randomBytes(24).toString('base64url');
+    const key = this.options.keySecret
+      ? createHmac('sha256', this.options.keySecret).update(`nogita-presence-v1\0${sessionId}`).digest().subarray(0, 24).toString('base64url')
+      : randomBytes(24).toString('base64url');
     this.sessions.set(sessionId, { key, questions: new Map(), addressedUntil: 0, audioEnd: 0, speakingUntil: 0, cardShownAt: 0, waiting: false,
       leaving: false, subscribers: new Set(), inputLevel: 0, inputSentAt: 0 });
     return key;
@@ -172,7 +192,8 @@ export class PresenceHub {
       const known = session.questions.get(event.id);
       const confirmed = known && known.status === 'speculative' && event.status !== 'speculative';
       session.questions.set(event.id, { request: event.request, topic: event.topic ?? known?.topic, status: event.status,
-        since: !known || confirmed ? this.now() : known.since, tool: event.status === 'working' ? known?.tool : undefined });
+        since: !known || confirmed ? this.now() : known.since, tool: event.status === 'working' ? known?.tool : undefined,
+        updatedAt: this.now() });
       // A confirmed question ends the listening that led to it.
       if (event.status !== 'speculative') session.addressedUntil = 0;
     }
@@ -184,6 +205,7 @@ export class PresenceHub {
     const question = questionId === undefined ? undefined : session?.questions.get(questionId);
     if (!session || !question || !names.length) return;
     question.tool = names[0];
+    question.updatedAt = this.now();
     this.update(sessionId, session);
   }
 
@@ -241,6 +263,24 @@ export class PresenceHub {
     else this.wake(sessionId, session);
   }
 
+  /** The meeting's delegated mission changed (undefined: none open). */
+  mission(sessionId: string, mission: PresenceMission | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.mission = mission;
+    this.update(sessionId, session);
+  }
+
+  /** Her speech stopped (played to the end, cut off or failed): the speaking look ends now, not on a timer. */
+  speechEnded(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.speakingUntil <= this.now()) return;
+    session.audioEnd = this.now();
+    session.speakingUntil = this.now();
+    for (const send of session.subscribers) send('out', { f: FRAME_MS, l: [] });
+    this.update(sessionId, session);
+  }
+
   /** A card she was asked to show (a task, a task list, code) beside her orb; undefined clears it. */
   show(sessionId: string, card: ScreenCard | undefined): void {
     const session = this.sessions.get(sessionId);
@@ -282,10 +322,21 @@ export class PresenceHub {
         : newest.status === 'interrupted' ? 'Holding my answer until you finish'
         : newest.tool ? this.toolLabel(newest.tool)
         : now - newest.since < 1_500 ? 'Got it' : 'Working on your question';
-      return { state: 'thinking', status, about: about(newest), open: count };
+      const phase = newest.tool ? (WRITE_TOOLS.has(newest.tool) ? 'executing' : 'investigating') : 'understanding';
+      return { state: 'thinking', status, about: about(newest), open: count, phase };
     }
     const heard = [...session.questions.values()].some(q => q.status === 'speculative');
     if (heard || session.addressedUntil > now) return { state: 'listening', status: 'Listening', open: 0 };
+    // Nothing more immediate: a delegated mission's real state (it keeps working while the meeting goes on).
+    const mission = session.mission;
+    if (mission?.status === 'awaiting_approval') {
+      return { state: 'blocked', status: mission.pending ? `Approval needed: ${mission.pending}`.slice(0, 120) : 'Approval needed', about: mission.goal.slice(0, 120), open: 0 };
+    }
+    if (mission?.status === 'blocked') return { state: 'blocked', status: 'Blocked · needs your input', about: mission.goal.slice(0, 120), open: 0 };
+    if (mission && (mission.status === 'investigating' || mission.status === 'executing')) {
+      return { state: 'thinking', phase: mission.status === 'executing' ? 'executing' : 'investigating',
+        status: mission.activity ?? 'Working on it', about: mission.goal.slice(0, 120), open: 0 };
+    }
     return { state: 'idle', status: 'Ready', open: 0 };
   }
 
@@ -306,6 +357,12 @@ export class PresenceHub {
   }
 
   private update(sessionId: string, session: PresenceSession): void {
+    for (const [id, question] of session.questions) {
+      if (this.now() - question.updatedAt >= STALE_QUESTION_MS) {
+        session.questions.delete(id);
+        this.options.onStale?.(sessionId, id);
+      }
+    }
     // A shown card stays for a few minutes unless replaced or cleared.
     if (session.card && this.now() >= session.cardShownAt + CARD_MS) {
       session.card = undefined;
@@ -316,6 +373,7 @@ export class PresenceHub {
     if (serialized !== session.last) {
       session.last = serialized;
       for (const send of session.subscribers) send('state', snapshot);
+      this.options.onState?.(sessionId, snapshot);
     }
     this.wake(sessionId, session);
   }
@@ -326,7 +384,7 @@ export class PresenceHub {
     const now = this.now();
     const deadlines = [session.speakingUntil, session.addressedUntil, session.problem?.until ?? 0,
       session.card ? session.cardShownAt + CARD_MS : 0,
-      ...[...session.questions.values()].map(q => q.since + 1_500)].filter(at => at > now);
+      ...[...session.questions.values()].flatMap(q => [q.since + 1_500, q.updatedAt + STALE_QUESTION_MS])].filter(at => at > now);
     if (!deadlines.length) return;
     session.timer = this.schedule(() => {
       session.timer = undefined;

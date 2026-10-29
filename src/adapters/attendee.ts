@@ -27,6 +27,8 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly streamSpeech?: (text: string) => Promise<void>,
     /** Nogita's presence page, shown as a screen share (or her camera) for the whole meeting. */
     private readonly presence?: { url: string; mode: 'screenshare' | 'camera' },
+    /** Stops realtime speech playing now (stop, cancel, correction); false when nothing was playing. */
+    private readonly interruptStream?: () => boolean,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
     if (presence && new URL(presence.url).protocol !== 'https:') throw new Error('Presence page URL must use HTTPS');
@@ -149,6 +151,8 @@ export class AttendeeMeeting implements MeetingPort {
       await mirror;
     } finally { this.recordSpeechDuration?.('speech_submission', performance.now() - speechStarted); }
   }
+
+  interruptSpeech(): boolean { return this.interruptStream?.() ?? false; }
 
   async sendStatus(message: string, timeoutMs = 5_000): Promise<void> {
     if (!this.botId) throw new Error('not joined');

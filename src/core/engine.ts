@@ -1,20 +1,26 @@
-import { CodeLookupRateLimitError, SpeechFallbackSentError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
+import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type PolicyPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type ChatModel } from './agent.ts';
-import { buildToolbox, type PeopleDirectory } from './agent-tools.ts';
+import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
+import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
-import { SpeechFloor, type SpeakOutcome, type SpeechFloorOptions } from './speech-floor.ts';
+import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
   history: ConversationTurn[]; // ephemeral: purged when session ends
-  pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number };
+  /** `conversation`: she just answered and the asker may go on without her name; it closes when someone else talks.
+   *  `question`: she asked the speaker something and waits for the reply. */
+  pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number;
+    kind?: 'question' | 'conversation'; intervened?: boolean };
   /** Someone said only her name ("Nogita."); their next words are for her even without it. */
   calledBy?: { actorId: string; until: number };
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
   heard?: Map<string, number>;
+  /** First names of people heard (actor id -> name), to tell when someone is addressed by name instead of her. */
+  names?: Map<string, string>;
   activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
   lastArrivalSequence: number;
   eventIds: Set<string>;
@@ -70,6 +76,8 @@ interface Question {
   firstSpeechRecorded: boolean;
   queuedSpeech: boolean;
   interruptions: number;
+  /** When a participant last cut this answer off. */
+  interruptedAt?: number;
 }
 export interface QuestionEvent {
   id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
@@ -95,6 +103,12 @@ export interface NogitaEngineOptions {
   /** Puts a card on the meeting's presence screen (undefined clears it); enables the show_on_screen tool. */
   onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
   onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }) => void;
+  /** A piece of a voice answer starts or ends playing (with how it ended), for per-turn diagnostics. */
+  onSpeech?: (sessionId: string, event: { questionId: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }) => void;
+  /** Who can see the shared screen (participants not mapped to a team member); gates show_on_screen. */
+  screenAudience?: (sessionId: string) => { unverified: number } | undefined;
+  /** Delegated missions: enables delegate_mission, missions_status and decide_mission for authorized people. */
+  missions?: MissionRunner;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
@@ -108,6 +122,12 @@ export function isStopCommand(text: string): boolean {
   if (!t || t.split(' ').length > 8 || /^(?:how|what|why|where|when|who|which|can|could|should|do|does|did|is|are)\b/.test(t)) return false;
   return /\b(?:stop|be quiet|shut up|enough|hold on|hang on)\b/.test(t) &&
     !/\b(?:don't|do not|not|never) stop\b|\bstop (?:the|a|an|this|that|my|our|your)\b/.test(t);
+}
+/** A barge-in may contain both the control and what to do next: "stop. Just tell me ...". */
+function splitLeadingStop(text: string): { stop: string; remainder: string } | undefined {
+  const match = text.trim().match(/^((?:(?:ok(?:ay)?|no|sorry|please)[,.]?\s+)?(?:stop|wait|hold on|hang on|enough|that's enough)(?:\s+(?:please|now|talking|a sec(?:ond)?|for a sec(?:ond)?|there))?)[.!,:;-]+\s*(.+)$/i);
+  if (!match || !isStopCommand(match[1]!)) return undefined;
+  return { stop: match[1]!, remainder: match[2]!.trim() };
 }
 function isPlainStop(text: string): boolean {
   return /^(?:(?:ok(?:ay)?|no|sorry|please)[,.]?\s+)?(?:stop|wait|hold on|hang on|enough|that's enough)(?:\s+(?:please|now|talking|a sec(?:ond)?|for a sec(?:ond)?|there))?[.!]?$/i
@@ -154,7 +174,13 @@ function codeCoverageNotice(skipped: number): string {
 function withCodeCoverageNotice(code: CodePort, message: string): string {
   return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
 }
+/** Spoken answers are short by default (the prompt asks for one or two sentences); this is the hard cap. */
 const MAX_SPOKEN_WORDS = 60;
+/** When they ask for detail ("in three sentences", "walk me through"), the cap gives the answer room. */
+const DETAIL_SPOKEN_WORDS = 120;
+function wantsDetail(request: string): boolean {
+  return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
+}
 export const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
 /** Whole sentences up to about `max` words (at least the first sentence). */
 function firstWords(text: string, max: number): string {
@@ -169,6 +195,29 @@ function firstWords(text: string, max: number): string {
 /** "Yeah", "okay", "mm-hmm": listening noises, not a turn of their own. */
 function isBackchannel(text: string): boolean {
   return /^(?:yeah|yes|yep|yup|ok(?:ay)?|right|sure|mm+(?:-?hmm)?|hmm+|uh[- ]?huh|got it|i see|cool|nice|great|exactly|true|go on)[.!,]?(?:\s+(?:yeah|ok(?:ay)?|right|sure))?[.!]?$/i.test(text.trim());
+}
+/** Courtesy closes the exchange; it is not a follow-up for the model to think about. */
+function isCourtesyClose(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return /^(?:(?:nogita|נוגיטה)\s+)?(?:thanks|thank you|thanks a lot|many thanks|תודה|תודה רבה)(?:\s+(?:nogita|נוגיטה))?$/.test(t);
+}
+/** "Dana, ...", "... right, Dana?", "Guys, ...": the words are for someone else, not for her. */
+export function addressesSomeoneElse(text: string, names: Iterable<string>): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  const vocatives = ['guys', 'everyone', 'everybody', 'team', 'folks', 'you all', "y'all"];
+  for (const name of names) {
+    const n = name.toLowerCase();
+    if (n.length > 1 && n !== 'nogita') vocatives.push(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  }
+  const who = `(?:${vocatives.join('|')})`;
+  return new RegExp(`^(?:(?:hey|so|okay|ok|and|um|uh|well)[,\\s]+)?${who}[,:!?]`).test(t) ||
+    new RegExp(`,\\s*${who}[.?!]*$`).test(t);
+}
+/** "No, I meant the mobile app", "Actually, I'm asking about staging": a correction of the speaker's own question. */
+export function looksLikeCorrection(text: string): boolean {
+  const t = text.trim();
+  return /^(?:(?:no|nope|sorry|actually|wait)[,.!]?\s+)*(?:i meant|i mean|not that|i'm asking about|i am asking about|i was asking about|what i meant|i'm talking about|i was talking about)\b/i.test(t) ||
+    /^(?:no|nope)[,.!]?\s+(?:the|for|in|on|about|not)\b/i.test(t);
 }
 /** Words that read as a question or a request (for a turn that did not use her name). */
 function looksLikeRequest(text: string): boolean {
@@ -213,6 +262,9 @@ export class NogitaEngine {
   private readonly onQuestion?: NogitaEngineOptions['onQuestion'];
   private readonly onActivity?: NogitaEngineOptions['onActivity'];
   private readonly onScreen?: NogitaEngineOptions['onScreen'];
+  private readonly onSpeech?: NogitaEngineOptions['onSpeech'];
+  private readonly screenAudience?: NogitaEngineOptions['screenAudience'];
+  private readonly missions?: MissionRunner;
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   constructor(private readonly dependencies: {
     board: BoardPort;
@@ -236,6 +288,9 @@ export class NogitaEngine {
     this.onQuestion = options.onQuestion;
     this.onActivity = options.onActivity;
     this.onScreen = options.onScreen;
+    this.onSpeech = options.onSpeech;
+    this.screenAudience = options.screenAudience;
+    this.missions = options.missions;
     this.floorOptions = options.floor ?? {};
   }
 
@@ -254,7 +309,8 @@ export class NogitaEngine {
     const session = this.sessions.get(sessionId)!;
     if (this.dependencies.agent && meeting.capabilities.has('speak')) {
       session.floor = new SpeechFloor({ ...this.floorOptions, now: this.now,
-        speak: text => this.floorSpeak(sessionId, session, text),
+        speak: (text, owner) => this.floorSpeak(sessionId, session, text, owner),
+        stopPlayback: () => { session.meeting.interruptSpeech?.(); },
         onInterrupted: owner => {
           const question = session.questions.find(q => q.id === owner);
           if (!question) return;
@@ -262,7 +318,10 @@ export class NogitaEngine {
           if (++question.interruptions > 1) {
             session.floor!.drop(owner);
             this.reportQuestion(sessionId, question, 'chat_only', 'cut off twice; the rest is in chat');
-          } else this.setStatus(sessionId, session, owner, 'interrupted');
+          } else {
+            question.interruptedAt = this.now();
+            this.setStatus(sessionId, session, owner, 'interrupted');
+          }
         },
         onResumed: owner => this.setStatus(sessionId, session, owner, 'answering', 'resumed'),
         onWaiting: waiting => this.onActivity?.(sessionId, { kind: 'waiting', waiting }),
@@ -373,7 +432,7 @@ export class NogitaEngine {
       if (active && message.trim().endsWith('?') && !isExplicitCreateRequest(active.request) &&
           !isExplicitPRRequest(active.request)) {
         session.pendingFollowUp = { ...active, question: message, expiresAt: this.now() + 60_000,
-          afterSequence: session.lastArrivalSequence };
+          afterSequence: session.lastArrivalSequence, kind: 'question' };
       }
     }
   }
@@ -507,15 +566,22 @@ export class NogitaEngine {
   }
 
   /** Speech for the floor: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
-  private async floorSpeak(sessionId: string, s: Session, text: string): Promise<SpeakOutcome> {
+  private async floorSpeak(sessionId: string, s: Session, text: string, owner: number): Promise<SpeakResult> {
+    this.onSpeech?.(sessionId, { questionId: owner, phase: 'start' });
+    let result: SpeakResult;
     try {
       await s.meeting.speak(text, { chatMirror: false });
       this.dependencies.usage?.recordTts(sessionId, true);
-      return 'spoken';
+      result = 'spoken';
     } catch (error) {
       this.dependencies.usage?.recordTts(sessionId, false);
-      return error instanceof Error && /interrupt/i.test(error.message) ? 'interrupted' : 'failed';
+      result = error instanceof SpeechInterruptedError ? { outcome: 'interrupted', heardMs: error.playedMs }
+        : error instanceof Error && /interrupt/i.test(error.message) ? 'interrupted' : 'failed';
     }
+    const outcome = typeof result === 'string' ? result : result.outcome;
+    this.onSpeech?.(sessionId, { questionId: owner, phase: 'end', outcome,
+      ...(typeof result !== 'string' && result.heardMs !== undefined ? { heardMs: Math.round(result.heardMs) } : {}) });
+    return result;
   }
 
   private setStatus(sessionId: string, s: Session, id: number, status: QuestionStatus, detail?: string): void {
@@ -612,7 +678,7 @@ export class NogitaEngine {
       this.clearQuestionProgress(target);
       floor.drop(target.id);
       this.reportQuestion(sessionId, target, 'cancelled', 'asked to drop it');
-      void floor.say(0, 'Okay, dropping that.');
+      this.sayAside(s, 'Okay, dropping that.');
       void s.meeting.sendStatus(`Dropped the question${target.topic ? ` about ${target.topic}` : `: "${target.request}"`}.`).catch(() => undefined);
       return 'answered';
     }
@@ -685,7 +751,9 @@ export class NogitaEngine {
       chat: this.dependencies.chat, people: this.dependencies.people, completed: this.completed,
       onReceipt: receipt => s.meeting.sendCompletion(receipt),
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
-      ...(s.floor && this.onScreen ? { show: (card: ScreenCard | undefined) => this.onScreen!(sessionId, card) } : {}),
+      ...(this.missions && authorized ? { missions: this.missionPort(sessionId, utterance.actor) } : {}),
+      ...(s.floor && this.onScreen ? { show: (card: ScreenCard | undefined) => this.onScreen!(sessionId, card),
+        ...(this.screenAudience ? { screenAudience: () => this.screenAudience!(sessionId) } : {}) } : {}),
     });
     // A text thread carries its own history (including messages that never addressed Nogita).
     let transcript = history ?? s.history.slice(0, -1).map(turn => turn.text);
@@ -701,6 +769,7 @@ export class NogitaEngine {
     const said: Array<{ step: number; leadIn: boolean; outcome: Promise<string> }> = [];
     const leadInSteps = new Set<number>();
     let spokenWords = 0;
+    const maxWords = wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
@@ -738,14 +807,14 @@ export class NogitaEngine {
       // Spoken answers stay short; anything longer is in the chat copy of the answer.
       if (!streaming) {
         // Whole pieces (a lead-in, then the answer): keep at least the first sentence of each.
-        const short = firstWords(text, Math.max(1, MAX_SPOKEN_WORDS - spokenWords));
+        const short = firstWords(text, Math.max(1, maxWords - spokenWords));
         spokenWords += short.split(/\s+/).length;
         queueSpeech(short, step);
         if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.', step); }
         return;
       }
       const words = text.split(/\s+/).length;
-      if (spokenWords > 0 && spokenWords + words > MAX_SPOKEN_WORDS) {
+      if (spokenWords > 0 && spokenWords + words > maxWords) {
         truncatedSpeech = true;
         queueSpeech('I have put the rest in the chat.', step);
         return;
@@ -824,7 +893,9 @@ export class NogitaEngine {
     this.clearProgressTimer(s);
     if (q) this.clearQuestionProgress(q);
     if (s.progressSpeech) await s.progressSpeech;
-    if (q && q.status !== 'stopped' && q.status !== 'cancelled') {
+    // Superseded or cancelled while the answer was being spoken: the old answer goes nowhere, not even chat.
+    if (q?.abort.signal.aborted) return 'ignored';
+    if (q && NogitaEngine.isOpen(q)) {
       const lost = outcomes.filter(item => !item.leadIn && !leadInSteps.has(item.step) && item.result !== 'spoken');
       this.reportQuestion(sessionId, q, lost.length ? 'chat_only' : 'answered',
         lost.length ? `${lost.length} spoken part(s) not delivered (${[...new Set(lost.map(item => item.result))].join(', ')}); the answer is in chat`
@@ -845,12 +916,12 @@ export class NogitaEngine {
     // about? Give me a title... Also tell me who owns it.") — the voice lab caught that case.
     if (asksQuestion(answer)) {
       s.pendingFollowUp = { actorId: utterance.actor.id, request: writeScope, question: answer,
-        expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence };
+        expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence, kind: 'question' };
     } else if (s.floor) {
       // A live conversation: the person she just answered goes on without her name ("and the other one?").
       // The agent stays silent when it was not for her; a write still needs the new words to ask for it.
       s.pendingFollowUp = { actorId: utterance.actor.id, request: '', question: answer,
-        expiresAt: this.now() + 30_000, afterSequence: s.lastArrivalSequence };
+        expiresAt: this.now() + 30_000, afterSequence: s.lastArrivalSequence, kind: 'conversation' };
     }
     const codeTools = result.toolCalls.some(name => ['search_code', 'read_file', 'recent_commits'].includes(name));
     const reference = report.codeReferences[0];
@@ -860,6 +931,79 @@ export class NogitaEngine {
       return 'completed';
     }
     return report.wroteSomething ? 'completed' : 'answered';
+  }
+
+  /**
+   * A short line for a meeting or thread that is still open (a mission's progress): spoken when the room has an
+   * opening (voice), and in chat. Returns false when the conversation is gone.
+   */
+  async announce(sessionId: string, text: string): Promise<boolean> {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.ending) return false;
+    await s.meeting.sendStatus(text).catch(() => undefined);
+    // Spoken after the answers people are waiting for, never ahead of them.
+    const open = s.questions.filter(q => NogitaEngine.isOpen(q) && q.run).map(q => q.run!);
+    if (s.floor) void Promise.allSettled(open).then(() => { if (this.sessions.get(sessionId) === s && !s.ending) this.sayAside(s, speakable(text)); });
+    return true;
+  }
+
+  /** One line that belongs to no question (an acknowledgement, a mission update): it does not keep the floor after it. */
+  private sayAside(s: Session, text: string): void {
+    void s.floor?.say(0, text).finally(() => s.floor?.release(0));
+  }
+
+  /** Missions as one conversation turn may use them, bound to the person speaking. */
+  private missionPort(sessionId: string, actor: Utterance['actor']): MissionPort {
+    const runner = this.missions!;
+    const mine = () => runner.list({ ownerId: actor.id });
+    return {
+      start: (goal, doneWhen) => runner.start({ goal, ...(doneWhen ? { doneWhen } : {}), owner: { id: actor.id, displayName: actor.displayName }, sessionId }),
+      list: () => runner.list().filter(m => m.owner.id === actor.id || m.sessionId === sessionId)
+        .filter(m => OPEN_MISSION.has(m.status) || this.now() - m.updatedAt < 3 * 60 * 60_000).slice(0, 6)
+        .map(m => ({ id: m.id, goal: m.goal, status: m.status, owner: m.owner.displayName, ...(m.activity ? { activity: m.activity } : {}),
+          ...(m.pending ? { pending: m.pending.summary } : {}),
+          ...(m.steps.filter(step => step.kind === 'finding').at(-1) ? { lastFinding: m.steps.filter(step => step.kind === 'finding').at(-1)!.text } : {}),
+          ...(m.result ? { result: m.result.summary } : m.blockedReason ? { result: `blocked: ${m.blockedReason}` } : {}) })),
+      decide: async (decision, id, note) => {
+        const fits = { approve: ['awaiting_approval'], decline: ['awaiting_approval'], resume: ['blocked', 'failed'],
+          cancel: ['investigating', 'executing', 'awaiting_approval', 'blocked'] }[decision];
+        let target = id;
+        if (!target) {
+          const candidates = mine().filter(m => fits.includes(m.status));
+          if (candidates.length !== 1) {
+            return { ok: false, message: candidates.length ? `Which one: ${candidates.map(m => m.id).join(', ')}?` : 'You have no mission waiting for that.' };
+          }
+          target = candidates[0]!.id;
+        }
+        if (decision === 'approve') return runner.approve(target, actor.id);
+        if (decision === 'decline') return runner.reject(target, actor.id, note ? `The owner declined: ${note}` : undefined);
+        if (decision === 'resume') return runner.resume(target, actor.id, note);
+        return runner.cancel(target, actor.id);
+      },
+    };
+  }
+
+  /** Everyone heard counts (verified or not): it decides one-to-one versus group, and closes a follow-up window. */
+  private noteSpeaker(s: Session, utterance: Utterance): void {
+    const id = utterance.actor.id;
+    (s.heard ??= new Map()).set(id, this.now());
+    const first = utterance.actor.displayName.trim().split(/\s+/)[0] ?? '';
+    if (first.length > 1 && utterance.actor.displayName !== 'Meeting participant' && !/^nogita$/i.test(first)) {
+      (s.names ??= new Map()).set(id, first);
+    }
+    const pending = s.pendingFollowUp;
+    if (pending?.kind === 'conversation' && pending.actorId !== id && !isBackchannel(utterance.text)) pending.intervened = true;
+  }
+  private otherNames(s: Session, actorId: string): string[] {
+    return [...(s.names ?? new Map<string, string>())].filter(([id]) => id !== actorId).map(([, name]) => name);
+  }
+  /**
+   * In a group, the 30-second window after an answer never outranks who is being talked to: it closes once someone
+   * else spoke, and a "yeah" or words addressed to another person by name are not a follow-up.
+   */
+  private followUpRuledOut(s: Session, pending: NonNullable<Session['pendingFollowUp']>, text: string, actorId: string): boolean {
+    if (addressesSomeoneElse(text, this.otherNames(s, actorId))) return true;
+    return pending.kind === 'conversation' && (pending.intervened === true || isBackchannel(text));
   }
 
   /**
@@ -874,6 +1018,7 @@ export class NogitaEngine {
     let historyEntry: ConversationTurn | undefined;
     const s = this.sessions.get(sessionId);
     if (!s || s.ending) throw new Error('unknown session');
+    this.noteSpeaker(s, utterance);
     if (!utterance.actor.verified || !utterance.eventId || !utterance.text.trim()) return 'ignored';
     const arrivalSequence = ++s.lastArrivalSequence;
     const previous = s.processing;
@@ -891,30 +1036,41 @@ export class NogitaEngine {
     try {
     // Prevent unbounded in-memory event metadata or transcript retention.
     if (s.eventIds.size > 2000) s.eventIds.delete(s.eventIds.values().next().value!);
-    const current = utterance.text.trim().slice(0, 4000);
+    let current = utterance.text.trim().slice(0, 4000);
     historyEntry = { role: 'user', text: `${utterance.actor.displayName}: ${current}` };
     s.history.push(historyEntry);
     if (s.history.length > 24) s.history.shift();
+
+    if (isCourtesyClose(current)) {
+      s.pendingFollowUp = undefined;
+      s.calledBy = undefined;
+      return 'ignored';
+    }
 
     const called = s.calledBy?.actorId === utterance.actor.id && this.now() <= s.calledBy.until;
     s.calledBy = undefined;
     // The asker went on after a pause ("Nogita, can you check... um, which file starts the server?"): what she heard
     // first was only the start of the question, so that answer is dropped and the whole question answered.
     let wholeRequest: string | undefined;
-    if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current)) {
+    if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current) &&
+        !isBackchannel(current) && !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id))) {
+      // A correction ("no, I meant the mobile app") replaces the speaker's open question even well after it was asked,
+      // and stops what she is saying about the old one.
+      const correction = looksLikeCorrection(current);
       const started = s.questions.filter(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id &&
-        this.now() - q.askedAt < 8_000).at(-1);
+        this.now() - q.askedAt < (correction ? 60_000 : 8_000)).at(-1);
       if (started) {
         started.abort.abort();
         this.clearQuestionProgress(started);
         s.floor.drop(started.id);
-        this.reportQuestion(sessionId, started, 'superseded', 'the speaker went on; answering the whole question');
-        wholeRequest = `${started.request} ${current}`;
+        this.reportQuestion(sessionId, started, 'superseded',
+          correction ? 'corrected by the asker; answering the corrected question' : 'the speaker went on; answering the whole question');
+        wholeRequest = correction ? `${started.request}\n(${utterance.actor.displayName} then corrected: "${current}")`
+          : `${started.request} ${current}`;
       }
     }
     const directlyAddressed = directlyAddressesNogita(current) || called || wholeRequest !== undefined;
     const heard = s.heard ??= new Map();
-    heard.set(utterance.actor.id, this.now());
     for (const [actorId, at] of heard) if (this.now() - at > 5 * 60_000) heard.delete(actorId);
     // Only one person and Nogita in the call: their questions are for her, name or not (the agent stays silent otherwise).
     const oneToOne = !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && heard.size === 1 && looksLikeRequest(current);
@@ -924,13 +1080,18 @@ export class NogitaEngine {
     }
     const continuation = !directlyAddressed && pending !== undefined &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
-      this.now() <= pending.expiresAt &&
+      this.now() <= pending.expiresAt && !this.followUpRuledOut(s, pending, current, utterance.actor.id) &&
       // The agent can tell a real reply from unrelated talk (it answers with silence); the planner cannot.
       (this.dependencies.agent !== undefined || isAffirmativeFollowUp(current));
     if (s.floor) {
+      const voiceText = directlyAddressed ? removeAddress(current) : current;
+      const compoundStop = splitLeadingStop(voiceText);
       const command = this.handleVoiceCommand(sessionId, s, utterance.actor.id,
-        directlyAddressed ? removeAddress(current) : current, directlyAddressed);
+        compoundStop?.stop ?? voiceText, directlyAddressed);
       if (context.speakerKey) s.floor.noteTalking(context.speakerKey, true);
+      if (command && compoundStop?.remainder) {
+        current = compoundStop.remainder;
+      } else
       if (command) {
         // "Stop. Just tell me the file name.": what the same person says next is still for her.
         if (command === 'answered') s.calledBy = { actorId: utterance.actor.id, until: this.now() + 6_000 };
@@ -939,13 +1100,18 @@ export class NogitaEngine {
       // The person she was answering cut her off and went on talking: they moved on, so she does not pick the
       // answer up again over them ("As I was saying..."); it is in the chat. A "yeah" or "okay" is not moving on.
       const cut = s.questions.find(other => other.id === s.floor!.interrupted);
-      if (cut && cut.actorId === utterance.actor.id && !isBackchannel(current)) {
+      // Only when nobody else spoke since the cut: the asker answering someone else ("yes, you sound fine") has not
+      // moved on from her answer, which resumes once the room is quiet.
+      const othersSince = cut?.interruptedAt !== undefined && [...(s.heard ?? new Map<string, number>())]
+        .some(([id, at]) => id !== utterance.actor.id && at >= cut.interruptedAt!);
+      if (cut && cut.actorId === utterance.actor.id && !isBackchannel(current) && !othersSince) {
         s.floor.drop(cut.id);
         this.reportQuestion(sessionId, cut, 'chat_only', 'the asker went on talking; the rest is in chat');
       }
     }
     if (!directlyAddressed && !continuation) {
-      if (pending?.actorId === utterance.actor.id) s.pendingFollowUp = undefined;
+      // A "yeah" while listening keeps the conversation open; anything else from the same person moves on.
+      if (pending?.actorId === utterance.actor.id && !isBackchannel(current)) s.pendingFollowUp = undefined;
       if (this.dependencies.agent && this.dependencies.brain.assessContribution) {
         this.maybeAssessContribution(sessionId, s);
         return 'ignored';
@@ -998,7 +1164,12 @@ export class NogitaEngine {
       }
       released = true;
       release();
-      const outcome = await q.run!;
+      let outcome: ProcessResult | undefined;
+      try { outcome = await q.run!; }
+      finally {
+        // Every confirmed question ends in a final status, so the presence screen never stays on it.
+        if (NogitaEngine.isOpen(q)) this.reportQuestion(sessionId, q, 'failed', 'ended without a final status');
+      }
       if (outcome) return outcome;
     } else if (this.dependencies.agent) {
       // In a text thread the answer arrives in seconds; a "one second" message would only add noise.

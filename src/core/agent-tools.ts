@@ -27,6 +27,19 @@ export interface ToolboxContext {
   recordAction?: (action: 'create_task' | 'code_lookup') => void;
   /** Puts a card on the meeting's shared screen (undefined clears it). Voice meetings with a presence screen only. */
   show?: (card: ScreenCard | undefined) => void;
+  /** Who can see the shared screen: participants not mapped to a known team member. Unknown when undefined. */
+  screenAudience?: () => { unverified: number } | undefined;
+  /** A mission runs a write only after its owner approved that exact action, so the request wording is not checked. */
+  writesApproved?: boolean;
+  /** Delegated missions of the person speaking (start, check, approve, decline, resume, cancel). */
+  missions?: MissionPort;
+}
+
+/** What a conversation may do with missions, already bound to the person speaking. */
+export interface MissionPort {
+  start(goal: string, doneWhen?: string): Promise<{ id: string }>;
+  list(): Array<{ id: string; goal: string; status: string; activity?: string; pending?: string; lastFinding?: string; result?: string; owner: string }>;
+  decide(decision: 'approve' | 'decline' | 'resume' | 'cancel', id?: string, note?: string): Promise<{ ok: boolean; message: string }>;
 }
 
 /** Things the engine needs after the turn: the best source link and the receipts that were posted. */
@@ -164,6 +177,11 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     async input => {
       const show = context.show!;
       if (input.what === 'nothing') { show(undefined); return { content: 'The screen is back to your presence view.' }; }
+      // The screen is seen by everyone in the call, not only by the person who asked.
+      const unverified = context.screenAudience?.()?.unverified ?? 0;
+      if (unverified > 0) {
+        return { content: `Nothing was shown: ${unverified} participant${unverified === 1 ? ' is' : 's are'} not a verified team member, so private tasks and code stay off the shared screen. Tell them briefly; the link can go in chat if they want.`, isError: true };
+      }
       if (input.what === 'task' && board.getTask) {
         const key = str(input.key, 40)?.toUpperCase();
         if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
@@ -223,7 +241,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' } }, required: ['title', 'description'] } },
     async input => {
-      if (!requestsTaskWrite(context.request)) {
+      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
         return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
       }
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
@@ -256,7 +274,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     if (chat) add({ name: 'post_message', description: `Post a message to a ${chat.name} channel. Only when the person explicitly asked you to post/send/share something there. Write the message itself, ready to send.`,
       input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] } },
     async input => {
-      if (!requestsChatPost(context.request)) {
+      if (!context.writesApproved && !requestsChatPost(context.request)) {
         return { content: 'Not posted: the request does not explicitly ask to send a message. Ask the person to confirm with a direct request.', isError: true };
       }
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not posted: too many writes in one request.', isError: true };
@@ -275,6 +293,37 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       }
       return { content: `Posted to ${receipt.label}: ${receipt.url}` };
     }, true);
+  }
+
+  if (mayRead && context.missions) {
+    const missions = context.missions;
+    add({ name: 'delegate_mission', description: 'Start a mission when someone hands you work to own rather than a question to answer ("take care of KAN-20", "figure out what is blocking X and move it forward", "handle this"). It runs in the background, survives the meeting, and asks its owner before changing anything. After starting it, say one short line ("On it. I\x27ll check what\x27s blocking it."); do not do the work in this reply.',
+      input_schema: { type: 'object', properties: { goal: { type: 'string', description: 'The outcome they want, with the task keys, people and context from the conversation.' },
+        done_when: { type: 'string', description: 'What done means, if they said or it is clear.' } }, required: ['goal'] } },
+    async input => {
+      const goal = str(input.goal, 1_000);
+      if (!goal) return { content: 'goal is required', isError: true };
+      const mission = await missions.start(goal, str(input.done_when, 600));
+      return { content: `Mission ${mission.id} started; it is working in the background. Acknowledge in one short sentence.` };
+    });
+    add({ name: 'missions_status', description: 'What your delegated missions are doing now: status, current activity, the latest finding, an action waiting for approval, or the result. Use for "how is KAN-20 going", "what are you working on".',
+      input_schema: { type: 'object', properties: {} } },
+    async () => {
+      const list = missions.list();
+      if (!list.length) return { content: 'No missions.' };
+      return { content: list.map(m => `${m.id} [${m.status}] ${m.goal} (owner ${m.owner})` +
+        (m.activity ? `; now: ${m.activity}` : '') + (m.lastFinding ? `; found: ${m.lastFinding}` : '') +
+        (m.pending ? `; waiting for approval to ${m.pending}` : '') + (m.result ? `; result: ${m.result}` : '')).join('\n') };
+    });
+    add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one. Only when they clearly said so. mission_id may be left out when only one mission fits.',
+      input_schema: { type: 'object', properties: { decision: { type: 'string', enum: ['approve', 'decline', 'resume', 'cancel'] },
+        mission_id: { type: 'string' }, note: { type: 'string' } }, required: ['decision'] } },
+    async input => {
+      const decision = input.decision;
+      if (decision !== 'approve' && decision !== 'decline' && decision !== 'resume' && decision !== 'cancel') return { content: 'decision must be approve, decline, resume or cancel', isError: true };
+      const result = await missions.decide(decision, str(input.mission_id, 30)?.toUpperCase(), str(input.note, 600));
+      return { content: result.message, ...(result.ok ? {} : { isError: true }) };
+    });
   }
 
   return {

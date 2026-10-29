@@ -27,6 +27,10 @@ export interface ActionReceipt {
 export class SpeechFallbackSentError extends Error {
   constructor() { super('speech unavailable after chat fallback'); }
 }
+/** A participant cut Nogita off; `playedMs` is how much of this piece had played (heard) when it stopped. */
+export class SpeechInterruptedError extends Error {
+  constructor(readonly playedMs?: number) { super('speech interrupted by participant'); }
+}
 export interface SpeakOptions { chatMirror?: boolean }
 export interface MeetingPort {
   readonly id: string;
@@ -36,6 +40,8 @@ export interface MeetingPort {
   /** Called only for an explicit direct address or a verified reply to Nogita's own recent question.
    *  `chatMirror: false` asks a voice provider not to copy this line to meeting chat (streamed partial speech). */
   speak(message: string, options?: SpeakOptions): Promise<void>;
+  /** Stops the speech playing now (its speak() rejects with SpeechInterruptedError); false when nothing was playing. */
+  interruptSpeech?(): boolean;
   /** Plain meeting-chat status or speech fallback; never carries secrets. */
   sendStatus(message: string, timeoutMs?: number): Promise<void>;
   /** Returns false if native hand raise is not supported; no fallback speech/chat. */

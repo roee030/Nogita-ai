@@ -4,6 +4,8 @@
  * off is kept and finished at the next opening instead of being lost.
  */
 export type SpeakOutcome = 'spoken' | 'interrupted' | 'failed';
+/** An interrupted piece may say how much of it was heard (milliseconds of audio played). */
+export type SpeakResult = SpeakOutcome | { outcome: SpeakOutcome; heardMs?: number };
 export type FloorOutcome = SpeakOutcome | 'dropped';
 export type DropReason = 'stale' | 'cancelled' | 'no_opening';
 
@@ -20,7 +22,11 @@ interface Item {
 }
 
 export interface SpeechFloorOptions {
-  speak: (text: string) => Promise<SpeakOutcome>;
+  speak: (text: string, owner: number) => Promise<SpeakResult>;
+  /** Stops the piece playing now (for a dropped owner); its speak() then settles as interrupted. */
+  stopPlayback?: () => void;
+  /** Speaking pace used to tell which sentences of a cut-off piece were heard (characters per second). */
+  charsPerSecond?: number;
   now?: () => number;
   schedule?: (work: () => void, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
@@ -54,6 +60,8 @@ export class SpeechFloor {
   private holderSince = 0;
   private speaking = false;
   private playing?: Item;
+  /** The playing piece was dropped (stop, cancel): when its playback ends it is finished, never resumed. */
+  private cutPlaying?: { item: Item; reason: DropReason };
   private pausedUntil = 0;
   private blockedSince?: number;
   private interruptedOwner?: number;
@@ -96,9 +104,15 @@ export class SpeechFloor {
     for (const item of this.queue) if (item.owner === owner && !item.resumed) item.leadIn = true;
   }
 
-  /** Drops the owner's waiting speech; returns how many pieces were dropped. */
+  /** Drops the owner's waiting speech and stops the owner's piece playing now; returns how many pieces were dropped. */
   drop(owner: number, reason: DropReason = 'cancelled'): number {
     let dropped = 0;
+    if (this.playing?.owner === owner && !this.cutPlaying) {
+      // Stale audio must not finish playing after a stop or cancel.
+      this.cutPlaying = { item: this.playing, reason };
+      this.options.stopPlayback?.();
+      dropped++;
+    }
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const item = this.queue[i]!;
       if (item.owner !== owner) continue;
@@ -129,6 +143,7 @@ export class SpeechFloor {
 
   close(): void {
     this.closed = true;
+    if (this.playing && !this.cutPlaying) { this.cutPlaying = { item: this.playing, reason: 'cancelled' }; this.options.stopPlayback?.(); }
     if (this.timer !== undefined) this.cancel(this.timer);
     for (const item of this.queue.splice(0)) item.resolve('dropped');
   }
@@ -207,13 +222,22 @@ export class SpeechFloor {
       const prefix = item.prefix?.();
       if (prefix) text = lead(prefix, text);
     }
-    void this.options.speak(text).catch((): SpeakOutcome => 'failed').then(outcome => {
+    item.text = text;
+    void this.options.speak(text, item.owner).catch((): SpeakResult => 'failed').then(result => {
+      const outcome = typeof result === 'string' ? result : result.outcome;
+      const heardMs = typeof result === 'string' ? undefined : result.heardMs;
       this.speaking = false;
       this.holderSince = this.now();
       this.playing = undefined;
-      // A cut-off lead-in ("Checking the board.") is not worth repeating; the answer follows anyway.
-      if (outcome === 'interrupted' && !this.closed && !item.leadIn) {
-        // Kept: finished at the next opening, unless someone cancels it first.
+      const cut = this.cutPlaying?.item === item ? this.cutPlaying : undefined;
+      if (this.cutPlaying?.item === item) this.cutPlaying = undefined;
+      const rest = outcome === 'interrupted' ? unheard(item.text, heardMs, this.options.charsPerSecond ?? 14) : item.text;
+      if (cut) {
+        this.finish(item, 'dropped', cut.reason);
+      } else if (outcome === 'interrupted' && !this.closed && !item.leadIn && rest) {
+        // A cut-off lead-in ("Checking the board.") is not worth repeating; the answer follows anyway.
+        // Kept: finished at the next opening from the first sentence not heard, unless someone cancels it first.
+        item.text = rest;
         item.resumed = true;
         this.queue.unshift(item);
         this.interruptedOwner = item.owner;
@@ -222,9 +246,26 @@ export class SpeechFloor {
         this.pausedUntil = this.now() + (this.options.resumeAfterMs ?? 1_800);
         this.options.onInterrupted?.(item.owner);
       } else {
-        this.finish(item, outcome);
+        // Everything was heard before the cut: nothing to resume.
+        this.finish(item, outcome === 'interrupted' && !rest ? 'spoken' : outcome);
       }
       this.pump();
     });
   }
+}
+
+/**
+ * The sentences of `text` not fully heard after `heardMs` of playback (estimated from speaking pace, rounded down so
+ * a half-heard sentence is repeated). Unknown `heardMs`: all of it. Empty: everything was heard.
+ */
+export function unheard(text: string, heardMs: number | undefined, charsPerSecond: number): string {
+  if (heardMs === undefined || !(heardMs > 0)) return text;
+  const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [text];
+  let heardChars = heardMs / 1000 * charsPerSecond;
+  let index = 0;
+  while (index < sentences.length && heardChars >= sentences[index]!.trim().length) {
+    heardChars -= sentences[index]!.length;
+    index++;
+  }
+  return sentences.slice(index).join('').trim();
 }

@@ -66,6 +66,28 @@
     color: rgba(226, 232, 240, 0.88); mask-image: linear-gradient(#000 88%, transparent); }
   #card pre i { font-style: normal; display: inline-block; width: 52px; color: rgba(100, 116, 139, 0.8); user-select: none; }
   #queue .dots b { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.8; }
+  /* Her webcam tile: Meet shows it small and may crop the edges, so everything is larger and kept near the center. */
+  /* Meet already shows her name on the tile. */
+  body.camera .mark { display: none; }
+  body.camera .copy { top: 486px; }
+  body.camera #title { font-size: 58px; letter-spacing: 0.3em; padding-left: 0.3em; }
+  body.camera #status { font-size: 32px; margin-top: 16px; min-height: 40px; }
+  body.camera #about { font-size: 26px; max-width: 900px; min-height: 32px; }
+  body.camera #queue { font-size: 18px; bottom: 34px; }
+  /* A card in the webcam tile: it fills the tile, the orb moves to the corner. */
+  body.camera.with-card .copy { left: 36px; right: 940px; top: 262px; }
+  body.camera.with-card #title { font-size: 24px; letter-spacing: 0.18em; }
+  body.camera.with-card #status { font-size: 20px; }
+  body.camera.with-card #about, body.camera.with-card .mark { opacity: 0; }
+  body.camera #card { left: 330px; top: 40px; width: 914px; height: 640px; padding: 38px 44px; }
+  body.camera #card .kicker { font-size: 18px; }
+  body.camera #card h2 { font-size: 40px; }
+  body.camera #card .meta { font-size: 20px; }
+  body.camera #card .body, body.camera #card .row { font-size: 23px; }
+  body.camera #card .row { grid-template-columns: 130px 1fr auto; }
+  body.camera #card .row .key, body.camera #card .row .st, body.camera #card .row .who { font-size: 17px; }
+  body.camera #card pre { font-size: 21px; }
+  body.camera #card pre i { width: 64px; }
 </style>
 </head>
 <body>
@@ -85,20 +107,29 @@
 (() => {
   'use strict';
   const W = 1280, H = 720;
-  // Orb position and size: centered, or on the left while a card is shown.
-  let CX = 640, CY = 300, R = 112, layout = 0, cardShown = 0;
+  // "view=camera": the page is her webcam (a small tile) rather than a shared screen.
+  const CAMERA = new URLSearchParams(location.search).get('view') === 'camera';
+  if (CAMERA) document.body.classList.add('camera');
+  // Orb position and size: centered, or aside while a card is shown (in the corner of the webcam tile).
+  const GEO = CAMERA ? { cx: 640, cy: 270, r: 150, cardX: 170, cardY: 150, cardR: 66 }
+    : { cx: 640, cy: 300, r: 112, cardX: 320, cardY: 290, cardR: 88 };
+  let CX = GEO.cx, CY = GEO.cy, R = GEO.r, layout = 0, cardShown = 0;
 
-  // Visual identity of each state.
+  // Visual identity of each state; thinking has three looks, one per phase of real work.
   const LOOKS = {
-    idle:      { a: '#475569', b: '#94a3b8', energy: 0.15 },
-    listening: { a: '#2dd4bf', b: '#67e8f9', energy: 0.55 },
-    thinking:  { a: '#6366f1', b: '#a78bfa', energy: 0.7 },
-    speaking:  { a: '#22c55e', b: '#4ade80', energy: 1 },
-    warning:   { a: '#f59e0b', b: '#fcd34d', energy: 0.35 },
-    error:     { a: '#ef4444', b: '#fca5a5', energy: 0.35 },
-    leaving:   { a: '#334155', b: '#64748b', energy: 0.05 },
+    idle:          { a: '#475569', b: '#94a3b8', energy: 0.15 },
+    listening:     { a: '#2dd4bf', b: '#67e8f9', energy: 0.55 },
+    understanding: { a: '#3b82f6', b: '#93c5fd', energy: 0.55 },
+    investigating: { a: '#6366f1', b: '#a78bfa', energy: 0.7 },
+    executing:     { a: '#0ea5e9', b: '#e0f2fe', energy: 0.85 },
+    speaking:      { a: '#22c55e', b: '#4ade80', energy: 1 },
+    blocked:       { a: '#d97706', b: '#fde68a', energy: 0.3 },
+    warning:       { a: '#f59e0b', b: '#fcd34d', energy: 0.35 },
+    error:         { a: '#ef4444', b: '#fca5a5', energy: 0.35 },
+    leaving:       { a: '#334155', b: '#64748b', energy: 0.05 },
   };
-  const TITLES = { idle: 'Ready', listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking', leaving: 'Goodbye' };
+  const TITLES = { idle: 'Ready', listening: 'Listening', understanding: 'Understanding', investigating: 'Investigating',
+    executing: 'Working', thinking: 'Thinking', speaking: 'Speaking', blocked: 'Needs approval', leaving: 'Goodbye' };
   const SUBTITLES = {
     idle: 'Say “Nogita” to ask me something',
     listening: 'Go ahead — I’m listening',
@@ -128,7 +159,7 @@
   let lookKey = 'idle';
   const col = { a: hex(LOOKS.idle.a), b: hex(LOOKS.idle.b), energy: LOOKS.idle.energy };
   // Layer weights cross-fade between states.
-  const weight = { idle: 1, listening: 0, thinking: 0, speaking: 0, error: 0 };
+  const weight = { idle: 1, listening: 0, thinking: 0, speaking: 0, error: 0, blocked: 0 };
   let inLevel = 0, inTarget = 0, outLevel = 0;
   const outFrames = [];
   let outCursor = 0;
@@ -136,13 +167,14 @@
 
   function apply(next) {
     current = next;
-    lookKey = next.state === 'error' ? (next.tone === 'error' ? 'error' : 'warning') : next.state;
+    lookKey = next.state === 'error' ? (next.tone === 'error' ? 'error' : 'warning')
+      : next.state === 'thinking' ? (next.phase || 'investigating') : next.state;
     const look = LOOKS[lookKey] || LOOKS.idle;
     document.documentElement.style.setProperty('--accent', look.b);
-    const title = next.state === 'error' ? next.status : (TITLES[next.state] || 'Ready');
+    const title = next.state === 'error' ? next.status : (TITLES[lookKey] || TITLES[next.state] || 'Ready');
     const status = next.state === 'error' ? (next.tone === 'error' ? 'Please try again in a moment' : 'Trying to recover')
-      : next.state === 'thinking' || next.state === 'speaking' ? next.status : (SUBTITLES[next.state] || '');
-    const about = (next.state === 'thinking' || next.state === 'speaking') && next.about ? `“${next.about}”` : '';
+      : ['thinking', 'speaking', 'blocked'].includes(next.state) ? next.status : (SUBTITLES[next.state] || '');
+    const about = ['thinking', 'speaking', 'blocked'].includes(next.state) && next.about ? `“${next.about}”` : '';
     swap('title', title); swap('status', status); swap('about', about);
     const queue = document.getElementById('queue');
     if (next.open > 1) {
@@ -183,6 +215,8 @@
   }
 
   function speech(frameMs, levels) {
+    // No levels: her speech was stopped on the server; drop the motion queued for audio that will not play.
+    if (!levels.length) { outFrames.splice(0); outCursor = 0; return; }
     const now = performance.now() + OUT_DELAY;
     let at = Math.max(now, outCursor);
     for (const level of levels) { outFrames.push({ at, level }); at += frameMs; }
@@ -231,7 +265,7 @@
   }));
   const ripples = [];
   const bars = Array.from({ length: 96 }, () => ({ v: 0, seed: Math.random() * 100 }));
-  let lastRipple = 0, prevIn = 0, prevOut = 0;
+  let lastRipple = 0, prevIn = 0, prevOut = 0, thinkT = 0;
   let last = performance.now();
 
   function noise(t, s) {
@@ -251,7 +285,7 @@
     col.energy = mix(col.energy, look.energy, k);
     for (const name in weight) weight[name] = mix(weight[name], name === state ? 1 : 0, 1 - Math.pow(0.015, dt));
     layout = mix(layout, cardShown, 1 - Math.pow(0.01, dt));
-    CX = mix(640, 320, layout); CY = mix(300, 290, layout); R = mix(112, 88, layout);
+    CX = mix(GEO.cx, GEO.cardX, layout); CY = mix(GEO.cy, GEO.cardY, layout); R = mix(GEO.r, GEO.cardR, layout);
 
     // Live levels: incoming speech decays quickly; outgoing follows her actual audio frames.
     inLevel = mix(inLevel, inTarget, 1 - Math.pow(0.0005, dt));
@@ -283,7 +317,9 @@
     }
 
     ctx.globalCompositeOperation = 'lighter';
+    // Waiting for approval: a slow, deep breath (alive, calm, clearly waiting on a person).
     const breathe = 1 + Math.sin(t * (Math.PI * 2 / 5.5)) * 0.018 * (weight.idle + weight.error * 0.6)
+      + Math.sin(t * (Math.PI * 2 / 3.2)) * 0.04 * weight.blocked
       + inLevel * 0.06 * weight.listening + outLevel * 0.085 * weight.speaking
       + Math.sin(t * 2.2) * 0.012 * weight.thinking;
     const r = R * breathe;
@@ -311,10 +347,10 @@
     }
 
     // Reactive ring: calm when idle, shaped by incoming voice when listening.
-    const ringW = weight.idle + weight.listening + weight.error * 0.8;
+    const ringW = weight.idle + weight.listening + weight.error * 0.8 + weight.blocked;
     if (ringW > 0.02) {
       ctx.beginPath();
-      const amp = 1.4 * weight.idle + (3 + inLevel * 26) * weight.listening + 2 * weight.error;
+      const amp = 1.4 * weight.idle + (3 + inLevel * 26) * weight.listening + 2 * weight.error + 1.2 * weight.blocked;
       for (let i = 0; i <= 200; i++) {
         const a = (i / 200) * Math.PI * 2;
         const d = noise(t * (0.6 + inLevel * 2.5), a * 3) * amp + Math.sin(a * 6 + t * 1.3) * amp * 0.35;
@@ -325,6 +361,7 @@
       ctx.strokeStyle = rgba(col.b, 0.5 * ringW);
       ctx.lineWidth = 1.6;
       if (weight.error > 0.3) ctx.setLineDash([14, 12]);
+      else if (weight.blocked > 0.3) ctx.setLineDash([3, 14]);
       ctx.lineDashOffset = -t * 12;
       ctx.stroke(); ctx.setLineDash([]);
       // A second, fainter ring for depth.
@@ -335,9 +372,12 @@
     // Thinking: orbiting arcs and particles.
     if (weight.thinking > 0.02) {
       const w = weight.thinking;
+      // The pace follows the real work: slow while understanding, brisk while changing something.
+      const pace = current.phase === 'executing' ? 1.7 : current.phase === 'understanding' ? 0.6 : 1;
+      thinkT += dt * pace;
       const arcs = [[1.28, 0.9, 1.3, 3.2], [1.44, -0.55, 0.75, 2.4], [1.62, 0.35, 1.9, 1.6]];
       for (const [scale, speed, len, width] of arcs) {
-        const start = t * speed * 1.6 + scale * 4;
+        const start = thinkT * speed * 1.6 + scale * 4;
         const g = ctx.createLinearGradient(CX - r * scale, CY, CX + r * scale, CY);
         g.addColorStop(0, rgba(col.a, 0.9 * w)); g.addColorStop(1, rgba(col.b, 0.9 * w));
         ctx.strokeStyle = g; ctx.lineWidth = width; ctx.lineCap = 'round';
@@ -346,7 +386,7 @@
         ctx.beginPath(); ctx.arc(CX, CY, r * scale, 0, Math.PI * 2); ctx.stroke();
       }
       for (const o of orbiters) {
-        o.angle += o.speed * dt * 1.4;
+        o.angle += o.speed * dt * 1.4 * pace;
         const x = CX + Math.cos(o.angle) * o.radius;
         const y = CY + Math.sin(o.angle) * o.radius * o.tilt;
         const front = Math.sin(o.angle) > 0 ? 1 : 0.45;
@@ -417,9 +457,11 @@
     const steps = [
       [{ state: 'idle', status: 'Ready', open: 0 }, 4500],
       [{ state: 'listening', status: 'Listening', open: 0 }, 4000, 'in'],
-      [{ state: 'thinking', status: 'Got it', about: 'why does the login time out after an hour', open: 1 }, 1500],
-      [{ state: 'thinking', status: 'Searching the code', about: 'why does the login time out after an hour', open: 1 }, 3000],
-      [{ state: 'thinking', status: 'Checking Jira', about: 'why does the login time out after an hour', open: 2 }, 2500],
+      [{ state: 'thinking', phase: 'understanding', status: 'Got it', about: 'why does the login time out after an hour', open: 1 }, 1500],
+      [{ state: 'thinking', phase: 'investigating', status: 'Searching the code', about: 'why does the login time out after an hour', open: 1 }, 3000],
+      [{ state: 'thinking', phase: 'investigating', status: 'Checking Jira', about: 'why does the login time out after an hour', open: 2 }, 2500],
+      [{ state: 'thinking', phase: 'executing', status: 'Creating a task in Jira', about: 'open a task for the timeout', open: 1 }, 2500],
+      [{ state: 'blocked', status: 'Waiting for approval to open a PR', about: 'KAN-20', open: 0 }, 4000],
       [{ state: 'speaking', status: 'Answering', about: 'why does the login time out after an hour', open: 1 }, 6000, 'out'],
       [{ state: 'thinking', status: 'Ready to answer · waiting for a pause', about: 'the release date', open: 1 }, 3000],
       [{ state: 'speaking', status: 'Answering', about: 'show me the open tasks', open: 1 }, 7000, 'out', { kind: 'tasks', title: 'Open tasks', items: [

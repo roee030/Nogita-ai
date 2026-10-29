@@ -517,7 +517,9 @@ export class GitHubCode implements CodePort {
   }
 
   async recentCommits(ref?: string): Promise<Evidence[]> {
-    // Default to the indexed revision so history and code answers describe the same snapshot.
+    // Default to the indexed revision so history and code answers describe the same snapshot. Load it first: before
+    // the index existed the first call read the branch head and later ones the snapshot, so two calls disagreed.
+    if (!ref?.trim() && !this.indexedCommitSha) await this.loadIndex().catch(() => undefined);
     return this.findCommitEvidence(ref?.trim() || this.indexedCommitSha || this.config.ref);
   }
 

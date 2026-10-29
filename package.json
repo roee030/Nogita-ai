@@ -13,7 +13,9 @@
     "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "slack": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/app/slack-socket.ts",
-    "voice-lab": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/run.ts"
+    "voice-lab": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/run.ts",
+    "turn-report": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/turn-report.ts",
+    "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

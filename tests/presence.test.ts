@@ -49,11 +49,14 @@ test('a named speaker is listened to; a confirmed question becomes thinking with
   hub.question('s', { id: 1, status: 'speculative', request: 'why does login time out' });
   assert.equal(last().state, 'listening');
   hub.question('s', { id: 1, status: 'working', request: 'why does login time out' });
-  assert.deepEqual(last(), { state: 'thinking', status: 'Got it', about: 'why does login time out', open: 1 });
+  assert.deepEqual(last(), { state: 'thinking', status: 'Got it', about: 'why does login time out', open: 1, phase: 'understanding' });
   advance(1_600);
   assert.equal(last().status, 'Working on your question');
   hub.tool('s', 1, ['search_tasks']);
   assert.equal(last().status, 'Checking Jira');
+  assert.equal(last().phase, 'investigating');
+  hub.tool('s', 1, ['create_task']);
+  assert.equal(last().phase, 'executing');
   hub.waiting('s', true);
   assert.equal(last().status, 'Ready to answer · waiting for a pause');
 });

@@ -160,6 +160,10 @@ Before acknowledging accepted Slack or Attendee deliveries, Nogita encrypts the 
 
 Generate `NOGITA_QUEUE_ENCRYPTION_KEY` as exactly 32 random bytes encoded with base64 and keep it stable in the local/deployment secret store. Rotating it while queued records exist makes those records unreadable, so drain the queue before rotation. Slack Socket Mode and signed Events API use the same encrypted queue and hash-only replay ledger. On `SIGTERM` or `SIGINT`, both runtimes stop polling and drain accepted work before shutdown.
 
+## Missions and her webcam
+
+"Nogita, take care of KAN-20" starts a durable mission: she investigates on her own, asks the owner before any change, finishes only with evidence from her own tool results, and resumes after a restart. `npm run mission -- start "..."`, `list`, `show`, `approve`, `decline`, `resume`, `cancel` work on the same store; `GET /missions` (admin token) lists them. In Attendee meetings her presence is her webcam tile (`NOGITA_PRESENCE=camera`, the default). Per-turn diagnostics and the release report: `npm run turn-report`. What is verified and what still needs a real Meet: [docs/MEETING_READINESS.md](docs/MEETING_READINESS.md).
+
 ## Verified status
 
 - `npm test`: covers activation behavior, meeting-scoped verification, ordered split-caption assembly, automatic voice-to-chat fallback, automatic leave settings, complete per-session usage estimates, encrypted-at-rest delivery recovery, exclusive queue claims, tamper rejection, bounded retention, identity mapping, permissions, Jira crash-retry recovery, Slack verification and Socket Mode, live adapter contracts, race-safe startup, and session cleanup.
@@ -173,6 +177,7 @@ Generate `NOGITA_QUEUE_ENCRYPTION_KEY` as exactly 32 random bytes encoded with b
 - [Provider-neutral architecture](docs/ARCHITECTURE.md)
 - [Integration roadmap](docs/INTEGRATION_ROADMAP.md)
 - [Security, privacy and production blockers](docs/SECURITY.md)
+- [Meeting readiness, webcam presence and missions: what is verified](docs/MEETING_READINESS.md)
 
 ## Useful API docs
 

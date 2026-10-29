@@ -134,10 +134,16 @@ export class AttendeeCommandRouter {
     return completion;
   }
 
-  /** A complete question addressed to Nogita needs no long wait for more words. */
+  /**
+   * A complete question or request addressed to Nogita ("Nogita, ...?", "Nogita, show me the open tasks.") needs no
+   * long wait for more words. If the speaker does go on, the engine answers the whole question instead.
+   */
   private quietWindow(fragments: readonly Fragment[]): number {
     const text = normalizeWakeWord(fragments.map(fragment => fragment.text).join(' ').trim());
-    return text.endsWith('?') && directlyAddressesNogita(text) ? this.questionQuietMs : this.quietMs;
+    if (!directlyAddressesNogita(text)) return this.quietMs;
+    if (text.endsWith('?')) return this.questionQuietMs;
+    const words = removeAddress(text).split(/\s+/).filter(Boolean).length;
+    return /[.!]$/.test(text) && words >= 4 ? this.questionQuietMs : this.quietMs;
   }
 
   /** Treat provider-final speech as a fragment; a quiet window prevents interruptions at short pauses. */
