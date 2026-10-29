@@ -2,7 +2,7 @@
  * Plays a scenario on a VoiceRig like people in a room would: wait for Nogita to finish, pause, speak the
  * next line (or talk over her for a barge-in), then turn the event log into per-turn timings.
  */
-import { STILL_WORKING, agentProgressPhrases, progressPhrases } from '../../src/core/engine.ts';
+import { OVERLAP_PROGRESS, STILL_WORKING, agentProgressPhrases, progressPhrases } from '../../src/core/engine.ts';
 import { concat, msToSamples } from './audio.ts';
 import type { LabEvent, VoiceRig } from './rig.ts';
 import type { Scenario, Turn } from './scenarios.ts';
@@ -21,12 +21,14 @@ export interface TurnTiming {
   firstAudio?: number;
   /** First sound that is not a canned filler ("One sec."): her own lead-in or the answer. */
   firstContentAudio?: number;
+  /** The answer itself: her first own words after the last lookup of the turn (or her first own words without one). */
+  meaningfulAudio?: number;
   answerEnd?: number;
   /** Barge-in only: from the interrupter's first word until Nogita's previous answer went quiet. */
   bargeInStop?: number;
 }
 
-export const FILLERS = new Set([...agentProgressPhrases, ...progressPhrases, ...STILL_WORKING]);
+export const FILLERS = new Set([...agentProgressPhrases, ...progressPhrases, ...STILL_WORKING, ...OVERLAP_PROGRESS, 'Still on it.']);
 
 export interface TurnRecord {
   index: number;
@@ -40,6 +42,10 @@ export interface TurnRecord {
   /** Lookups Nogita made for this turn ("search_tasks: status = In Progress"). */
   tools: string[];
   interruptedByNoise: boolean;
+  /** Final status in Nogita's question tracker of the question this turn asked, if it asked one. */
+  questionStatus?: string;
+  /** Nogita's speech that started after this turn reached her, within the turn's window. */
+  spokeAfterUtterance: number;
   /** A hand-raise line was posted to chat before this turn started. */
   handRaisedBefore: boolean;
   events: LabEvent[];
@@ -136,6 +142,17 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
   const contentAudio = contentCall && events.find(event => event.type === 'audio_start' && event.t >= contentCall.t &&
     (nextStart === undefined || event.t < nextStart));
   const stops = window.filter(event => event.type === 'audio_stop' && event.t > (firstAudio?.t ?? Infinity));
+  const lastTool = window.filter(event => event.type === 'tool' && event.t >= mark.end).at(-1);
+  const meaningfulCall = lastTool ? after('speak_call', lastTool.t, event => !FILLERS.has(event.text ?? '')) : contentCall;
+  const meaningfulAudio = meaningfulCall && events.find(event => event.type === 'audio_start' && event.t >= meaningfulCall.t &&
+    (nextStart === undefined || event.t < nextStart));
+  // The question this turn asked: the first one the tracker opened for this speaker in the window (not a rolled-back early start).
+  const question = (event: LabEvent) => /^#(\d+) (\w+)/.exec(event.detail ?? '');
+  const opened = window.find(event => event.type === 'question' && event.participant === participantUuid &&
+    question(event)?.[2] === 'working');
+  const questionId = opened && question(opened)?.[1];
+  const questionStatus = questionId ? events.filter(event => event.type === 'question' && question(event)?.[1] === questionId)
+    .map(event => question(event)![2]!).at(-1) : undefined;
   const activity = after('stt_activity', mark.start, event => event.participant === participantUuid);
   const lastFinalBeforeUtterance = finals.filter(event => !utterance || event.t <= utterance.t).at(-1);
   const rel = (event?: LabEvent) => event ? Math.round(event.t - mark.end) : undefined;
@@ -144,7 +161,7 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
     sttFirstActivity: activity ? Math.round(activity.t - mark.start) : undefined,
     sttFinal: rel(lastFinalBeforeUtterance ?? finals.at(-1)),
     utterance: rel(utterance), firstSpeakCall: rel(firstSpeak), firstAudio: rel(firstAudio),
-    firstContentAudio: rel(contentAudio), answerEnd: rel(stops.at(-1)),
+    firstContentAudio: rel(contentAudio), meaningfulAudio: rel(meaningfulAudio), answerEnd: rel(stops.at(-1)),
   };
   if (turn.bargeIn) {
     const stop = events.find(event => event.type === 'audio_stop' && event.t >= mark.start);
@@ -160,6 +177,8 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
       .map(event => event.text ?? ''),
     writes: window.filter(event => event.type === 'write').map(event => event.text ?? ''),
     tools: window.filter(event => event.type === 'tool').map(event => event.text ?? ''),
+    questionStatus,
+    spokeAfterUtterance: utterance ? window.filter(event => event.type === 'audio_start' && event.t > utterance.t).length : 0,
     // An interruption nobody scripted: the hub heard "speech" (noise, a cough) and cut her off.
     handRaisedBefore: events.some(event => event.type === 'chat' && event.t < mark.start && /has something to add/i.test(event.text ?? '')),
     interruptedByNoise: window.some(event => event.type === 'speak_error' && /interrupt/i.test(event.detail ?? '') && event.t > mark.end),

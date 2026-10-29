@@ -11,6 +11,7 @@ import { VoiceRig } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
 import { scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
 import { transcriptLines, transcriptMarkdown } from '../tools/voice-lab/report.ts';
+import { conversationStats, questionLedger } from '../tools/voice-lab/conversation-metrics.ts';
 
 test('speech recognition variants of the wake word are restored only where someone addresses Nogita', () => {
   for (const [heard, expected] of [
@@ -79,7 +80,7 @@ test('every built-in scenario names its own participants and a known noise kind'
 });
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
-  return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [], tools: [],
+  return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [], tools: [], spokeAfterUtterance: 0,
     interruptedByNoise: false, handRaisedBefore: false, events: [], timing: { speechStart: 0, speechEnd: 0 }, ...fields };
 }
 
@@ -181,9 +182,34 @@ test('scoring checks lookups and response time, and the transcript shows every s
 
   const scenario = { name: 's', title: 'S', noise: { kind: 'quiet' as const, snrDb: 60 },
     participants: [{ id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', authorized: true, mic: 'open' as const }], turns: [ask] };
-  const [lines] = transcriptLines({ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [] });
+  const [lines] = transcriptLines({ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [], events: [] });
   assert.deepEqual(lines!.map(line => line.kind), ['person', 'bridge', 'tool', 'nogita', 'task', 'verdict']);
   assert.equal(lines![3]!.at, 2.5);
-  assert.match(transcriptMarkdown([{ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [] }]),
+  assert.match(transcriptMarkdown([{ scenario, turns: [{ record: good, score: scoreTurn(good) }], room: new Float32Array(), nogita: new Float32Array(), errors: [], events: [] }]),
     /Jira task:\* Fix retries — from the meeting \[intercepted\]/);
+});
+
+test('conversation stats: what became of every question, early starts, speaking over people, duplicate writes', () => {
+  const q = (t: number, detail: string, participant = 'lab_roee', text = 'what is in progress') =>
+    ({ t, type: 'question' as const, participant, text, detail });
+  const events = [
+    q(0, '#1 speculative'), q(300, '#1 rolled_back: the speaker kept talking'),
+    q(900, '#2 speculative'), q(1_000, '#2 working'), q(2_000, '#2 answering'), q(2_500, '#2 interrupted'),
+    q(4_000, '#2 answering: resumed'), q(5_000, '#2 answered'),
+    q(1_500, '#3 working', 'lab_dana', 'what changed'), q(1_600, '#3 working [recent commits]: asked again; one lookup is already running', 'lab_dana'),
+    q(6_000, '#3 cancelled: asked to drop it', 'lab_dana'),
+    q(7_000, '#4 working', 'lab_dana', 'who owns it'),
+    { t: 8_000, type: 'speech_start' as const, participant: 'avi' }, { t: 8_900, type: 'audio_start' as const },
+    { t: 9_000, type: 'speech_end' as const, participant: 'avi' },
+    { t: 9_100, type: 'write' as const, text: 'task: Fix retries' }, { t: 9_200, type: 'write' as const, text: 'task: Fix retries' },
+  ];
+  const ledger = questionLedger(events);
+  assert.deepEqual(ledger.find(entry => entry.id === 2)!.statuses, ['speculative', 'working', 'answering', 'interrupted', 'answering', 'answered']);
+  assert.equal(ledger.find(entry => entry.id === 3)!.topic, 'recent commits');
+  const stats = conversationStats([events]);
+  assert.deepEqual({ questions: stats.questions, answered: stats.answered, cancelled: stats.cancelled, unresolved: stats.unresolved,
+    earlyAdopted: stats.earlyAdopted, earlyRolledBack: stats.earlyRolledBack, cutOff: stats.cutOff, resumed: stats.resumed,
+    askedAgain: stats.askedAgain, spokeOverPeople: stats.spokeOverPeople, duplicateWrites: stats.duplicateWrites, completion: stats.completion },
+  { questions: 3, answered: 1, cancelled: 1, unresolved: 1, earlyAdopted: 1, earlyRolledBack: 1, cutOff: 1, resumed: 1,
+    askedAgain: 1, spokeOverPeople: 1, duplicateWrites: 1, completion: 0.5 });
 });

@@ -11,6 +11,7 @@ npm run voice-lab -- --scenario stump,cafe-loud --judge
 npm run voice-lab -- --noise cafe --snr 0          # same questions, louder room
 npm run voice-lab -- --stt flux-english            # compare speech recognition modes
 npm run voice-lab -- --eot 0.8                     # Flux end-of-turn threshold (default 0.8)
+npm run voice-lab -- --stt flux-english --eager 0.5  # start answering at Flux's early end-of-turn (production default)
 npm run voice-lab -- --scenario actions --live-writes   # really create the Jira tasks it asks for
 ```
 
@@ -60,6 +61,12 @@ any noise suppression the platform applies, are not included.
 | `stalled-speaker` | A long "um" mid-question, a question abandoned with "never mind", and a sentence cut off halfway |
 | `multi-question` | Two questions in one sentence, and a second person asking before she answered the first |
 | `proactive-gap` | The team agrees a bug matters and moves on with no owner; she should raise her hand and offer a task |
+| `parallel-lookups` | Two people ask for lookups (the board, the commits) before either answer is ready; both answered, each naming its topic |
+| `rapid-questions` | One person asks three questions 1.4 s apart, talking over her answers; none may be dropped |
+| `interrupt-resume` | Someone talks over her answer about something else; she finishes the answer afterwards |
+| `cancel-stop` | "Actually, never mind" drops an open lookup; "Nogita, stop" ends an answer for good |
+| `asked-twice` | The same question repeated while she is still looking: one lookup, one answer |
+| `talk-over` | Two people keep talking while her answer is ready; she waits for an opening |
 
 **Noise kinds:** `quiet`, `white`, `pink`, `brown`, `hum`, `keyboard`, `office`, `cafe`, `street`. The office and
 cafe profiles mix real synthesized background chatter in other voices. Noise is set by SNR against a fixed speech
@@ -74,6 +81,8 @@ say, an optional pause, gap, barge-in or overlap with the previous speaker, and 
 - whether she must have raised her hand earlier;
 - the lookups she must make (for example `search_tasks`: she went to the board);
 - how soon some sound, and how soon her own words, must start;
+- how the question must end in her question tracker (`answered`, `cancelled`, `stopped`...);
+- that she stays quiet after the turn (for "stop"), or makes a lookup at most once;
 - a note for the judge.
 
 ## What a report contains
@@ -99,6 +108,7 @@ Reports go to `.voice-lab/reports/<time>/`:
 | Voice | first sentence → first audio frame back (TTS and transport) |
 | **Response gap** | last word → first sound from Nogita: what the room experiences |
 | **Real content** | last word → first sound that is not a canned filler ("One sec."): her own words |
+| **Answer itself** | last word → her first words after the turn's last lookup: time to meaningful speech |
 
 The report also gives:
 - answer length;
@@ -107,6 +117,19 @@ The report also gives:
 - whether her name was recognized;
 - pass/fail per expectation;
 - optional scores from a Claude judge (`--judge`) for correctness, naturalness and length (1-5).
+
+**Conversation management**, from every question's path through the engine's question tracker
+(`working → answering → interrupted → answering → answered`, or `cancelled`, `stopped`, `chat_only`, `failed`):
+- questions answered aloud, answered only in chat, cancelled by the asker, stopped by the room, and **lost** (never
+  answered); question completion is answered aloud / questions not withdrawn;
+- the same question asked again while open;
+- early starts (speculative, before the end of the turn was confirmed): how many were used and how many rolled back;
+- answers cut off by a participant, and how many were finished afterwards;
+- how often she started speaking while someone was mid-sentence;
+- duplicate writes.
+
+Each scenario in `transcript.md` opens with a table of its questions and their paths, and every status change
+appears in the conversation as a `question` line.
 
 ## Findings so far
 
@@ -171,9 +194,33 @@ latest report:
     once she has what the request needs. "Open one for me to ..." after an earlier task is now an explicit
     request.
 
+17. **Stage 2: several questions at once, early start** (25 scenarios, Flux, Haiku, early end-of-turn 0.5,
+    report `stage2-final`). First sound p50 2.05 s, p90 3.56 s (stage 1: 2.42 s / 4.38 s). The answer itself (first
+    words after the last lookup) p50 2.05 s, p90 3.92 s. Model to first sentence p50 0.62 s (stage 1: 1.19 s): the
+    early start hides most of it. 76/91 turns passed; judge correct 3.57, natural 3.19, concise 3.57 (stage 1:
+    3.69 / 2.81 / 3.13). 55 questions: 49 answered aloud, 3 only in chat, 1 cancelled, 2 stopped, **0 lost**;
+    completion 94%. 63 early starts: 52 used, 11 rolled back with nothing said. 4 answers cut off, all finished.
+18. **A second asker no longer costs the first answer.** The engine used to answer one utterance at a time and a
+    barge-in dropped the rest of an answer. Each question now runs on its own and speech goes through one floor;
+    in `parallel-lookups` both lookups ran at once and both answers were spoken, each naming its topic.
+19. **What the lab found in the new design, now fixed:**
+    - A turn that was only "Nogita." got an empty answer; her name alone now waits for the question.
+    - The same person's new question resumed their old answer again and again; it now goes to chat.
+    - A cut-off "Sure, checking the board." was repeated as "As I was saying, sure, checking the board."
+    - After a pause mid-question ("can you check... um, which file starts the server?") she answered the first
+      half; the half-answer is now dropped and the whole question answered.
+    - "Stop. Just tell me the main file." stopped her but lost the request after "stop".
+    - The chat note "I heard you. I'm checking that now." contradicted quick spoken answers; it is off for live voice.
+    - A quoted example question in her answer (like "Nogita, how does auth work?") made the next remark look like
+      a reply to her.
+
 **Known open issues:**
-- A second person's question interrupts the "let me check" for the first one. The first answer then goes to
-  chat only and is never spoken.
+- She can still begin a lead-in up to about 0.6 s after someone else starts talking (3 times in the full run): the
+  floor waits for a person's voice, but the first 100-300 ms of a new speaker are not detected yet.
+- Same-person questions less than about 3 s apart are often merged by Flux into one turn (she answers both).
+- Spoken answers are long: p50 16.6 s. Every answer is also in chat; a shorter spoken limit is worth testing.
+- The judge scores each turn's own time window, so with overlapping questions an answer that lands in the next
+  turn's window is judged against the wrong question.
 - On an open microphone in an office, nearby talk merges into the speaker's turn and delays the answer
   (up to 5 s).
 - The `aura-2-arcas-en` lab voice is often heard as "The guitar" instead of "Nogita".

@@ -10,8 +10,8 @@ import { randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { AttendeeRealtimeAudioHub, type RealtimeAudioOptions } from '../../src/app/attendee-realtime-audio.ts';
 import { AttendeeCommandRouter } from '../../src/app/attendee-command-router.ts';
-import { NogitaEngine, type NogitaEngineOptions } from '../../src/core/engine.ts';
-import type { ActionReceipt, Actor, Capability, MeetingPort, SpeakOptions } from '../../src/core/contracts.ts';
+import { NogitaEngine, type NogitaEngineOptions, type Speculation } from '../../src/core/engine.ts';
+import type { ActionReceipt, Actor, Capability, MeetingPort, SpeakOptions, Utterance } from '../../src/core/contracts.ts';
 import { FRAME_SAMPLES, SAMPLE_RATE, Track, floatToPcm, msToSamples, pcmToFloat } from './audio.ts';
 import type { NoiseSource } from './noise.ts';
 
@@ -19,7 +19,11 @@ export type LabEventType =
   | 'speech_start' | 'speech_end' | 'mic_on' | 'mic_off'
   | 'stt_activity' | 'stt_final' | 'utterance' | 'engine_done' | 'engine_error'
   | 'speak_call' | 'speak_done' | 'speak_error' | 'chat'
-  | 'audio_start' | 'audio_stop' | 'write' | 'tool' | 'error';
+  | 'audio_start' | 'audio_stop' | 'write' | 'tool' | 'error'
+  /** Flux early end-of-turn (an answer may start speculatively) and the speaker going on after it. */
+  | 'stt_eager' | 'stt_resumed'
+  /** A question's status changed in the engine (detail: "#id status: note"). */
+  | 'question';
 
 export interface LabEvent { t: number; type: LabEventType; participant?: string; text?: string; detail?: string }
 
@@ -33,6 +37,8 @@ export interface RigOptions {
   engineOptions?: NogitaEngineOptions;
   /** Flux end-of-turn threshold; production defaults to 0.8. */
   eotThreshold?: number;
+  /** Flux early end-of-turn threshold; unset: no speculative starts. */
+  eagerThreshold?: number;
   /** Router quiet window; production uses 1200 ms. */
   routerQuietMs?: number;
   /** Microphone frame length sent to the hub. */
@@ -128,6 +134,7 @@ export class VoiceRig {
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
       deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel, warmSpeech: true, fluxEndOfTurnThreshold: this.options.eotThreshold,
+      fluxEagerEndOfTurnThreshold: this.options.eagerThreshold,
       createWebSocket: this.options.createWebSocket ?? ((url, options) => {
         // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
         const socket = new WebSocket(url, { ...options, handshakeTimeout: 10_000, maxPayload: 100_000 });
@@ -178,18 +185,31 @@ export class VoiceRig {
         this.log('stt_activity', { participant: participantUuid });
         this.router.noteSpeechActivity(sessionId, participantUuid);
       },
+      onEagerTranscript: (sessionId, participantUuid, text) => {
+        const actor = actors.get(participantUuid);
+        this.log('stt_eager', { participant: participantUuid, text });
+        if (!actor) return;
+        this.router.acceptEagerTurn({ sessionId, botId: this.botId, speakerUuid: participantUuid,
+          utterance: { eventId: `lab-${randomBytes(6).toString('hex')}`, actor, text, at: Date.now() } });
+      },
+      onVoice: (sessionId, participantUuid) => this.engine.noteVoice(sessionId, participantUuid),
+      onTurnResumed: (sessionId, participantUuid) => {
+        this.log('stt_resumed', { participant: participantUuid });
+        this.router.resumeTurn(sessionId, participantUuid);
+      },
       onError: code => this.log('error', { detail: code }),
     });
-    this.engine = new NogitaEngine(this.options.dependencies, this.options.engineOptions ?? {});
+    this.engine = new NogitaEngine(this.options.dependencies, { ...this.options.engineOptions,
+      onQuestion: (_sessionId, event) => this.log('question', { participant: `lab_${event.speaker.toLowerCase()}`, text: event.request,
+        detail: `#${event.id} ${event.status}${event.topic ? ` [${event.topic}]` : ''}${event.detail ? `: ${event.detail}` : ''}` }) });
     this.router = new AttendeeCommandRouter(
-      async (sessionId, utterance) => {
-        // The router does not say whose microphone this was; the latest final transcript it ends with does.
-        const source = this.events.filter(event => event.type === 'stt_final' && event.text &&
-          utterance.text.endsWith(event.text.slice(-12))).at(-1);
-        this.log('utterance', { participant: source?.participant ?? utterance.actor.id, text: utterance.text });
+      async (sessionId, utterance, context) => {
+        this.log('utterance', { participant: context.speakerKey, text: utterance.text,
+          ...(context.speculation ? { detail: 'early start adopted' } : {}) });
         this.pendingEngine++;
         try {
-          const result = await this.engine.onUtterance(sessionId, utterance);
+          const result = await this.engine.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
+            ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
           this.log('engine_done', { detail: String(result) });
         } catch (error) {
           this.log('engine_error', { detail: error instanceof Error ? error.message : String(error) });
@@ -199,7 +219,13 @@ export class VoiceRig {
       async (_sessionId, message) => this.meeting.sendStatus(message),
       { quietMs: this.options.routerQuietMs, onError: error => this.log('error',
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
-      onSpeechActivity: sessionId => this.engine.cancelProgressForSpeechActivity(sessionId) },
+      onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),
+      chatAck: false,
+      ...(this.options.eagerThreshold !== undefined ? { speculate: (sessionId: string, utterance: Utterance) => {
+        const handle = this.engine.speculate(sessionId, utterance);
+        if (handle) this.log('question', { text: utterance.text, detail: 'early start' });
+        return handle;
+      } } : {}) },
     );
     this.meeting = new LabMeeting(this.sessionId, this);
     await this.engine.startSession(this.sessionId, this.meeting);

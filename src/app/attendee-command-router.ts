@@ -9,8 +9,12 @@ interface BufferEntry {
   actor: Actor; fragments: Fragment[]; timer: unknown; receivedAt: number;
   waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
 }
+/** An answer started on Deepgram's early end-of-turn, kept until the turn is confirmed or resumed. */
+export interface EarlyStart { cancel(): void }
+export interface EmitContext { speakerKey: string; speculation?: EarlyStart }
 interface SessionState {
   owner?: Actor;
+  speculations: Map<string, { text: string; handle: EarlyStart }>;
   challenge?: string;
   bindings: Map<string, Actor>;
   buffers: Map<string, BufferEntry>;
@@ -22,13 +26,20 @@ export interface AttendeeCommandRouterOptions {
   /** Shorter wait for a finished question to Nogita ("Nogita, ... ?"); the full window still applies if the
    *  speaker keeps talking. Measured in the voice lab: the full window was the largest single delay. */
   questionQuietMs?: number;
+  /** Post "I heard you" in chat for each request (default). Off for live voice, where her spoken lead-in says it
+   *  and the note contradicted quick spoken answers. */
+  chatAck?: boolean;
+  /** How long a turn that is only her name ("Nogita.") waits for the question that follows. */
+  nameOnlyMs?: number;
   randomCode?: () => string;
   schedule?: (work: ScheduledWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   onError?: (error: unknown) => void;
   onLeave?: (sessionId: string) => Promise<void>;
   onChatAck?: (sessionId: string, durationMs: number) => void;
-  onSpeechActivity?: (sessionId: string) => void;
+  onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
+  /** Starts an answer from an early end-of-turn; nothing may be said or changed until the turn is confirmed. */
+  speculate?: (sessionId: string, utterance: Utterance) => EarlyStart | undefined;
 }
 
 const spokenDigits: Readonly<Record<string, string>> = {
@@ -57,22 +68,27 @@ export class AttendeeCommandRouter {
   private readonly sessions = new Map<string, SessionState>();
   private readonly quietMs: number;
   private readonly questionQuietMs: number;
+  private readonly nameOnlyMs: number;
+  private readonly chatAck: boolean;
   private readonly randomCode: () => string;
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
   private readonly onError: (error: unknown) => void;
   private readonly onLeave?: (sessionId: string) => Promise<void>;
   private readonly onChatAck?: (sessionId: string, durationMs: number) => void;
-  private readonly onSpeechActivity?: (sessionId: string) => void;
+  private readonly onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
+  private readonly speculate?: AttendeeCommandRouterOptions['speculate'];
   private sequence = 0;
 
   constructor(
-    private readonly emit: (sessionId: string, utterance: Utterance) => Promise<void>,
+    private readonly emit: (sessionId: string, utterance: Utterance, context: EmitContext) => Promise<void>,
     private readonly sendStatus: (sessionId: string, message: string) => Promise<void>,
     options: AttendeeCommandRouterOptions = {},
   ) {
     this.quietMs = options.quietMs ?? 1200;
     this.questionQuietMs = Math.min(this.quietMs, options.questionQuietMs ?? 300);
+    this.nameOnlyMs = options.nameOnlyMs ?? 2_500;
+    this.chatAck = options.chatAck ?? true;
     this.randomCode = options.randomCode ?? (() => String(randomInt(100000, 1000000)));
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
@@ -80,6 +96,7 @@ export class AttendeeCommandRouter {
     this.onLeave = options.onLeave;
     this.onChatAck = options.onChatAck;
     this.onSpeechActivity = options.onSpeechActivity;
+    this.speculate = options.speculate;
   }
 
   beginSession(sessionId: string, owner?: Actor): string | undefined {
@@ -88,7 +105,7 @@ export class AttendeeCommandRouter {
     const challenge = owner ? `Nogita verify ${this.randomCode()}` : undefined;
     this.sessions.set(sessionId, {
       ...(owner ? { owner, challenge } : {}), bindings: new Map(), buffers: new Map(), acceptedEventIds: new Set(),
-      notices: new Set(),
+      notices: new Set(), speculations: new Map(),
     });
     return challenge;
   }
@@ -136,15 +153,47 @@ export class AttendeeCommandRouter {
     const entry = state.buffers.get(request.speakerUuid);
     if (entry) {
       this.cancel(entry.timer);
-      void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
+      // Flux sometimes ends a turn at the pause after the name ("Nogita."): wait for the question itself.
+      const text = normalizeWakeWord(entry.fragments.map(fragment => fragment.text).join(' ').trim());
+      if (NAME_ONLY.test(text)) {
+        entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.nameOnlyMs);
+      } else void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
     }
     return completion;
+  }
+
+  /**
+   * Deepgram Flux thinks the speaker is probably done (EagerEndOfTurn). The answer starts now from these words;
+   * the confirmed turn adopts it if the words match, and `resumeTurn` rolls it back if they keep talking.
+   */
+  acceptEagerTurn(request: AttendeeTranscriptRequest): void {
+    const state = this.sessions.get(request.sessionId);
+    if (!state || !this.speculate) return;
+    const previous = state.buffers.get(request.speakerUuid);
+    const text = normalizeWakeWord([...(previous?.fragments ?? []).map(fragment => fragment.text), request.utterance.text.trim()]
+      .join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000));
+    const actor = state.bindings.get(request.speakerUuid) ??
+      (request.utterance.actor.verified ? request.utterance.actor : previous?.actor);
+    this.resumeTurn(request.sessionId, request.speakerUuid);
+    if (!actor?.verified || !directlyAddressesNogita(text)) return;
+    const handle = this.speculate(request.sessionId, { eventId: `${request.utterance.eventId}-early`, actor, text,
+      ...(request.utterance.at === undefined ? {} : { at: request.utterance.at }) });
+    if (handle) state.speculations.set(request.speakerUuid, { text, handle });
+  }
+
+  /** The speaker kept talking after an early end-of-turn: drop the early start. */
+  resumeTurn(sessionId: string, speakerUuid: string): void {
+    const state = this.sessions.get(sessionId);
+    const early = state?.speculations.get(speakerUuid);
+    if (!state || !early) return;
+    state.speculations.delete(speakerUuid);
+    early.handle.cancel();
   }
 
   /** Keep waiting while live interim recognition shows the speaker has resumed. */
   noteSpeechActivity(sessionId: string, speakerUuid: string): void {
     if (!this.sessions.has(sessionId)) return;
-    this.onSpeechActivity?.(sessionId);
+    this.onSpeechActivity?.(sessionId, speakerUuid);
     const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
     if (!entry) return;
     this.cancel(entry.timer);
@@ -167,6 +216,12 @@ export class AttendeeCommandRouter {
       (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER) || a.sequence - b.sequence);
     const text = normalizeWakeWord(ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000));
     const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
+    // An early start counts only for the same words; anything else is rolled back here or by the engine.
+    const early = state.speculations.get(speakerUuid);
+    state.speculations.delete(speakerUuid);
+    const speculation = early && sameWords(early.text, text) ? early.handle : undefined;
+    if (early && !speculation) early.handle.cancel();
+    let handedOver = false;
     try {
       const bound = state.bindings.get(speakerUuid);
       const actor = bound ?? entry.actor;
@@ -187,13 +242,15 @@ export class AttendeeCommandRouter {
         if (directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave) {
           await this.onLeave(sessionId);
         } else {
-          if (directlyAddressesNogita(text)) {
-            try { await this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
-              'I heard you. I’m checking that now.');
-              this.onChatAck?.(sessionId, performance.now() - entry.receivedAt); }
-            catch (error) { this.onError(error); }
+          if (this.chatAck && directlyAddressesNogita(text)) {
+            // The chat note goes out alongside the answer; waiting for it delayed every spoken reply.
+            void this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
+              'I heard you. I’m checking that now.')
+              .then(() => this.onChatAck?.(sessionId, performance.now() - entry.receivedAt), error => this.onError(error));
           }
-          await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) });
+          handedOver = true;
+          await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) },
+            { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}) });
         }
       }
       for (const waiter of entry.waiters) waiter.resolve();
@@ -210,12 +267,16 @@ export class AttendeeCommandRouter {
       for (const waiter of entry.waiters) {
         if (terminal) waiter.resolve(); else waiter.reject(error);
       }
+    } finally {
+      if (speculation && !handedOver) speculation.cancel();
     }
   }
 
   endSession(sessionId: string): void {
     const state = this.sessions.get(sessionId);
     if (!state) return;
+    for (const early of state.speculations.values()) early.handle.cancel();
+    state.speculations.clear();
     for (const entry of state.buffers.values()) {
       this.cancel(entry.timer);
       for (const waiter of entry.waiters) waiter.resolve();
@@ -225,4 +286,11 @@ export class AttendeeCommandRouter {
   }
 
   sessionCount(): number { return this.sessions.size; }
+}
+
+const NAME_ONLY = /^(?:(?:hey|hi|hello|okay|ok|um|uh|so|and),?\s+)?nogita[\s,.:!?-]*$/i;
+
+function sameWords(a: string, b: string): boolean {
+  const words = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return words(a) === words(b);
 }

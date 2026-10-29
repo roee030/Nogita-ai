@@ -3,13 +3,16 @@ import { CodeLookupRateLimitError, SpeechFallbackSentError, type ActionReceipt, 
 import { runAgent, type ChatModel } from './agent.ts';
 import { buildToolbox, type PeopleDirectory } from './agent-tools.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
-import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitPRRequest,
+import { SpeechFloor, type SpeakOutcome, type SpeechFloorOptions } from './speech-floor.ts';
+import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
   history: ConversationTurn[]; // ephemeral: purged when session ends
   pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number };
+  /** Someone said only her name ("Nogita."); their next words are for her even without it. */
+  calledBy?: { actorId: string; until: number };
   activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
   lastArrivalSequence: number;
   eventIds: Set<string>;
@@ -29,7 +32,48 @@ interface Session {
   /** Keeps the agent's prompt cache warm between questions in a voice meeting. */
   cacheTimer?: ReturnType<typeof setTimeout>;
   lastModelCallAt: number;
+  /** Voice meetings: questions being looked up or answered, each on its own, sharing one voice. */
+  questions: Question[];
+  nextQuestionId: number;
+  floor?: SpeechFloor;
 }
+
+export type QuestionStatus = 'speculative' | 'working' | 'answering' | 'interrupted' | 'answered' | 'chat_only' |
+  'cancelled' | 'stopped' | 'failed' | 'rolled_back' | 'superseded' | 'duplicate';
+/** One question to Nogita in a voice meeting, tracked from the moment it is heard until it is answered or dropped. */
+interface Question {
+  id: number;
+  actorId: string;
+  speaker: string;
+  request: string;
+  /** Normalized words, to spot the same question asked twice. */
+  key: string;
+  askedAt: number;
+  startedAt: number;
+  status: QuestionStatus;
+  /** A few words naming what it is about ("the login bug"), when another question overlaps it. */
+  topic?: string;
+  topicPending?: boolean;
+  /** Another question was asked while this one was open: name the topic before the answer. */
+  needsLabel: boolean;
+  labelled: boolean;
+  /** The agent was told about the other open questions and names its topic itself. */
+  agentNamesTopic: boolean;
+  abort: AbortController;
+  /** Opens when the question is confirmed; a speculative start speaks and writes nothing before that. */
+  gate: Promise<void>;
+  commit: () => void;
+  run?: Promise<ProcessResult | undefined>;
+  progressTimer?: unknown;
+  firstSpeechRecorded: boolean;
+  queuedSpeech: boolean;
+  interruptions: number;
+}
+export interface QuestionEvent {
+  id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
+}
+/** Handle for a question started before the end of the speaker's turn was confirmed. */
+export interface Speculation { readonly sessionId: string; readonly question: unknown; cancel(): void }
 type ProgressWork = () => void | Promise<void>;
 export interface NogitaEngineOptions {
   progressDelayMs?: number;
@@ -43,7 +87,26 @@ export interface NogitaEngineOptions {
   cancel?: (handle: unknown) => void;
   random?: () => number;
   now?: () => number;
+  /** Every change in a voice question's status (the voice lab logs them). */
+  onQuestion?: (sessionId: string, event: QuestionEvent) => void;
+  /** Speech floor timing (tests use shorter waits). */
+  floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
+
+/** "Stop", "wait", "hold on": stop talking now (the answer stays in chat). */
+export function isStopCommand(text: string): boolean {
+  return /^(?:(?:ok(?:ay)?|no|sorry|please)[,.]?\s+)?(?:stop|wait|hold on|hang on|enough|that's enough)(?:\s+(?:please|now|talking|a sec(?:ond)?|for a sec(?:ond)?|there))?[.!]?$/i
+    .test(text.trim());
+}
+/** "Never mind", "forget it", "cancel that": drop the open question. */
+export function isCancelCommand(text: string): boolean {
+  return /^(?:(?:ok(?:ay)?|oh|actually|no|ah|um|uh)[,.]?\s+)*(?:never ?mind|forget (?:it|that|about (?:it|that))|cancel (?:it|that|the (?:question|lookup|search))|scratch that|drop (?:it|that)|no need|don't worry about (?:it|that))(?:[,.]?\s+(?:then|please|nogita|i found it|we're good|i got it))?[.!]?$/i
+    .test(text.trim());
+}
+function questionKey(text: string): string {
+  return text.toLowerCase().replace(/^(?:and|also|so|okay|ok)\s+/, '').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+export const OVERLAP_PROGRESS = ['Checking that too.', 'On it, one sec.', 'Looking into that too.'];
 
 function isAffirmativeFollowUp(text: string): boolean {
   const normalized = text.trim().toLowerCase().replace(/[,]+/g, '').replace(/[.!?]+$/, '').replace(/\s+/g, ' ');
@@ -90,7 +153,8 @@ function firstWords(text: string, max: number): string {
 }
 /** True when the answer asks the listener something; instructions may follow the question. */
 function asksQuestion(answer: string): boolean {
-  const sentences = answer.trim().match(/[^.!?]+[.!?]*/g) ?? [];
+  // A quoted example (like "Nogita, how does auth work?") is not a question to the listener.
+  const sentences = answer.trim().replace(/"[^"]*"|“[^”]*”/g, 'x').match(/[^.!?]+[.!?]*/g) ?? [];
   return sentences.some(sentence => sentence.trim().endsWith('?'));
 }
 /** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
@@ -122,6 +186,8 @@ export class NogitaEngine {
   private readonly cancel: (handle: unknown) => void;
   private readonly random: () => number;
   private readonly now: () => number;
+  private readonly onQuestion?: NogitaEngineOptions['onQuestion'];
+  private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
@@ -141,6 +207,8 @@ export class NogitaEngine {
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
     this.now = options.now ?? Date.now;
+    this.onQuestion = options.onQuestion;
+    this.floorOptions = options.floor ?? {};
   }
 
   private validateSessionId(sessionId: string): void {
@@ -153,8 +221,27 @@ export class NogitaEngine {
     this.sessions.set(sessionId, {
       meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       lastAssessmentAt: 0, utterancesSinceAssessment: 0, assessing: false,
-      processing: Promise.resolve(), ending: false, lastModelCallAt: 0,
+      processing: Promise.resolve(), ending: false, lastModelCallAt: 0, questions: [], nextQuestionId: 1,
     });
+    const session = this.sessions.get(sessionId)!;
+    if (this.dependencies.agent && meeting.capabilities.has('speak')) {
+      session.floor = new SpeechFloor({ ...this.floorOptions, now: this.now,
+        speak: text => this.floorSpeak(sessionId, session, text),
+        onInterrupted: owner => {
+          const question = session.questions.find(q => q.id === owner);
+          if (!question) return;
+          // Repeating the same answer after a second interruption sounds like a stuck record: the rest is in chat.
+          if (++question.interruptions > 1) {
+            session.floor!.drop(owner);
+            this.reportQuestion(sessionId, question, 'chat_only', 'cut off twice; the rest is in chat');
+          } else this.setStatus(sessionId, session, owner, 'interrupted');
+        },
+        onResumed: owner => this.setStatus(sessionId, session, owner, 'answering', 'resumed'),
+        onDrop: (owner, _text, reason) => {
+          const question = session.questions.find(q => q.id === owner);
+          if (question && reason === 'no_opening') this.setStatus(sessionId, session, owner, question.status, 'speech dropped: no opening');
+        } });
+    }
     this.keepAgentCacheWarm(sessionId);
   }
 
@@ -215,6 +302,8 @@ export class NogitaEngine {
     if (session.endingPromise) return session.endingPromise;
     session.ending = true;
     if (session.cacheTimer) clearTimeout(session.cacheTimer);
+    for (const question of session.questions) question.abort.abort();
+    session.floor?.close();
     const ending = (async () => {
       await session.processing;
       if (this.sessions.get(sessionId) !== session) return;
@@ -302,11 +391,18 @@ export class NogitaEngine {
     }, delayMs);
   }
 
-  /** Interim human speech cancels unsent filler for the prior turn. */
-  cancelProgressForSpeechActivity(sessionId: string): void {
+  /** Someone's microphone carries their own voice right now (audio level, faster than recognition). */
+  noteVoice(sessionId: string, speakerKey: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session || session.ending || session.progressTimer === undefined) return;
-    this.clearProgressTimer(session);
+    if (session && !session.ending) session.floor?.noteTalking(speakerKey);
+  }
+
+  /** Interim human speech cancels unsent filler for the prior turn, and Nogita's next words wait for an opening. */
+  cancelProgressForSpeechActivity(sessionId: string, speakerKey?: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.ending) return;
+    if (speakerKey) session.floor?.noteTalking(speakerKey);
+    if (session.progressTimer !== undefined) this.clearProgressTimer(session);
   }
 
   /** Repository map for the agent prompt, refreshed in the background so a turn never waits long for it. */
@@ -381,17 +477,167 @@ export class NogitaEngine {
     }
   }
 
+  /** Speech for the floor: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
+  private async floorSpeak(sessionId: string, s: Session, text: string): Promise<SpeakOutcome> {
+    try {
+      await s.meeting.speak(text, { chatMirror: false });
+      this.dependencies.usage?.recordTts(sessionId, true);
+      return 'spoken';
+    } catch (error) {
+      this.dependencies.usage?.recordTts(sessionId, false);
+      return error instanceof Error && /interrupt/i.test(error.message) ? 'interrupted' : 'failed';
+    }
+  }
+
+  private setStatus(sessionId: string, s: Session, id: number, status: QuestionStatus, detail?: string): void {
+    const question = s.questions.find(q => q.id === id);
+    if (!question || (question.status === status && !detail)) return;
+    this.reportQuestion(sessionId, question, status, detail);
+  }
+  private reportQuestion(sessionId: string, q: Question, status: QuestionStatus, detail?: string): void {
+    q.status = status;
+    this.onQuestion?.(sessionId, { id: q.id, status, speaker: q.speaker, request: q.request,
+      ...(q.topic ? { topic: q.topic } : {}), ...(detail ? { detail } : {}) });
+  }
+  private static isOpen(q: Question): boolean {
+    return q.status === 'working' || q.status === 'answering' || q.status === 'interrupted';
+  }
+
+  /** A few words for "About ___, ..." when answers to different questions follow each other. */
+  private ensureTopic(sessionId: string, q: Question): void {
+    if (q.topic || q.topicPending || !this.dependencies.agent) return;
+    q.topicPending = true;
+    void this.dependencies.agent.streamChat({
+      stableSystem: 'Name the topic of the question in two to five words, the way it would follow "About" in a reply ' +
+        '(for example: "the login bug", "Yossi\'s pull request", "the release date"). Reply with the words only.',
+      turnSystem: '', messages: [{ role: 'user', content: q.request }], tools: [], maxTokens: 20,
+      usageContext: sessionId, timeoutMs: 5_000,
+    }, () => undefined).then(response => {
+      const text = response.content.filter(block => block.type === 'text').map(block => (block as { text: string }).text).join(' ')
+        .replace(/^about\s+/i, '').replace(/[."]+$/g, '').replace(/^"/, '').trim();
+      if (text && text.split(/\s+/).length <= 7) q.topic = text;
+    }).catch(() => undefined).finally(() => { q.topicPending = false; });
+  }
+  private topicLabel(q: Question): string | undefined {
+    if (!q.needsLabel || q.labelled || q.agentNamesTopic || !q.topic) return undefined;
+    q.labelled = true;
+    return `About ${q.topic}, `;
+  }
+
+  private clearQuestionProgress(q: Question): void {
+    if (q.progressTimer === undefined) return;
+    this.cancel(q.progressTimer);
+    q.progressTimer = undefined;
+  }
+
+  /** A late "one sec" for a question that has said nothing yet; a different one when another question is open. */
+  private beginQuestionProgress(sessionId: string, s: Session, q: Question): void {
+    q.progressTimer = this.schedule(() => {
+      q.progressTimer = undefined;
+      if (q.queuedSpeech || q.abort.signal.aborted || !s.floor || this.sessions.get(sessionId) !== s || s.ending) return;
+      const overlap = s.questions.some(other => other !== q && NogitaEngine.isOpen(other));
+      const phrases = (overlap ? OVERLAP_PROGRESS : agentProgressPhrases).filter(phrase => phrase !== s.lastProgressPhrase);
+      const phrase = phrases[Math.min(phrases.length - 1, Math.floor(this.random() * phrases.length))]!;
+      s.lastProgressPhrase = phrase;
+      void s.floor.say(q.id, phrase, { leadIn: true });
+    }, this.agentProgressDelayMs);
+  }
+
+  private newQuestion(s: Session, utterance: Utterance, request: string, status: QuestionStatus, startedAt: number): Question {
+    let commit!: () => void;
+    const gate = new Promise<void>(resolve => { commit = resolve; });
+    return { id: s.nextQuestionId++, actorId: utterance.actor.id, speaker: utterance.actor.displayName, request,
+      key: questionKey(request), askedAt: this.now(), startedAt, status, needsLabel: false, labelled: false,
+      agentNamesTopic: false, abort: new AbortController(), gate, commit, firstSpeechRecorded: false, queuedSpeech: false, interruptions: 0 };
+  }
+
+  /** The question joins the open ones: overlapping questions name their topic when answered. */
+  private openQuestion(sessionId: string, s: Session, q: Question): void {
+    const others = s.questions.filter(other => NogitaEngine.isOpen(other));
+    s.questions = s.questions.filter(other => NogitaEngine.isOpen(other) || this.now() - other.askedAt < 120_000).slice(-20);
+    s.questions.push(q);
+    if (others.length) {
+      for (const other of others) {
+        if (!other.agentNamesTopic) { other.needsLabel = true; this.ensureTopic(sessionId, other); }
+      }
+      q.needsLabel = true;
+      this.ensureTopic(sessionId, q);
+    }
+    this.reportQuestion(sessionId, q, 'working');
+    this.beginQuestionProgress(sessionId, s, q);
+    q.commit();
+  }
+
+  /**
+   * "Stop" and "never mind" in a voice meeting, from anyone who addressed Nogita or from the person whose question
+   * is open. Returns undefined when the words are not such a command.
+   */
+  private handleVoiceCommand(sessionId: string, s: Session, actorId: string, text: string, addressed: boolean): ProcessResult | undefined {
+    const floor = s.floor;
+    if (!floor) return undefined;
+    const open = s.questions.filter(q => NogitaEngine.isOpen(q));
+    if (isCancelCommand(text)) {
+      const target = open.filter(q => q.actorId === actorId).at(-1) ?? (addressed ? open.at(-1) : undefined);
+      if (!target) return undefined;
+      target.abort.abort();
+      this.clearQuestionProgress(target);
+      floor.drop(target.id);
+      this.reportQuestion(sessionId, target, 'cancelled', 'asked to drop it');
+      void floor.say(0, 'Okay, dropping that.');
+      void s.meeting.sendStatus(`Dropped the question${target.topic ? ` about ${target.topic}` : `: "${target.request}"`}.`).catch(() => undefined);
+      return 'answered';
+    }
+    if (isStopCommand(text)) {
+      const speaking = [floor.interrupted, floor.current].filter((id): id is number => id !== undefined);
+      const targets = speaking.length ? speaking : addressed ? floor.owners() : [];
+      if (!targets.length) return addressed ? 'ignored' : undefined;
+      for (const id of new Set(targets)) {
+        floor.drop(id);
+        const question = s.questions.find(q => q.id === id);
+        if (question) this.reportQuestion(sessionId, question, 'stopped', 'asked to stop; the answer is in chat');
+      }
+      return 'answered';
+    }
+    return undefined;
+  }
+
+  /**
+   * Starts answering before the speaker's turn is confirmed over (Deepgram's early end-of-turn). Nothing is said or
+   * changed until `onUtterance` confirms the same words; `cancel()` rolls it back when the speaker kept talking.
+   */
+  speculate(sessionId: string, utterance: Utterance): Speculation | undefined {
+    const s = this.sessions.get(sessionId);
+    const current = utterance.text.trim().slice(0, 4000);
+    if (!s || s.ending || !s.floor || !this.dependencies.agent || !utterance.actor.verified || !directlyAddressesNogita(current)) return undefined;
+    const request = removeAddress(current);
+    if (!request || isCancelCommand(request) || isStopCommand(request) || isExplicitLeaveRequest(request)) return undefined;
+    const key = questionKey(request);
+    if (s.questions.some(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key)) return undefined;
+    const q = this.newQuestion(s, utterance, request, 'speculative', performance.now());
+    this.onQuestion?.(sessionId, { id: q.id, status: 'speculative', speaker: q.speaker, request });
+    q.run = this.runAgentTurn(sessionId, s, utterance, request, undefined, q, s.history.map(turn => turn.text))
+      .catch(() => undefined);
+    return { sessionId, question: q, cancel: () => {
+      if (q.status !== 'speculative') return;
+      q.abort.abort();
+      this.reportQuestion(sessionId, q, 'rolled_back', 'the speaker kept talking');
+    } };
+  }
+
   /**
    * One direct request answered by the tool-using agent. Returns undefined when the agent failed before
-   * saying or changing anything, so the caller can fall back to the planner.
+   * saying or changing anything, so the caller can fall back to the planner. In a voice meeting `q` is the
+   * question being answered; its speech goes through the session's speech floor.
    */
   private async runAgentTurn(sessionId: string, s: Session, utterance: Utterance, request: string,
-    pending: Session['pendingFollowUp']): Promise<ProcessResult | undefined> {
+    pending: Session['pendingFollowUp'], q?: Question, history?: string[]): Promise<ProcessResult | undefined> {
     const agent = this.dependencies.agent!;
     const raisedReason = s.raisedReason;
-    s.raisedReason = undefined;
+    // A speculative start reads the reason but leaves it for the confirmed question.
+    if (q?.status !== 'speculative') s.raisedReason = undefined;
     const voice = s.meeting.capabilities.has('speak');
     const streaming = voice && s.meeting.capabilities.has('streaming_speech');
+    const floor = q ? s.floor : undefined;
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
     const writeScope = pending ? `${pending.request}\n${request}` : request;
@@ -412,30 +658,49 @@ export class NogitaEngine {
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
     });
     // A text thread carries its own history (including messages that never addressed Nogita).
-    let transcript = s.history.slice(0, -1).map(turn => turn.text);
+    let transcript = history ?? s.history.slice(0, -1).map(turn => turn.text);
     if (s.meeting.recentContext) {
       const thread = await Promise.race([s.meeting.recentContext().catch(() => [] as string[]),
         new Promise<string[]>(resolve => setTimeout(() => resolve([]), 2_000))]);
       if (thread.length) transcript = thread.slice(0, -1);
     }
+    const otherQuestions = q ? s.questions.filter(other => other !== q && NogitaEngine.isOpen(other)) : [];
+    if (q && otherQuestions.length) q.agentNamesTopic = true;
     let spoke = false;
     let speech = Promise.resolve();
+    const said: Array<{ step: number; leadIn: boolean; outcome: Promise<string> }> = [];
+    const leadInSteps = new Set<number>();
     let spokenWords = 0;
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
     let interrupted = false;
-    const queueSpeech = (text: string) => {
+    const queueSpeech = (text: string, step: number, leadIn = false) => {
+      if (floor && q) {
+        q.queuedSpeech = true;
+        said.push({ step, leadIn, outcome: q.gate.then(() => {
+          if (q.abort.signal.aborted) return 'dropped';
+          if (!q.firstSpeechRecorded) {
+            q.firstSpeechRecorded = true;
+            this.dependencies.usage?.recordResponseStage?.(sessionId, 'turn_to_first_speech_attempt', performance.now() - q.startedAt);
+          }
+          const isLeadIn = leadIn || leadInSteps.has(step);
+          if (!isLeadIn) this.setStatus(sessionId, s, q.id, 'answering');
+          return floor.say(q.id, text, { leadIn: isLeadIn, prefix: step > 0 ? () => this.topicLabel(q) : undefined });
+        }) });
+        return;
+      }
       speech = speech.then(async () => {
         if (interrupted) return;
         if (s.progressSpeech) await s.progressSpeech;
         if (!await this.deliverStreamedSpeech(sessionId, s.meeting, text)) interrupted = true;
       });
     };
-    const onSpeech = (raw: string) => {
+    const onSpeech = (raw: string, step: number) => {
       if (!spoke) {
         spoke = true;
         this.clearProgressTimer(s);
+        if (q) this.clearQuestionProgress(q);
       }
       if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
       const text = speakable(raw);
@@ -445,27 +710,40 @@ export class NogitaEngine {
         // Whole pieces (a lead-in, then the answer): keep at least the first sentence of each.
         const short = firstWords(text, Math.max(1, MAX_SPOKEN_WORDS - spokenWords));
         spokenWords += short.split(/\s+/).length;
-        queueSpeech(short);
-        if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.'); }
+        queueSpeech(short, step);
+        if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.', step); }
         return;
       }
       const words = text.split(/\s+/).length;
       if (spokenWords > 0 && spokenWords + words > MAX_SPOKEN_WORDS) {
         truncatedSpeech = true;
-        queueSpeech('I have put the rest in the chat.');
+        queueSpeech('I have put the rest in the chat.', step);
         return;
       }
       spokenWords += words;
-      queueSpeech(text);
+      queueSpeech(text, step);
       // After a spoken lead-in, a long silence while tools run gets one short "still on it".
       if (!stillWorkingUsed) {
         stillWorking = this.schedule(() => {
           stillWorking = undefined;
-          if (stillWorkingUsed || truncatedSpeech || this.sessions.get(sessionId) !== s) return;
+          if (stillWorkingUsed || truncatedSpeech || this.sessions.get(sessionId) !== s || q?.abort.signal.aborted) return;
           stillWorkingUsed = true;
-          queueSpeech(STILL_WORKING[Math.floor(this.random() * STILL_WORKING.length) % STILL_WORKING.length]!);
+          queueSpeech(STILL_WORKING[Math.floor(this.random() * STILL_WORKING.length) % STILL_WORKING.length]!, step, true);
         }, 6_000);
       }
+    };
+    const onToolUse = (_names: string[], step: number) => {
+      leadInSteps.add(step);
+      if (!floor || !q) return;
+      // What she said so far was a lead-in: while the lookup runs, others may speak.
+      floor.markLeadIns(q.id);
+      floor.release(q.id);
+      if (q.status === 'answering') this.setStatus(sessionId, s, q.id, 'working');
+    };
+    const settleSpeech = async () => {
+      const outcomes = await Promise.all(said.map(async item => ({ ...item, result: await item.outcome })));
+      if (floor && q) floor.release(q.id);
+      return outcomes;
     };
     let result;
     s.lastModelCallAt = this.now();
@@ -476,31 +754,57 @@ export class NogitaEngine {
           boardName: authorized ? this.dependencies.board.name : undefined,
           chatName: authorized ? this.dependencies.chat?.name : undefined }),
         turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined,
-          raisedHandReason: raisedReason }),
+          raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`) }),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
+        onToolUse, signal: q?.abort.signal, beforeWrite: q ? () => q.gate : undefined,
       }));
     } catch {
       if (stillWorking !== undefined) this.cancel(stillWorking);
+      if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await speech;
-      if (!spoke && !report.wroteSomething) return undefined;
+      if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
+      if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
+      await settleSpeech();
+      if (!spoke && !report.wroteSomething) {
+        if (q) this.reportQuestion(sessionId, q, 'failed', 'model error; the planner answers instead');
+        return undefined;
+      }
       this.clearProgressTimer(s);
+      if (floor && q) {
+        await floor.say(q.id, 'Sorry, I hit a problem and could not finish that.');
+        this.reportQuestion(sessionId, q, 'failed', 'model error after speaking');
+        return report.wroteSomething ? 'completed' : 'answered';
+      }
       await this.speakOrChat(sessionId, s.meeting, 'Sorry, I hit a problem and could not finish that.');
       return report.wroteSomething ? 'completed' : 'answered';
     }
     if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
     stillWorkingUsed = true;
-    await speech;
-    this.clearProgressTimer(s);
-    if (s.progressSpeech) await s.progressSpeech;
+    // A speculative answer waits here until the turn is confirmed (or rolled back).
+    if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
+    if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
     let answer = result.answer;
     if (!answer && result.stoppedEarly) answer = 'That is taking me too long. Ask me again with a narrower question.';
+    if (floor && q && answer && !result.answer) queueSpeech(answer, result.steps);
+    await speech;
+    const outcomes = await settleSpeech();
+    this.clearProgressTimer(s);
+    if (q) this.clearQuestionProgress(q);
+    if (s.progressSpeech) await s.progressSpeech;
+    if (q && q.status !== 'stopped' && q.status !== 'cancelled') {
+      const lost = outcomes.filter(item => !item.leadIn && !leadInSteps.has(item.step) && item.result !== 'spoken');
+      this.reportQuestion(sessionId, q, lost.length ? 'chat_only' : 'answered',
+        lost.length ? `${lost.length} spoken part(s) not delivered (${[...new Set(lost.map(item => item.result))].join(', ')}); the answer is in chat`
+          : answer ? undefined : 'no reply');
+    }
     if (!answer) return spoke || report.wroteSomething ? (report.wroteSomething ? 'completed' : 'answered') : 'ignored';
     if (voice) {
       // The final answer was spoken while it streamed (unless the turn was cut short); chat gets it once.
-      if (!result.answer) await this.deliverStreamedSpeech(sessionId, s.meeting, answer);
-      try { await s.meeting.sendStatus(answer); } catch { /* Speech already delivered; chat is best effort. */ }
+      if (!result.answer && !floor) await this.deliverStreamedSpeech(sessionId, s.meeting, answer);
+      const chatText = q && q.needsLabel && !q.agentNamesTopic && q.topic ? `About ${q.topic}: ${answer}` : answer;
+      try { await s.meeting.sendStatus(chatText); } catch { /* Speech already delivered; chat is best effort. */ }
       s.history.push({ role: 'assistant', text: `Nogita: ${answer}` });
       if (s.history.length > 24) s.history.shift();
     } else {
@@ -522,8 +826,16 @@ export class NogitaEngine {
     return report.wroteSomething ? 'completed' : 'answered';
   }
 
-  async onUtterance(sessionId: string, utterance: Utterance): Promise<ProcessResult> {
+  /**
+   * `speakerKey` names whose microphone it was (their turn is over, so the floor stops waiting for them);
+   * `speculation` is the early start for these words, adopted when they match.
+   */
+  async onUtterance(sessionId: string, utterance: Utterance,
+    context: { speakerKey?: string; speculation?: Speculation } = {}): Promise<ProcessResult> {
     const processingStartedAt = performance.now();
+    let adopted = false;
+    let released = false;
+    let historyEntry: ConversationTurn | undefined;
     const s = this.sessions.get(sessionId);
     if (!s || s.ending) throw new Error('unknown session');
     if (!utterance.actor.verified || !utterance.eventId || !utterance.text.trim()) return 'ignored';
@@ -544,16 +856,43 @@ export class NogitaEngine {
     // Prevent unbounded in-memory event metadata or transcript retention.
     if (s.eventIds.size > 2000) s.eventIds.delete(s.eventIds.values().next().value!);
     const current = utterance.text.trim().slice(0, 4000);
-    s.history.push({ role: 'user', text: `${utterance.actor.displayName}: ${current}` });
+    historyEntry = { role: 'user', text: `${utterance.actor.displayName}: ${current}` };
+    s.history.push(historyEntry);
     if (s.history.length > 24) s.history.shift();
 
-    const directlyAddressed = directlyAddressesNogita(current);
+    const called = s.calledBy?.actorId === utterance.actor.id && this.now() <= s.calledBy.until;
+    s.calledBy = undefined;
+    // The asker went on after a pause ("Nogita, can you check... um, which file starts the server?"): what she heard
+    // first was only the start of the question, so that answer is dropped and the whole question answered.
+    let wholeRequest: string | undefined;
+    if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current)) {
+      const started = s.questions.filter(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id &&
+        this.now() - q.askedAt < 8_000).at(-1);
+      if (started) {
+        started.abort.abort();
+        this.clearQuestionProgress(started);
+        s.floor.drop(started.id);
+        this.reportQuestion(sessionId, started, 'superseded', 'the speaker went on; answering the whole question');
+        wholeRequest = `${started.request} ${current}`;
+      }
+    }
+    const directlyAddressed = directlyAddressesNogita(current) || called || wholeRequest !== undefined;
     const pending = s.pendingFollowUp;
     const continuation = !directlyAddressed && pending !== undefined &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
       this.now() <= pending.expiresAt &&
       // The agent can tell a real reply from unrelated talk (it answers with silence); the planner cannot.
       (this.dependencies.agent !== undefined || isAffirmativeFollowUp(current));
+    if (s.floor) {
+      const command = this.handleVoiceCommand(sessionId, s, utterance.actor.id,
+        directlyAddressed ? removeAddress(current) : current, directlyAddressed);
+      if (context.speakerKey) s.floor.noteTalking(context.speakerKey, true);
+      if (command) {
+        // "Stop. Just tell me the file name.": what the same person says next is still for her.
+        if (command === 'answered') s.calledBy = { actorId: utterance.actor.id, until: this.now() + 6_000 };
+        return command;
+      }
+    }
     if (!directlyAddressed && !continuation) {
       if (pending?.actorId === utterance.actor.id) s.pendingFollowUp = undefined;
       if (this.dependencies.agent && this.dependencies.brain.assessContribution) {
@@ -571,7 +910,46 @@ export class NogitaEngine {
     // Asking Nogita to speak permits speech only here; raising a hand does not.
     s.raised = false;
     s.pendingFollowUp = undefined;
-    if (this.dependencies.agent) {
+    if (this.dependencies.agent && s.floor) {
+      // Voice: every question runs on its own, so the next person need not wait for this answer.
+      const agentRequest = wholeRequest ?? (directlyAddressed ? removeAddress(current) : current);
+      if (!agentRequest.replace(/[^\p{L}\p{N}]/gu, '')) {
+        // Only her name: the question is coming in the speaker's next words.
+        s.calledBy = { actorId: utterance.actor.id, until: this.now() + 10_000 };
+        return 'ignored';
+      }
+      const key = questionKey(agentRequest);
+      const same = s.questions.find(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key);
+      if (same) {
+        this.onQuestion?.(sessionId, { id: same.id, status: same.status, speaker: same.speaker, request: same.request,
+          detail: 'asked again; one lookup is already running' });
+        if (!same.queuedSpeech) void s.floor.say(same.id, 'Still on it.', { leadIn: true });
+        return 'ignored';
+      }
+      // The asker cut off their own answer with a new question: they moved on, so it is not resumed.
+      const cut = s.questions.find(other => other.id === s.floor!.interrupted);
+      if (cut && cut.actorId === utterance.actor.id) {
+        s.floor.drop(cut.id);
+        this.reportQuestion(sessionId, cut, 'chat_only', 'the asker moved on to a new question; the rest is in chat');
+      }
+      const early = context.speculation?.question as Question | undefined;
+      let q: Question;
+      if (early && context.speculation!.sessionId === sessionId && early.status === 'speculative' && !early.abort.signal.aborted &&
+          early.actorId === utterance.actor.id && early.key === key && !continuation) {
+        q = early;
+        adopted = true;
+        s.raisedReason = undefined;
+        this.openQuestion(sessionId, s, q);
+      } else {
+        q = this.newQuestion(s, utterance, agentRequest, 'working', processingStartedAt);
+        this.openQuestion(sessionId, s, q);
+        q.run = this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined, q);
+      }
+      released = true;
+      release();
+      const outcome = await q.run!;
+      if (outcome) return outcome;
+    } else if (this.dependencies.agent) {
       // In a text thread the answer arrives in seconds; a "one second" message would only add noise.
       if (s.meeting.capabilities.has('speak')) {
         this.beginProgressAcknowledgment(sessionId, s, this.agentProgressDelayMs, agentProgressPhrases, { chatMirror: false });
@@ -729,13 +1107,18 @@ export class NogitaEngine {
     return 'not_supported';
     } catch (error) {
       s.eventIds.delete(utterance.eventId);
-      s.history.splice(0, s.history.length, ...historyBefore);
+      if (released) {
+        // Other utterances were heard meanwhile: remove only this one.
+        const index = historyEntry ? s.history.indexOf(historyEntry) : -1;
+        if (index >= 0) s.history.splice(index, 1);
+      } else s.history.splice(0, s.history.length, ...historyBefore);
       s.pendingFollowUp = pendingBefore;
       s.raised = raisedBefore;
       s.mutedUntil = mutedUntilBefore;
       throw error;
     }
     } finally {
+      if (context.speculation && !adopted) context.speculation.cancel();
       this.clearProgressTimer(s);
       if (s.progressSpeech) await s.progressSpeech;
       s.activeRequest = undefined;

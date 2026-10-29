@@ -34,6 +34,12 @@ export interface Expectation {
   firstSoundWithinMs?: number;
   /** Her own words (not a canned filler) within this many ms of the last word. */
   contentWithinMs?: number;
+  /** How the question asked in this turn must end in Nogita's question tracker (answered, cancelled, stopped...). */
+  questionStatus?: string[];
+  /** After this turn reached Nogita she must not speak again in this turn's window (for "stop"). */
+  quietAfterwards?: boolean;
+  /** Lookups that must run at most once in this turn's window (the same question asked twice). */
+  atMostOnce?: string[];
   /** What a good answer looks like, for the optional LLM judge. */
   note?: string;
 }
@@ -333,6 +339,79 @@ SCENARIOS.push(
       { speaker: 'roee', say: 'Nogita, you wanted to add something?', gapMs: 8_000,
         expect: { respond: 'speak', handRaisedBefore: true, mentions: [['owner', 'who', 'assign', 'task', 'ticket']],
           note: 'Nobody took the payment retry bug before Thursday. She should point that out and offer to open a task.' } },
+    ],
+  },
+);
+
+// Stage 2: several open questions, people talking over each other, cancelling and stopping.
+SCENARIOS.push(
+  {
+    name: 'parallel-lookups', title: 'Two people ask for lookups before either answer is ready', noise: { kind: 'keyboard', snrDb: 25 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: "Nogita, what's in progress on the board right now?",
+        expect: { respond: 'any', questionStatus: ['answered'] } },
+      { speaker: 'dana', say: 'Nogita, and what changed in the last two commits?', afterPreviousMs: 600,
+        expect: { respond: 'speak', questionStatus: ['answered'], tools: ['recent_commits'],
+          mentions: [['progress', 'kan-', 'task'], ['commit', 'fix', 'feat', 'added', 'change']],
+          note: "Both answered, one after the other, each saying which question it answers (the board for Roee, the commits for Dana)." } },
+    ],
+  },
+  {
+    name: 'rapid-questions', title: 'One person fires three questions without waiting for the answers', noise: { kind: 'pink', snrDb: 30 },
+    participants: [roee],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, what does HTTP status 503 mean?', expect: { respond: 'any', questionStatus: ['answered', 'chat_only'] } },
+      { speaker: 'roee', say: 'Nogita, and 504?', afterPreviousMs: 1_400, expect: { respond: 'any', questionStatus: ['answered'] } },
+      { speaker: 'roee', say: 'Nogita, which file has the meeting engine?', afterPreviousMs: 1_400,
+        expect: { respond: 'speak', questionStatus: ['answered'], mentions: [['unavailable', '503'], ['gateway', '504'], ['engine']],
+          note: 'Each question answered once, in order; none dropped because the next one came in.' } },
+    ],
+  },
+  {
+    name: 'interrupt-resume', title: 'Someone talks over her answer, then the room is quiet again', noise: { kind: 'pink', snrDb: 30 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, in three or four sentences, how do you decide when to speak in a meeting?',
+        expect: { respond: 'speak', questionStatus: ['answered'] } },
+      { speaker: 'dana', say: 'Sorry Roee, is my audio okay?', bargeIn: { afterAudioMs: 2_500 }, expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Yes, you sound fine.', afterPreviousMs: 1_500,
+        expect: { respond: 'any', note: 'After the side exchange she finishes her answer ("As I was saying..."), and does not answer the side talk.' } },
+    ],
+  },
+  {
+    name: 'cancel-stop', title: 'The asker drops a question; later someone tells her to stop', noise: { kind: 'office', snrDb: 25 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, look at the board and list every task that is in progress.',
+        expect: { respond: 'any', questionStatus: ['cancelled'] } },
+      { speaker: 'roee', say: 'Actually, never mind.', afterPreviousMs: 4_000,
+        expect: { respond: 'any', mentions: [['dropping', 'dropped']], note: 'She drops the lookup and says so in a few words.' } },
+      { speaker: 'dana', say: 'Nogita, walk me through how a spoken question flows through the code, step by step.',
+        expect: { respond: 'speak', questionStatus: ['stopped'] } },
+      { speaker: 'dana', say: 'Nogita, stop.', bargeIn: { afterAudioMs: 2_500 },
+        expect: { respond: 'any', quietAfterwards: true, note: 'She stops talking and does not pick the answer up again.' } },
+    ],
+  },
+  {
+    name: 'asked-twice', title: 'The same question asked again while she is still looking', noise: { kind: 'pink', snrDb: 30 },
+    participants: [dana],
+    turns: [
+      { speaker: 'dana', say: 'Nogita, what was the most recent commit?', expect: { respond: 'any', questionStatus: ['answered'] } },
+      { speaker: 'dana', say: 'Nogita, what was the most recent commit?', afterPreviousMs: 2_500,
+        expect: { respond: 'speak', atMostOnce: ['recent_commits'], mentions: [['commit']],
+          note: 'One lookup and one answer; the repeat gets at most a short "still on it".' } },
+    ],
+  },
+  {
+    name: 'talk-over', title: 'The team keeps talking while her answer is ready', noise: { kind: 'pink', snrDb: 30 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, what was the last commit about?', expect: { respond: 'any', questionStatus: ['answered', 'chat_only'] } },
+      { speaker: 'dana', say: 'Roee, while she checks, did you get a chance to read the design doc I sent yesterday?', afterPreviousMs: 200,
+        expect: { respond: 'any' } },
+      { speaker: 'roee', say: "Not yet, I'll read it after lunch.", afterPreviousMs: 300,
+        expect: { respond: 'any', note: 'She waits for the two of them to finish, then answers; she never starts talking over them.' } },
     ],
   },
 );

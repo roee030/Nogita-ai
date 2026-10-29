@@ -12,6 +12,8 @@ const MAX_PENDING_SPEAKER_BYTES = 5 * AUDIO_SAMPLE_RATE * 2;
 const MAX_PARTICIPANTS_PER_SESSION = 16;
 const MAX_TTS_TURN_BYTES = 5 * 1024 * 1024;
 const DEEPGRAM_IDLE_MS = 10_000;
+/** Flux early end-of-turn confidence for speculative starts (DEEPGRAM_EAGER_EOT_THRESHOLD; "off" disables them). */
+export const DEFAULT_EAGER_EOT_THRESHOLD = 0.5;
 
 export interface AttendeeAudioFrame {
   botId: string;
@@ -102,6 +104,9 @@ export interface RealtimeAudioOptions {
   /** Flux end-of-turn confidence. Deepgram's default 0.7 ended turns at the pause after "Nogita," in the voice lab,
    *  so she answered her own name and was cut off by the rest of the question; 0.8 waits for the question. */
   fluxEndOfTurnThreshold?: number;
+  /** Flux early end-of-turn confidence: an answer may start (speculatively) at this point, before the turn is
+   *  confirmed. Unset: no early starts. */
+  fluxEagerEndOfTurnThreshold?: number;
   /** Keep a speech connection open for the whole meeting: a cold one cost 0.7-1.4 s before the first word. */
   warmSpeech?: boolean;
   /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
@@ -111,6 +116,13 @@ export interface RealtimeAudioOptions {
   onTranscript: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string }) => void | Promise<void>;
   onSpeechActivity?: (sessionId: string, participantUuid: string) => void;
+  /** A participant's own voice on their microphone (audio level, within about 100 ms; no transcript). */
+  onVoice?: (sessionId: string, participantUuid: string) => void;
+  /** Flux EagerEndOfTurn: the speaker is probably done with these words. */
+  onEagerTranscript?: (sessionId: string, participantUuid: string, transcript: string,
+    identity?: { attendeeUserUuid?: string; displayName?: string }) => void;
+  /** Flux TurnResumed: the speaker went on after an early end-of-turn. */
+  onTurnResumed?: (sessionId: string, participantUuid: string) => void;
   onUsage?: (sessionId: string, usage: { sttBytes?: number; ttsCharacters?: number }) => void;
   authorizeRecoveredBot?: (sessionId: string, botId: string) => Promise<boolean>;
   onError?: (code: string) => void;
@@ -133,6 +145,7 @@ interface SpeakerStream {
   lastAudioAt: number;
   lastTurnText?: string;
   lastTurnAt?: number;
+  lastVoiceSignalAt: number;
 }
 
 interface RealtimeSession {
@@ -391,7 +404,7 @@ export class AttendeeRealtimeAudioHub {
       session.speakers.set(frame.participantUuid, speaker);
     }
     speaker.lastAudioAt = this.now();
-    this.trackVoiceLevel(session, speaker, frame.audio);
+    this.trackVoiceLevel(session, speaker, frame.audio, frame.participantUuid);
     this.watchForMute(speaker);
     if (speaker.socket.readyState === WebSocket.OPEN) {
       if (speaker.socket.bufferedAmount > 1_000_000) {
@@ -412,7 +425,7 @@ export class AttendeeRealtimeAudioHub {
    * lab showed it interrupting every answer. Only speech near this participant's own speaking level (and near the
    * room's loudest speaker) may interrupt Nogita; transcripts are still delivered either way.
    */
-  private trackVoiceLevel(session: RealtimeSession, speaker: SpeakerStream, audio: Buffer): void {
+  private trackVoiceLevel(session: RealtimeSession, speaker: SpeakerStream, audio: Buffer, participantUuid: string): void {
     let sum = 0;
     const samples = audio.length >> 1;
     for (let i = 0; i < samples; i++) { const v = audio.readInt16LE(i * 2) / 32768; sum += v * v; }
@@ -436,6 +449,10 @@ export class AttendeeRealtimeAudioHub {
     if (speaker.loudRunMs >= 100) {
       // Recognition results trail the audio, so speech vouches for the next 1.5 s of results.
       speaker.loudUntil = this.now() + 1_500;
+      if (own && this.now() - speaker.lastVoiceSignalAt >= 200) {
+        speaker.lastVoiceSignalAt = this.now();
+        this.options.onVoice?.(session.sessionId, participantUuid);
+      }
     }
   }
 
@@ -468,6 +485,9 @@ export class AttendeeRealtimeAudioHub {
         eot_timeout_ms: '3000' })) {
         url.searchParams.set(key, value);
       }
+      if (this.options.fluxEagerEndOfTurnThreshold !== undefined) {
+        url.searchParams.set('eager_eot_threshold', String(this.options.fluxEagerEndOfTurnThreshold));
+      }
     } else {
       for (const [key, value] of Object.entries({ model: 'nova-3', language: 'multi', language_hint: 'en',
         encoding: 'linear16', sample_rate: String(AUDIO_SAMPLE_RATE), channels: '1', interim_results: 'true',
@@ -478,7 +498,7 @@ export class AttendeeRealtimeAudioHub {
     for (const term of new Set(['Nogita', ...(this.options.keyterms ?? [])])) url.searchParams.append('keyterm', term);
     const speaker: SpeakerStream = { socket: this.createWebSocket(url.toString(), {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
-    }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0 };
+    }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0, lastVoiceSignalAt: 0 };
     const deliverTurn = (turn: string) => {
       if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId);
       speaker.lastTurnText = turn;
@@ -506,6 +526,15 @@ export class AttendeeRealtimeAudioHub {
         if (ownVoice) {
           this.interruptSpeech(sessionId);
           this.options.onSpeechActivity?.(sessionId, participantUuid);
+        }
+      }
+      if (flux) {
+        const info = message as { type?: string; event?: string; transcript?: unknown };
+        if (info.type === 'TurnInfo' && info.event === 'EagerEndOfTurn' && typeof info.transcript === 'string' && info.transcript.trim()) {
+          this.options.onEagerTranscript?.(sessionId, participantUuid, info.transcript.trim().slice(0, 4000),
+            session.participantIdentity.get(participantUuid));
+        } else if (info.type === 'TurnInfo' && info.event === 'TurnResumed') {
+          this.options.onTurnResumed?.(sessionId, participantUuid);
         }
       }
       const turn = assembleNova3Turn(message, speaker.finalSegments);

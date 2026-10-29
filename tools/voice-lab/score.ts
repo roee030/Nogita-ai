@@ -77,6 +77,18 @@ export function scoreTurn(record: TurnRecord): TurnScore {
     const used = expect.tools.find(tool => record.tools.some(call => call.startsWith(`${tool}:`)));
     checks.push({ name: `looked up ${expect.tools.join('/')}`, ok: !!used, detail: record.tools.join('; ') || 'no lookups' });
   }
+  if (expect.questionStatus) {
+    checks.push({ name: `question ${expect.questionStatus.join('/')}`, ok: !!record.questionStatus && expect.questionStatus.includes(record.questionStatus),
+      detail: record.questionStatus ?? 'no question opened' });
+  }
+  if (expect.quietAfterwards) {
+    checks.push({ name: 'quiet afterwards', ok: record.spokeAfterUtterance === 0,
+      detail: record.spokeAfterUtterance ? `${record.spokeAfterUtterance} more piece(s) of speech` : undefined });
+  }
+  for (const tool of expect.atMostOnce ?? []) {
+    const calls = record.tools.filter(call => call.startsWith(`${tool}:`)).length;
+    checks.push({ name: `${tool} at most once`, ok: calls <= 1, detail: `${calls} call(s)` });
+  }
   if (expect.firstSoundWithinMs !== undefined) {
     const gap = record.timing.firstAudio;
     checks.push({ name: `first sound within ${expect.firstSoundWithinMs / 1000} s`, ok: gap !== undefined && gap <= expect.firstSoundWithinMs,

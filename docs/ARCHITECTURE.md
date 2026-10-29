@@ -54,6 +54,40 @@ flowchart LR
 - Proactive participation: `BrainPort.assessContribution` runs in the background at most every 45 seconds and
   after four new utterances; it can only raise a hand. Its reason is given to the agent when Nogita gets the floor.
 
+## Several questions at once in a voice meeting (2026-10-29)
+
+In a voice meeting every question to Nogita is tracked on its own and they share one voice:
+
+```mermaid
+flowchart LR
+    Eager[Flux EagerEndOfTurn] -- speculate --> Q[Question: speculative]
+    Final[Flux EndOfTurn, same words] -- adopt --> Q2[Question: working]
+    Resumed[TurnResumed or other words] -- roll back --> X[rolled_back: nothing said or written]
+    Q2 --> Agent[runAgent, its own lookups]
+    Agent -- sentences --> Floor[SpeechFloor]
+    Floor --> Voice[One voice: no interleaving, waits for an opening]
+```
+
+- **Question tracker** (`engine.ts`): each question has an id, the asker, the request, a status (`speculative`,
+  `working`, `answering`, `interrupted`, then `answered`, `chat_only`, `cancelled`, `stopped`, `failed` or
+  `rolled_back`) and a short topic when it overlaps another question. Engine option `onQuestion` reports every change.
+- **Concurrency:** the per-session lock covers only hearing and classifying an utterance. Each question's agent
+  run (with its own lookups) proceeds in parallel; writes still go through the toolbox's idempotency.
+- **Speech floor** (`speech-floor.ts`): one answer at a time, and an answer keeps the floor until it ends; a
+  lead-in ("Checking that too.") does not, so another answer may play while a lookup runs. Nothing new starts while
+  someone is talking. An answer cut off by a participant is kept and finished at the next opening ("As I was saying,
+  ..."), unless they said "stop" or "never mind". People talking for 25 s without an opening: the waiting speech is
+  dropped and the answer stays in chat, which always gets every answer once.
+- **Topics:** a question opened while others are open is told about them and names its topic itself; an earlier
+  question that now overlaps gets "About the login bug, ..." before its answer (topic from a 20-token model call).
+  Unknown speakers are never named; answers are labelled by topic.
+- **Duplicates and commands:** the same question from the same person while it is open starts no second lookup.
+  "Never mind" / "cancel that" from the asker (or anyone addressing Nogita) aborts the open question;
+  "stop" / "wait" ends the current answer. Both are reported, never silent.
+- **Speculative start:** with `flux-english`, an addressed question starts at Deepgram's EagerEndOfTurn
+  (`DEEPGRAM_EAGER_EOT_THRESHOLD`, default 0.5). Until the turn is confirmed with the same words, its speech waits
+  behind a gate and write tools are blocked; TurnResumed or different words abort it (the model request too).
+
 ## Future multi-tool provider design
 
 Add `Registry` with per-workspace provider connections, supported-capability discovery and credentials references (encrypted secrets manager). A task should be routed by configured project and provider, not by whichever brand happens to be named in casual speech.

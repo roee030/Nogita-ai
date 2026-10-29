@@ -244,7 +244,8 @@ export class AnthropicBrain implements BrainPort, ChatModel {
         ...(tools.length ? { tools } : {}),
         ...this.thinkingParameter(),
       }),
-      signal: AbortSignal.timeout(request.timeoutMs ?? 30_000),
+      signal: request.signal ? AbortSignal.any([AbortSignal.timeout(request.timeoutMs ?? 30_000), request.signal])
+        : AbortSignal.timeout(request.timeoutMs ?? 30_000),
     });
     if (!res.ok || !res.body) throw new Error(`Anthropic Messages API failed: HTTP ${res.status}`);
     const blocks: Array<{ type: string; text: string; id?: string; name?: string; json: string } | undefined> = [];

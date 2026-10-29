@@ -423,3 +423,48 @@ test('failed verification acknowledgement does not bind the speaker prematurely'
   assert.equal(emitted.length, 0);
   assert.equal(statuses, 3); // failure, fallback, then successful verification
 });
+
+test('early end-of-turn: the confirmed turn carries the early start when the words match, otherwise it is rolled back', async () => {
+  const contexts: Array<{ text: string; speculation?: unknown }> = [];
+  const started: string[] = [];
+  const cancelled: string[] = [];
+  const router = new AttendeeCommandRouter(
+    async (_sessionId, utterance, context) => { contexts.push({ text: utterance.text, speculation: context.speculation }); },
+    async () => undefined,
+    { speculate: (_sessionId, utterance) => {
+      started.push(utterance.text);
+      return { cancel: () => { cancelled.push(utterance.text); } };
+    } });
+  router.beginSession('s');
+  const request = (text: string, eventId: string) => ({ sessionId: 's', botId: 'bot_1', speakerUuid: 'a', utterance: { eventId, actor: owner, text } });
+  router.acceptEagerTurn(request('Nogita, what does 429 mean', 'e1'));
+  await router.acceptCompletedTurn(request('Nogita, what does 429 mean?', 'f1'));
+  assert.deepEqual(started, ['Nogita, what does 429 mean']);
+  assert.ok(contexts[0]!.speculation);
+  assert.deepEqual(cancelled, []);
+
+  // The speaker went on: rolled back at once.
+  router.acceptEagerTurn(request('Nogita, what is the status of', 'e2'));
+  router.resumeTurn('s', 'a');
+  assert.deepEqual(cancelled, ['Nogita, what is the status of']);
+
+  // Different words at the end of the turn: the early start is dropped and the full turn goes on without it.
+  router.acceptEagerTurn(request('Nogita, open a task', 'e3'));
+  await router.acceptCompletedTurn(request('Nogita, open a task for Dana', 'f3'));
+  assert.deepEqual(cancelled, ['Nogita, what is the status of', 'Nogita, open a task']);
+  assert.equal(contexts.at(-1)!.speculation, undefined);
+
+  // Talk that is not to Nogita never starts early.
+  router.acceptEagerTurn(request('I think we should ship it', 'e4'));
+  assert.equal(started.length, 3);
+});
+
+test('a turn that is only her name waits for the question that follows', async () => {
+  const f = fixture(); f.router.beginSession('s');
+  void f.router.acceptCompletedTurn(f.request('a', 'Nogita.', 'n1', owner));
+  assert.equal(f.emitted.length, 0);
+  void f.router.acceptCompletedTurn(f.request('a', 'What was the last commit about?', 'n2', owner));
+  await f.flush();
+  assert.equal(f.emitted.length, 1);
+  assert.equal(f.emitted[0]!.utterance.text, 'Nogita. What was the last commit about?');
+});

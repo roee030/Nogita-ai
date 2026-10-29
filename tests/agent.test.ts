@@ -60,7 +60,7 @@ function fixture(model: ChatModel, options: { meeting?: DemoMeeting; code?: Code
   const board = new DemoBoard();
   const engine = new NogitaEngine({ board, code: options.code ?? new DemoCode(), brain: new DemoBrain(),
     policy: new AllowlistPolicy(new Set(['lead'])), agent: model, people, chat: options.chat },
-  { schedule: () => 0, cancel: () => undefined });
+  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 20, talkingMs: 20 } });
   const utter = (text: string, eventId: string, actor = lead) => engine.onUtterance('s', { text, eventId, actor });
   return { engine, meeting, board, utter };
 }
@@ -414,7 +414,7 @@ test('proactive: without a native hand, the chat fallback is used only when conf
   }
 });
 
-test('when a participant interrupts, the rest of the streamed answer is not spoken (chat still has it)', async () => {
+test('when a participant interrupts, the cut-off sentence and the rest are spoken at the next opening', async () => {
   class InterruptedMeeting extends RecordingMeeting {
     override async speak(message: string, options: { chatMirror?: boolean } = {}): Promise<void> {
       await super.speak(message, options);
@@ -427,8 +427,9 @@ test('when a participant interrupts, the rest of the streamed answer is not spok
   await f.engine.startSession('s', f.meeting);
   await f.utter('Nogita, explain the cache', '1');
   const meeting = f.meeting as InterruptedMeeting;
-  assert.equal(meeting.spoken.length, 1);
   assert.equal(meeting.spoken[0]!.text, 'First point is the cache.');
+  assert.equal(meeting.spoken[1]!.text, 'First point is the cache.');
+  assert.ok(meeting.spoken.length > 2);
   assert.equal(meeting.events.filter(e => e.type === 'chat').length, 1);
 });
 

@@ -53,13 +53,14 @@ How to work:
 }
 
 export function turnAgentPrompt(input: { speaker: string; authorized: boolean; nowIso: string; followUp: boolean;
-  raisedHandReason?: string }): string {
+  raisedHandReason?: string; otherQuestions?: string[] }): string {
   return [
     `Current time: ${input.nowIso}.`,
     `You are talking with ${input.speaker}.`,
     input.authorized ? '' : `${input.speaker} is not authorized to read the team's code, tasks or messages, or to make changes. Help with general questions only, and say so briefly if they ask for project data.`,
     input.followUp ? 'This message came right after your previous answer or question, without your name. If it does not answer you (the team moving on, small talk, thanks, or words you cannot make sense of), reply with an empty message: never ask them to repeat, they were not talking to you.' : '',
     input.raisedHandReason ? `You raised your hand earlier because: ${input.raisedHandReason}\nIf they are giving you the floor ("go ahead", "what did you want to add"), make that point briefly; check the code or tasks first if it depends on them.` : '',
+    input.otherQuestions?.length ? `Other questions to you are being answered separately; do not answer them here:\n${input.otherQuestions.map(question => `- ${question}`).join('\n')}\nBegin your answer by naming what it is about ("About Yossi's PR, ..."), so everyone knows which question it answers. A lead-in before a lookup stays short ("Checking that too.").` : '',
   ].filter(Boolean).join('\n');
 }
 

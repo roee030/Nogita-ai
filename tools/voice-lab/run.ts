@@ -4,7 +4,7 @@
  * she did. Jira and Slack writes are intercepted unless --live-writes is given; reads are live.
  *
  *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
- *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--list]
+ *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
  * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
@@ -26,7 +26,7 @@ const { values } = parseArgs({ options: {
   scenario: { type: 'string' }, judge: { type: 'boolean', default: false }, list: { type: 'boolean', default: false },
   stt: { type: 'string' }, noise: { type: 'string' }, snr: { type: 'string' },
   'router-quiet-ms': { type: 'string' }, 'frame-ms': { type: 'string' }, out: { type: 'string' },
-  'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' },
+  'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' }, eager: { type: 'string' },
 } });
 
 if (values.list) {
@@ -120,7 +120,7 @@ if (dependencies.code.prepare) await dependencies.code.prepare();
 const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
   routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
-  eot: values.eot ?? '0.8', thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
+  eot: values.eot ?? '0.8', eager: values.eager ?? 'off', thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
 for (const scenario of scenarios) {
   console.log(`\n▶ ${scenario.title}`);
@@ -129,6 +129,7 @@ for (const scenario of scenarios) {
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
     dependencies: { ...dependencies, chat }, routerQuietMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+    eagerThreshold: values.eager && values.eager !== 'off' ? Number(values.eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
     engineOptions: { handRaiseFallback: 'chat' } });
   const errors: string[] = [];
@@ -160,7 +161,7 @@ for (const scenario of scenarios) {
     console.log(`  ${score.passed ? '✓' : '✗'} #${record.index + 1} gap ${gap}  heard: "${record.heard ?? ''}"`);
     for (const check of score.checks.filter(c => !c.ok)) console.log(`      ✗ ${check.name}${check.detail ? `: ${check.detail}` : ''}`);
   }
-  results.push({ scenario, turns, room: rig.room.samples().slice(), nogita: rig.nogita.samples().slice(), errors });
+  results.push({ scenario, turns, room: rig.room.samples().slice(), nogita: rig.nogita.samples().slice(), errors, events: rig.events.slice() });
 }
 
 const summary = summarize(results, settings, startedAt);
@@ -169,5 +170,9 @@ await writeReport(out, summary, results);
 const s = summary.responseGap;
 console.log(`\nResponse gap: p50 ${s.p50} ms, p90 ${s.p90} ms, max ${s.max} ms (n=${s.count})`);
 console.log(`Passed ${summary.passed}/${summary.total}; name recognized ${summary.addressHeard.heard}/${summary.addressHeard.total}`);
+const c = summary.conversation;
+console.log(`Answer itself p50 ${summary.meaningfulGap.p50} ms; questions ${c.questions}, answered ${c.answered}, chat only ${c.chatOnly}, ` +
+  `cancelled ${c.cancelled}, stopped ${c.stopped}, lost ${c.unresolved}; early starts ${c.earlyAdopted} used / ${c.earlyRolledBack} rolled back; ` +
+  `spoke over someone ${c.spokeOverPeople}`);
 console.log(`Report: ${join(out, 'report.html')}`);
 process.exit(0);

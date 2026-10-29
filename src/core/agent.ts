@@ -23,6 +23,8 @@ export interface ChatModelRequest {
   maxTokens: number;
   usageContext?: string;
   timeoutMs?: number;
+  /** Aborts the request (a cancelled question, or a speculative start that was rolled back). */
+  signal?: AbortSignal;
 }
 export interface ChatModelResponse { content: AgentContent[]; stopReason: string }
 export interface ChatModel {
@@ -44,8 +46,13 @@ export interface AgentTurn {
   messages: AgentMessage[];
   toolbox: AgentToolbox;
   /** Called with ready-to-speak text, in order: sentence chunks when `stream` is true, otherwise each
-   *  lead-in once its step ends and the final answer once it is complete. */
-  onSpeech?: (text: string) => void;
+   *  lead-in once its step ends and the final answer once it is complete. `step` is the model step (0 first). */
+  onSpeech?: (text: string, step: number) => void;
+  /** Called before tools run; text already spoken in this step was a lead-in. */
+  onToolUse?: (names: string[], step: number) => void;
+  /** Awaited before any write tool runs (a speculative start may not change anything until it is confirmed). */
+  beforeWrite?: () => Promise<void>;
+  signal?: AbortSignal;
   stream: boolean;
   usageContext?: string;
   maxSteps?: number;
@@ -134,9 +141,11 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   let answer = '';
   let steps = 0;
   for (; steps < maxSteps; steps++) {
+    turn.signal?.throwIfAborted();
     const remaining = (turn.deadlineMs ?? 60_000) - (now() - started);
     if (remaining < 1_500) return { answer, preface: prefaces.join(' '), toolCalls, steps, stoppedEarly: true };
-    const chunker = turn.stream && turn.onSpeech ? new SpeechChunker(turn.onSpeech) : undefined;
+    const step = steps;
+    const chunker = turn.stream && turn.onSpeech ? new SpeechChunker(text => turn.onSpeech!(text, step)) : undefined;
     const lastStep = steps === maxSteps - 1;
     const response = await model.streamChat({
       stableSystem: turn.stableSystem,
@@ -144,12 +153,12 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
         ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.`
         : turn.turnSystem,
       messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens: turn.maxTokens ?? 900,
-      usageContext: turn.usageContext, timeoutMs: Math.min(30_000, remaining),
+      usageContext: turn.usageContext, timeoutMs: Math.min(30_000, remaining), signal: turn.signal,
     }, delta => chunker?.push(delta));
     chunker?.flush();
     const text = response.content.filter(block => block.type === 'text')
       .map(block => (block as { text: string }).text).join('').trim();
-    if (!turn.stream && turn.onSpeech && text) turn.onSpeech(text);
+    if (!turn.stream && turn.onSpeech && text) turn.onSpeech(text, step);
     const uses = response.content.filter(block => block.type === 'tool_use') as
       Array<Extract<AgentContent, { type: 'tool_use' }>>;
     if (!uses.length || response.stopReason !== 'tool_use') {
@@ -158,11 +167,15 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       break;
     }
     if (text) prefaces.push(text);
+    turn.onToolUse?.(uses.map(use => use.name), step);
+    turn.signal?.throwIfAborted();
     messages.push({ role: 'assistant', content: response.content });
     const results = new Map<string, ToolOutcome>();
     const reads = uses.filter(use => !turn.toolbox.isWrite(use.name));
     const writes = uses.filter(use => turn.toolbox.isWrite(use.name));
     await Promise.all(reads.map(async use => { results.set(use.id, await safeRun(turn.toolbox, use)); }));
+    if (writes.length && turn.beforeWrite) await turn.beforeWrite();
+    turn.signal?.throwIfAborted();
     for (const use of writes) results.set(use.id, await safeRun(turn.toolbox, use));
     toolCalls.push(...uses.map(use => use.name));
     messages.push({ role: 'user', content: uses.map(use => {

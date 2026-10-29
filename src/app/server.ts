@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { SocketModeClient } from '@slack/socket-mode';
-import { NogitaEngine } from '../core/engine.ts';
+import { NogitaEngine, type Speculation } from '../core/engine.ts';
 import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
@@ -23,7 +23,7 @@ import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry } from './slack-conversations.ts';
-import { AttendeeRealtimeAudioHub } from './attendee-realtime-audio.ts';
+import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 
 loadDotEnv();
@@ -90,7 +90,10 @@ const slackSocketClient = env.SLACK_APP_TOKEN?.startsWith('xapp-') && env.SLACK_
 let slackSocketConnected = false;
 const attendeeEnrollment = new AttendeeEnrollmentCandidates();
 const attendeeCommands = new AttendeeCommandRouter(
-  async (sessionId, utterance) => { await nogita.onUtterance(sessionId, utterance); },
+  async (sessionId, utterance, context) => {
+    await nogita.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
+      ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+  },
   async (sessionId, message) => {
     const meeting = attendeeMeetingsBySession.get(sessionId);
     if (!meeting) throw new Error('unknown Attendee meeting');
@@ -98,7 +101,10 @@ const attendeeCommands = new AttendeeCommandRouter(
   },
   { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown'),
     onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
-    onSpeechActivity: sessionId => nogita.cancelProgressForSpeechActivity(sessionId),
+    onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
+    chatAck: !realtimeAudioEnabled,
+    ...(env.DEEPGRAM_STT_MODE === 'flux-english' && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
+      ? { speculate: (sessionId: string, utterance: Utterance) => nogita.speculate(sessionId, utterance) } : {}),
     onLeave: async sessionId => {
       const meeting = attendeeMeetingsBySession.get(sessionId);
       const botId = meeting?.botIdentifier;
@@ -128,20 +134,18 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       sttMode: env.DEEPGRAM_STT_MODE === 'flux-english' ? 'flux-english' : 'nova3-multilingual',
       ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
+      ...(env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
+        ? { fluxEagerEndOfTurnThreshold: Number(env.DEEPGRAM_EAGER_EOT_THRESHOLD || DEFAULT_EAGER_EOT_THRESHOLD) } : {}),
       onTranscript: async (sessionId, participantUuid, text, participant) => {
-        const mapped = participant?.attendeeUserUuid
-          ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;
-        const request = { sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
-          speakerUuid: participantUuid, ...(participant?.attendeeUserUuid ? { attendeeUserUuid: participant.attendeeUserUuid } : {}),
-          utterance: { eventId: `realtime-${randomUUID()}`,
-            actor: mapped ? { id: mapped.id, displayName: mapped.displayName, verified: true }
-              : { id: `unmapped:attendee:${participant?.attendeeUserUuid ?? participantUuid}`,
-                displayName: participant?.displayName ?? 'Meeting participant', verified: false },
-            text, at: Date.now() } };
+        const request = transcriptRequest(sessionId, participantUuid, text, participant);
         if (env.DEEPGRAM_STT_MODE === 'flux-english') await attendeeCommands.acceptCompletedTurn(request);
         else await attendeeCommands.acceptFinal(request);
       },
       onSpeechActivity: (sessionId, participantUuid) => attendeeCommands.noteSpeechActivity(sessionId, participantUuid),
+      onEagerTranscript: (sessionId, participantUuid, text, participant) =>
+        attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant)),
+      onTurnResumed: (sessionId, participantUuid) => attendeeCommands.resumeTurn(sessionId, participantUuid),
+      onVoice: (sessionId, participantUuid) => nogita.noteVoice(sessionId, participantUuid),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
@@ -156,6 +160,19 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       },
     }); }
   catch { providerConfigValid = false; console.error('realtime_audio_configuration_invalid'); }
+}
+
+function transcriptRequest(sessionId: string, participantUuid: string, text: string,
+  participant?: { attendeeUserUuid?: string; displayName?: string }) {
+  const mapped = participant?.attendeeUserUuid
+    ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;
+  return { sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
+    speakerUuid: participantUuid, ...(participant?.attendeeUserUuid ? { attendeeUserUuid: participant.attendeeUserUuid } : {}),
+    utterance: { eventId: `realtime-${randomUUID()}`,
+      actor: mapped ? { id: mapped.id, displayName: mapped.displayName, verified: true }
+        : { id: `unmapped:attendee:${participant?.attendeeUserUuid ?? participantUuid}`,
+          displayName: participant?.displayName ?? 'Meeting participant', verified: false },
+      text, at: Date.now() } };
 }
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {

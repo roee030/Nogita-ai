@@ -8,6 +8,8 @@ import { wav } from './audio.ts';
 import { FILLERS, type TurnRecord } from './conversation.ts';
 import { stats, type Stats, type TurnScore } from './score.ts';
 import type { Scenario } from './scenarios.ts';
+import type { LabEvent } from './rig.ts';
+import { conversationStats, questionLedger, type ConversationStats } from './conversation-metrics.ts';
 
 export interface ScenarioResult {
   scenario: Scenario;
@@ -15,6 +17,8 @@ export interface ScenarioResult {
   room: Float32Array;
   nogita: Float32Array;
   errors: string[];
+  /** The scenario's whole event log (questions, speech marks, Nogita's audio). */
+  events: LabEvent[];
 }
 
 export interface RunSummary {
@@ -23,6 +27,11 @@ export interface RunSummary {
   responseGap: Stats;
   /** First sound that is not a canned filler. */
   contentGap: Stats;
+  /** The answer itself: her first words after the last lookup (time to meaningful speech). */
+  meaningfulGap: Stats;
+  conversation: ConversationStats;
+  /** Turns whose expected lookups were made. */
+  toolChecks: { ok: number; total: number };
   breakdown: { endpointing: Stats; router: Stats; thinking: Stats; voice: Stats };
   answerLength: Stats;
   bargeInStop: Stats;
@@ -47,6 +56,12 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
     startedAt, settings,
     responseGap: stats(t.map(timing => timing.firstAudio)),
     contentGap: stats(t.map(timing => timing.firstContentAudio)),
+    meaningfulGap: stats(t.map(timing => timing.meaningfulAudio)),
+    conversation: conversationStats(results.map(result => result.events)),
+    toolChecks: (() => {
+      const checks = turns.flatMap(({ score }) => score.checks.filter(check => /^looked up |at most once$/.test(check.name)));
+      return { ok: checks.filter(check => check.ok).length, total: checks.length };
+    })(),
     breakdown: {
       endpointing: stats(t.map(timing => timing.sttFinal)),
       router: stats(t.map(timing => diff(timing.utterance, timing.sttFinal))),
@@ -73,6 +88,7 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     '## Response time (end of question → first sound from Nogita)', '',
     `- **Response gap:** ${statLine(summary.responseGap)}`,
     `- **Until real content** (her own words, not a filler such as "One sec."): ${statLine(summary.contentGap)}`,
+    `- **Until the answer itself** (first words after the last lookup): ${statLine(summary.meaningfulGap)}`,
     `- Speech recognition endpointing: ${statLine(summary.breakdown.endpointing)}`,
     `- Router quiet window: ${statLine(summary.breakdown.router)}`,
     `- Thinking (engine + model to first sentence): ${statLine(summary.breakdown.thinking)}`,
@@ -84,7 +100,8 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     `- Name recognized when addressed: ${summary.addressHeard.heard}/${summary.addressHeard.total}`,
     `- Mean word error rate of the transcript: ${summary.meanWer ?? '–'}`,
     ...(summary.judge ? [`- Judge (1-5): correct ${summary.judge.correct} · natural ${summary.judge.natural} · concise ${summary.judge.concise}`] : []),
-    '',
+    `- Lookups as expected: ${summary.toolChecks.ok}/${summary.toolChecks.total}`,
+    '', '## Conversation management', '', ...conversationLines(summary.conversation), '',
   ];
   for (const result of results) {
     lines.push(`## ${result.scenario.title} (\`${result.scenario.name}\`, ${result.scenario.noise.kind} ${result.scenario.noise.kind === 'quiet' ? '' : `${result.scenario.noise.snrDb} dB`})`, '');
@@ -100,10 +117,24 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
   return lines.join('\n');
 }
 
+function conversationLines(c: ConversationStats): string[] {
+  return [
+    `- Questions taken on: **${c.questions}** · answered aloud ${c.answered} · only in chat ${c.chatOnly} · cancelled by the asker ${c.cancelled} · ` +
+      `stopped by the room ${c.stopped} · failed ${c.failed} · **lost (never answered) ${c.unresolved}**`,
+    `- Question completion: **${c.completion === undefined ? '–' : `${Math.round(c.completion * 100)}%`}** (answered aloud / questions not withdrawn)`,
+    `- Same question asked again while open: ${c.askedAgain} (no second lookup)`,
+    `- Speaker went on after a pause, so she restarted with the whole question: ${c.restarted}`,
+    `- Early starts (before the end of the turn was confirmed): ${c.earlyStarts} · used ${c.earlyAdopted} · rolled back ${c.earlyRolledBack}`,
+    `- Answers cut off by a participant: ${c.cutOff} · finished afterwards ${c.resumed}`,
+    `- Started speaking while someone was mid-sentence: **${c.spokeOverPeople}**`,
+    `- Duplicate writes: ${c.duplicateWrites}`,
+  ];
+}
+
 export interface TranscriptLine {
   /** Seconds after the end of the question; undefined for the question itself. */
   at?: number;
-  kind: 'person' | 'heard' | 'bridge' | 'nogita' | 'cut' | 'tool' | 'chat' | 'hand' | 'task' | 'message' | 'verdict' | 'judge';
+  kind: 'person' | 'heard' | 'bridge' | 'nogita' | 'cut' | 'tool' | 'chat' | 'hand' | 'task' | 'message' | 'question' | 'verdict' | 'judge';
   who?: string;
   text: string;
 }
@@ -127,6 +158,9 @@ export function transcriptLines(result: ScenarioResult): TranscriptLine[][] {
       if (event.type === 'speak_call' && event.t >= end) {
         lines.push({ at: at(event.t), kind: cut.has(text) ? 'cut' : FILLERS.has(text) ? 'bridge' : 'nogita', text });
       } else if (event.type === 'tool') lines.push({ at: at(event.t), kind: 'tool', text });
+      else if (event.type === 'question' && event.detail && event.t >= record.timing.speechStart) {
+        lines.push({ at: at(event.t), kind: 'question', text: `${event.detail}${/ (working|speculative)\b/.test(event.detail) ? ` — "${text}"` : ''}` });
+      }
       else if (event.type === 'write') {
         lines.push({ at: at(event.t), kind: text.startsWith('task:') ? 'task' : 'message',
           text: `${text.replace(/^(?:task|message): /, '')}${event.detail ? ` [${event.detail}]` : ''}` });
@@ -143,19 +177,29 @@ export function transcriptLines(result: ScenarioResult): TranscriptLine[][] {
 }
 
 const LABEL: Record<TranscriptLine['kind'], string> = { person: '', heard: 'heard', bridge: 'Nogita (bridge)', nogita: 'Nogita',
-  cut: 'Nogita (cut off)', tool: 'lookup', chat: 'chat', hand: 'hand raised', task: 'Jira task', message: 'Slack message',
+  cut: 'Nogita (cut off)', tool: 'lookup', chat: 'chat', hand: 'hand raised', task: 'Jira task', message: 'Slack message', question: 'question',
   verdict: 'result', judge: 'judge' };
 
 export function transcriptMarkdown(results: ScenarioResult[]): string {
   const out = ['# Nogita voice lab: conversations', '',
     'Each turn: what the person said, what speech recognition heard (when different), then everything Nogita did in order.',
-    'Times are seconds after the person stopped talking. "bridge" is a canned "One sec."; "lookup" is a tool call she made.', ''];
+    'Times are seconds after the person stopped talking. "bridge" is a canned "One sec."; "lookup" is a tool call she made;',
+    '"question" is a status change in her question tracker (#id status [topic]: note).', ''];
   for (const result of results) {
     const s = result.scenario;
     const passed = result.turns.filter(turn => turn.score.passed).length;
     out.push(`## ${s.title}`, '', `\`${s.name}\` · noise: ${s.noise.kind}${s.noise.kind === 'quiet' ? '' : ` at ${s.noise.snrDb} dB`} · ` +
       `people: ${s.participants.map(p => `${p.name}${p.authorized ? '' : ' (guest)'}`).join(', ')} · passed ${passed}/${result.turns.length}`, '');
     for (const error of result.errors) out.push(`> error: ${error}`, '');
+    const ledger = questionLedger(result.events);
+    if (ledger.length) {
+      out.push('| Question | Asked by | Path | Result |', '| --- | --- | --- | --- |');
+      for (const entry of ledger) {
+        out.push(`| #${entry.id} ${entry.request.replace(/\|/g, '/')}${entry.topic ? ` [${entry.topic}]` : ''} | ${entry.speaker} | ` +
+          `${entry.statuses.join(' → ')} | **${entry.final}**${entry.notes.length ? ` (${entry.notes.join('; ').replace(/\|/g, '/')})` : ''} |`);
+      }
+      out.push('');
+    }
     for (const lines of transcriptLines(result)) {
       for (const line of lines) {
         if (line.kind === 'person') out.push(`**${line.who}:** ${line.text}  `);
@@ -220,17 +264,21 @@ summary{cursor:pointer}.pass{color:var(--voice);font-weight:600}.failc{color:var
 .turn{border-left:3px solid var(--voice);padding:6px 0 6px 10px;margin:10px 0}.turn.bad{border-left-color:var(--bad)}
 .line{font-size:13px;margin:2px 0;overflow-wrap:anywhere}.at{display:inline-block;width:52px;color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
 .tag{display:inline-block;min-width:96px;color:var(--muted);font-size:12px}.line.person{font-size:14px}.line.heard{color:var(--muted)}
-.line.nogita .tag{color:var(--think);font-weight:600}.line.bridge .tag{color:var(--router)}.line.cut{color:var(--bad)}
+.line.question{color:var(--muted);font-size:12px}.line.nogita .tag{color:var(--think);font-weight:600}.line.bridge .tag{color:var(--router)}.line.cut{color:var(--bad)}
 .line.tool .tag,.line.task .tag,.line.message .tag{color:var(--stt);font-weight:600}.line.hand .tag{color:var(--router);font-weight:600}
 .line.verdict{margin-top:4px;font-size:12px}.turn.bad .line.verdict{color:var(--bad)}.line.judge{font-size:12px;color:var(--muted)}.line.error{color:var(--bad)}
 </style></head><body><main>
 <h1>Nogita voice lab</h1><div class="sub">${escape(summary.startedAt)} · ${escape(Object.entries(summary.settings).map(([k, v]) => `${k} ${v}`).join(' · '))}</div>
 <div class="tiles">${tile('Response gap p50', ms(summary.responseGap.p50))}${tile('Response gap p90', ms(summary.responseGap.p90))}${tile('Real content p50', ms(summary.contentGap.p50))}
 ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recognized', `${summary.addressHeard.heard}/${summary.addressHeard.total}`)}
+${tile('Answer itself p50', ms(summary.meaningfulGap.p50))}${tile('Question completion', summary.conversation.completion === undefined ? '–' : `${Math.round(summary.conversation.completion * 100)}%`)}
+${tile('Lost answers', String(summary.conversation.unresolved))}${tile('Spoke over someone', String(summary.conversation.spokeOverPeople))}
+${tile('Early starts used / rolled back', `${summary.conversation.earlyAdopted} / ${summary.conversation.earlyRolledBack}`)}
 ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? tile('Judge correct/natural', `${summary.judge.correct} / ${summary.judge.natural}`) : ''}</div>
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>
 <span><i style="background:var(--think)"></i>thinking to first sentence</span><span><i style="background:var(--voice)"></i>voice synthesis to first sound</span></div>
 <table>${rows}</table>
+<h2>Conversation management</h2><ul>${conversationLines(summary.conversation).map(line => `<li>${escape(line.replace(/^- /, '')).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')}</li>`).join('')}</ul>
 <h2>Conversations</h2><div class="muted">Everything that happened, in order. Times are seconds after the person stopped talking. Scenarios with a failure are open.</div>
 ${conversations}</main></body></html>`;
 }
