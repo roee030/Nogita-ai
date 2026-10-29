@@ -8,7 +8,11 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
 // Haiku: in the voice lab (56 spoken turns) it reached its own first words 1.3 s sooner than Sonnet, passed more
 // turns (50 vs 48) and judged equally correct, at a fraction of the price.
 export const DEFAULT_ANTHROPIC_AGENT_MODEL = 'claude-haiku-5-5';
-interface AgentModelOptions { model?: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number }
+interface AgentModelOptions {
+  model?: string; inputUsdPerMillion?: number; outputUsdPerMillion?: number;
+  /** 'off' skips the model's own thinking before it answers (Haiku 5.5 thinks by default; off halved its first-text time). */
+  thinking?: 'default' | 'off';
+}
 
 interface ModelUsage { modelCalls: number; inputTokens: number; outputTokens: number }
 interface CodeModelOptions {
@@ -81,6 +85,7 @@ export class AnthropicBrain implements BrainPort, ChatModel {
   private readonly codeOutputUsdPerMillion: number;
   private readonly maxCodeReasoningCallsPerSession: number;
   readonly agentModel: string;
+  private readonly agentThinking: 'default' | 'off';
   private readonly agentInputUsdPerMillion: number;
   private readonly agentOutputUsdPerMillion: number;
 
@@ -89,6 +94,7 @@ export class AnthropicBrain implements BrainPort, ChatModel {
     codeModel: CodeModelOptions = {}, agent: AgentModelOptions = {}) {
     if (!key) throw new Error('Anthropic key required in live mode');
     this.agentModel = agent.model?.trim() || DEFAULT_ANTHROPIC_AGENT_MODEL;
+    this.agentThinking = agent.thinking ?? 'default';
     this.agentInputUsdPerMillion = agent.inputUsdPerMillion ?? 0.10;
     this.agentOutputUsdPerMillion = agent.outputUsdPerMillion ?? 0.50;
     if (![this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0)) {
@@ -199,6 +205,7 @@ export class AnthropicBrain implements BrainPort, ChatModel {
         ],
         messages: request.messages,
         ...(tools.length ? { tools } : {}),
+        ...(this.agentThinking === 'off' ? { thinking: { type: 'disabled' } } : {}),
       }),
       signal: AbortSignal.timeout(request.timeoutMs ?? 30_000),
     });
