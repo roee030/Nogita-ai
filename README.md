@@ -100,6 +100,15 @@ node --experimental-transform-types tools/agent-smoke.ts "Nogita, how does the J
 
 `NOGITA_AGENT=off` returns to the one-shot planner.
 
+## Voice lab
+
+`npm run voice-lab` tests Nogita by voice without a meeting. Synthetic colleagues ask spoken questions:
+- with office, cafe, keyboard or street noise;
+- mid-sentence pauses, interruptions and trick questions;
+- through the production audio path: Attendee audio hub, Deepgram, router, engine and agent.
+
+It reports the silence between each question and Nogita's first sound, broken down by stage, and checks what she said and did. Writes are intercepted. See [docs/VOICE_LAB.md](docs/VOICE_LAB.md).
+
 ## Provider configuration (incrementally)
 
 The `.env.example` file documents environment variables. Never commit real secrets or expose the development API publicly.

@@ -41,8 +41,37 @@ export function isExplicitLeaveRequest(current: string): boolean {
     || /^(?:(?:please|you can|can you|could you|would you)\s+)*(?:drop|end)\s+(?:this|the)\s+(?:call|meeting)(?:\s+(?:now|please))?$/.test(text);
 }
 
-const initialAddress = /^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you)\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b))/i;
-const laterAddress = /[.!?;]\s+(?:(?:hey|hi|hello|okay|ok|please)\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b))/i;
+// Words that may follow the name without punctuation and still make it an address.
+const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b`;
+// Speech recognition often writes a comma after the greeting: "Hey, Nogita, ...".
+const initialAddress = new RegExp(String.raw`^(?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+const laterAddress = new RegExp(String.raw`[.!?;]\s+(?:(?:hey|hi|hello|okay|ok|please),?\s+)?nogita(?:\s*[,.:!?-]\s*|\s+(?=${ADDRESS_FOLLOW}))`, 'i');
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+
+/**
+ * Speech recognition hears the wake word as "Nokita", "Notita", "Nikita" or "No Gita" even with keyterm
+ * prompting (measured in the voice lab). Where an address can stand (start of a turn, after a greeting or a
+ * sentence end), a word within two edits of "nogita" is restored, so the address rules below still apply.
+ * Mid-sentence mentions are left alone.
+ */
+export function normalizeWakeWord(text: string): string {
+  return text.replace(
+    new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:hey|hi|hello|okay|ok|please|excuse me|thanks|thank you),?\s+)?)(no\s+g[a-z]{2,3}|n[a-z]{4,6})(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW}))`, 'gi'),
+    (match, lead: string, greeting: string, word: string) =>
+      word.toLowerCase() !== 'nogita' && editDistance(word.toLowerCase().replace(/\s+/g, ''), 'nogita') <= 2
+        ? `${lead}${greeting}Nogita` : match);
+}
 
 /** Prevent simple third-person name mentions from activating the bot. */
 export function directlyAddressesNogita(text: string): boolean {

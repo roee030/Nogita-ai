@@ -69,7 +69,7 @@ function codeCoverageNotice(skipped: number): string {
 function withCodeCoverageNotice(code: CodePort, message: string): string {
   return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
 }
-const MAX_SPOKEN_WORDS = 90;
+const MAX_SPOKEN_WORDS = 60;
 const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
 /** Whole sentences up to about `max` words (at least the first sentence). */
 function firstWords(text: string, max: number): string {

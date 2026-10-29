@@ -1,6 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import { InvalidPlanningResponseError, type Actor, type Utterance } from '../core/contracts.ts';
-import { directlyAddressesNogita, isExplicitLeaveRequest, removeAddress } from '../core/policy.ts';
+import { directlyAddressesNogita, isExplicitLeaveRequest, normalizeWakeWord, removeAddress } from '../core/policy.ts';
 import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 
 type ScheduledWork = () => void | Promise<void>;
@@ -19,6 +19,9 @@ interface SessionState {
 }
 export interface AttendeeCommandRouterOptions {
   quietMs?: number;
+  /** Shorter wait for a finished question to Nogita ("Nogita, ... ?"); the full window still applies if the
+   *  speaker keeps talking. Measured in the voice lab: the full window was the largest single delay. */
+  questionQuietMs?: number;
   randomCode?: () => string;
   schedule?: (work: ScheduledWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
@@ -53,6 +56,7 @@ function matchesSpokenChallenge(text: string, challenge: string): boolean {
 export class AttendeeCommandRouter {
   private readonly sessions = new Map<string, SessionState>();
   private readonly quietMs: number;
+  private readonly questionQuietMs: number;
   private readonly randomCode: () => string;
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
   private readonly cancel: (handle: unknown) => void;
@@ -68,6 +72,7 @@ export class AttendeeCommandRouter {
     options: AttendeeCommandRouterOptions = {},
   ) {
     this.quietMs = options.quietMs ?? 1200;
+    this.questionQuietMs = Math.min(this.quietMs, options.questionQuietMs ?? 300);
     this.randomCode = options.randomCode ?? (() => String(randomInt(100000, 1000000)));
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
@@ -106,9 +111,16 @@ export class AttendeeCommandRouter {
     completion.catch(() => undefined);
     const entry: BufferEntry = { actor, fragments, waiters: [...(previous?.waiters ?? []), { resolve, reject }],
       timer: undefined, receivedAt: previous?.receivedAt ?? performance.now() };
-    entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.quietMs);
+    entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError),
+      this.quietWindow(fragments));
     state.buffers.set(request.speakerUuid, entry);
     return completion;
+  }
+
+  /** A complete question addressed to Nogita needs no long wait for more words. */
+  private quietWindow(fragments: readonly Fragment[]): number {
+    const text = normalizeWakeWord(fragments.map(fragment => fragment.text).join(' ').trim());
+    return text.endsWith('?') && directlyAddressesNogita(text) ? this.questionQuietMs : this.quietMs;
   }
 
   /** Treat provider-final speech as a fragment; a quiet window prevents interruptions at short pauses. */
@@ -153,7 +165,7 @@ export class AttendeeCommandRouter {
     state.buffers.delete(speakerUuid);
     const ordered = [...entry.fragments].sort((a, b) =>
       (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER) || a.sequence - b.sequence);
-    const text = ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    const text = normalizeWakeWord(ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000));
     const eventId = `attendee-combined-${createHash('sha256').update(ordered.map(fragment => fragment.eventId).join('\0')).digest('hex')}`;
     try {
       const bound = state.bindings.get(speakerUuid);

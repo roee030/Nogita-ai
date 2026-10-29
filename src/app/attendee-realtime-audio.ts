@@ -88,6 +88,8 @@ export interface RealtimeAudioOptions {
   deepgramApiKey: string;
   sttMode?: 'nova3-multilingual' | 'flux-english';
   ttsModel?: string;
+  /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
+  keyterms?: readonly string[];
   /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
   ttsSynthesisTimeoutMs?: number;
   onTranscript: (sessionId: string, participantUuid: string, transcript: string,
@@ -383,6 +385,8 @@ export class AttendeeRealtimeAudioHub {
         endpointing: '500', smart_format: 'true' })) url.searchParams.set(key, value);
       url.searchParams.append('language_hint', 'he');
     }
+    // Without a keyterm, Nova-3 and Flux hear the wake word as "Nokita", "Notita" or "Nikita".
+    for (const term of new Set(['Nogita', ...(this.options.keyterms ?? [])])) url.searchParams.append('keyterm', term);
     const speaker: SpeakerStream = { socket: this.createWebSocket(url.toString(), {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
     }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now() };

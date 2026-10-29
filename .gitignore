@@ -7,3 +7,4 @@ coverage/
 .superpowers/
 .DS_Store
 *.log
+.voice-lab/
