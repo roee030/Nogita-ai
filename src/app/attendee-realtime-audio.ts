@@ -121,16 +121,10 @@ interface SpeakerStream {
   noiseFloor?: number;
   speechPeak: number;
   loudUntil: number;
-  loudSinceTurn: boolean;
-  lastLoudAt: number;
-  /** Flux: the latest transcript of the open turn, and the turn already ended early from it. */
-  fluxDraft?: { index: number; text: string };
-  fluxEndedEarly?: number;
+  loudRunMs: number;
   /** Silence fed to the recognizer after the participant's audio stops (muted right after speaking). */
   quietTimer?: ReturnType<typeof setTimeout>;
   silencePump?: ReturnType<typeof setInterval>;
-  /** Ends the open Flux turn now when the speaker's own voice has stopped; set by openSpeaker. */
-  checkOwnVoiceEnd?: () => void;
   lastAudioAt: number;
   lastTurnText?: string;
   lastTurnAt?: number;
@@ -153,6 +147,8 @@ interface RealtimeSession {
   ttsCarry?: Buffer;
   ttsQueue: Buffer[];
   ttsFlushed: boolean;
+  /** Loudest speaking level heard from anyone in the meeting (the own-voice gate's room reference). */
+  voicePeak: number;
   ttsTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
 }
@@ -382,9 +378,8 @@ export class AttendeeRealtimeAudioHub {
       session.speakers.set(frame.participantUuid, speaker);
     }
     speaker.lastAudioAt = this.now();
-    this.trackVoiceLevel(speaker, frame.audio);
+    this.trackVoiceLevel(session, speaker, frame.audio);
     this.watchForMute(speaker);
-    speaker.checkOwnVoiceEnd?.();
     if (speaker.socket.readyState === WebSocket.OPEN) {
       if (speaker.socket.bufferedAmount > 1_000_000) {
         this.closeSpeaker(session, frame.participantUuid, speaker);
@@ -401,10 +396,10 @@ export class AttendeeRealtimeAudioHub {
 
   /**
    * Background talk on an open microphone (an office, a cafe) is transcribed like anyone else's words. The voice
-   * lab showed it interrupting every answer. Speech counts as this participant's own only when the audio is well
-   * above their quiet level and within 10 dB of their own speaking level.
+   * lab showed it interrupting every answer. Only speech near this participant's own speaking level (and near the
+   * room's loudest speaker) may interrupt Nogita; transcripts are still delivered either way.
    */
-  private trackVoiceLevel(speaker: SpeakerStream, audio: Buffer): void {
+  private trackVoiceLevel(session: RealtimeSession, speaker: SpeakerStream, audio: Buffer): void {
     let sum = 0;
     const samples = audio.length >> 1;
     for (let i = 0; i < samples; i++) { const v = audio.readInt16LE(i * 2) / 32768; sum += v * v; }
@@ -415,12 +410,19 @@ export class AttendeeRealtimeAudioHub {
     const floor = speaker.noiseFloor ?? 0.003;
     speaker.noiseFloor = level < floor ? Math.max(level, 1e-5) : floor * 2 ** (frameMs / 1000);
     if (level < speaker.noiseFloor * 4) return;
-    speaker.speechPeak = Math.max(level, speaker.speechPeak * 0.9995 ** frameMs);
-    if (level >= speaker.speechPeak * 0.316) {
-      // Recognition results trail the audio, so a loud frame vouches for the next 1.5 s of results.
+    // The speaker's own level fades over minutes (about 10% a minute), not seconds: with a fast fade, nearby
+    // talk ten seconds after they stopped became "their" voice and cut Nogita off.
+    speaker.speechPeak = Math.max(level, speaker.speechPeak * 0.999998 ** frameMs);
+    // Own speech: at least 100 ms within 6 dB of the speaker's level. Single loud syllables of nearby talk at
+    // -15 dB still passed a one-frame, 10 dB gate and cut Nogita off in the office scenario.
+    // Before someone has spoken, background talk on their microphone is the loudest thing it hears and sets their
+    // level; the room's loudest speaker keeps that talk from counting (it must also be within 12 dB of them).
+    session.voicePeak = Math.max(speaker.speechPeak, session.voicePeak * 0.999998 ** frameMs);
+    const own = level >= speaker.speechPeak * 0.5 && level >= session.voicePeak * 0.25;
+    speaker.loudRunMs = own ? speaker.loudRunMs + frameMs : Math.max(0, speaker.loudRunMs - frameMs / 2);
+    if (speaker.loudRunMs >= 100) {
+      // Recognition results trail the audio, so speech vouches for the next 1.5 s of results.
       speaker.loudUntil = this.now() + 1_500;
-      speaker.loudSinceTurn = true;
-      speaker.lastLoudAt = this.now();
     }
   }
 
@@ -437,7 +439,6 @@ export class AttendeeRealtimeAudioHub {
       let sentMs = 0;
       speaker.silencePump = setInterval(() => {
         if (speaker.socket.readyState === WebSocket.OPEN) speaker.socket.send(Buffer.alloc(3_200), { binary: true });
-        speaker.checkOwnVoiceEnd?.();
         if ((sentMs += 100) >= 3_000 && speaker.silencePump) { clearInterval(speaker.silencePump); speaker.silencePump = undefined; }
       }, 100);
       speaker.silencePump.unref?.();
@@ -450,7 +451,7 @@ export class AttendeeRealtimeAudioHub {
     const url = new URL(flux ? 'wss://api.deepgram.com/v2/listen' : 'wss://api.deepgram.com/v1/listen');
     if (flux) {
       for (const [key, value] of Object.entries({ model: 'flux-general-en', encoding: 'linear16',
-        sample_rate: String(AUDIO_SAMPLE_RATE), eot_threshold: '0.8', eot_timeout_ms: '7000' })) {
+        sample_rate: String(AUDIO_SAMPLE_RATE), eot_threshold: '0.8', eot_timeout_ms: '3000' })) {
         url.searchParams.set(key, value);
       }
     } else {
@@ -463,30 +464,19 @@ export class AttendeeRealtimeAudioHub {
     for (const term of new Set(['Nogita', ...(this.options.keyterms ?? [])])) url.searchParams.append('keyterm', term);
     const speaker: SpeakerStream = { socket: this.createWebSocket(url.toString(), {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
-    }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudSinceTurn: false,
-      lastLoudAt: 0 };
+    }), pendingAudio: [], finalSegments: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0 };
     const deliverTurn = (turn: string) => {
-      speaker.loudSinceTurn = this.now() <= speaker.loudUntil;
-      this.interruptSpeech(sessionId);
+      if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId);
       speaker.lastTurnText = turn;
       speaker.lastTurnAt = this.now();
       void Promise.resolve(this.options.onTranscript(sessionId, participantUuid, turn,
         session.participantIdentity.get(participantUuid)))
       .catch(() => this.options.onError?.('attendee_transcript_processing_failed'));
     };
-    // Flux waits for confident end-of-turn, up to its timeout, and steady background talk keeps it unsure
-    // (7.7 s measured in an open office). The speaker's own voice going quiet for 1.2 s ends the turn instead.
-    if (flux) speaker.checkOwnVoiceEnd = () => {
-      const draft = speaker.fluxDraft;
-      if (!draft || draft.index === speaker.fluxEndedEarly || !speaker.loudSinceTurn ||
-          this.now() - speaker.lastLoudAt < 1_200) return;
-      speaker.fluxEndedEarly = draft.index;
-      speaker.fluxDraft = undefined;
-      deliverTurn(draft.text);
-      // The speaker is quiet; the next turn must earn its own loud frames.
-      speaker.loudSinceTurn = false;
-    };
     speaker.socket.on('open', () => {
+      // A new stream usually starts with someone's first words (they just unmuted). Flux missed the opening
+      // "Nogita" when audio began at once; half a second of silence first lets it settle.
+      if (speaker.socket.readyState === WebSocket.OPEN) speaker.socket.send(Buffer.alloc(AUDIO_SAMPLE_RATE), { binary: true });
       for (const audio of speaker.pendingAudio.splice(0)) {
         if (speaker.socket.readyState !== WebSocket.OPEN) break;
         speaker.socket.send(audio, { binary: true });
@@ -504,25 +494,8 @@ export class AttendeeRealtimeAudioHub {
           this.options.onSpeechActivity?.(sessionId, participantUuid);
         }
       }
-      const info = flux && message && typeof message === 'object' ? message as Record<string, unknown> : undefined;
-      if (info?.type === 'TurnInfo' && typeof info.turn_index === 'number') {
-        if (info.event === 'Update' && typeof info.transcript === 'string' && info.transcript.trim()) {
-          speaker.fluxDraft = { index: info.turn_index, text: info.transcript.trim().slice(0, 4000) };
-        }
-        // The turn was already delivered from its draft when the speaker went quiet.
-        if (info.event === 'EndOfTurn' && info.turn_index === speaker.fluxEndedEarly) {
-          speaker.fluxDraft = undefined;
-          return;
-        }
-        if (info.event === 'EndOfTurn') speaker.fluxDraft = undefined;
-      }
       const turn = assembleNova3Turn(message, speaker.finalSegments);
-      if (turn && !speaker.loudSinceTurn) {
-        this.options.onError?.('background_speech_ignored');
-      } else if (turn && !(speaker.lastTurnText === turn && this.now() - (speaker.lastTurnAt ?? 0) < 2_000)) {
-        deliverTurn(turn);
-      }
-      speaker.checkOwnVoiceEnd?.();
+      if (turn && !(speaker.lastTurnText === turn && this.now() - (speaker.lastTurnAt ?? 0) < 2_000)) deliverTurn(turn);
     });
     speaker.socket.on('error', () => this.options.onError?.('deepgram_listen_socket_error'));
     speaker.socket.on('close', () => {
@@ -678,7 +651,7 @@ export class AttendeeRealtimeAudioHub {
 
   private newSession(sessionId: string): RealtimeSession {
     return { sessionId, pendingFrames: [], speakers: new Map(), participantIdentity: new Map(),
-      ttsQueue: [], ttsFlushed: false, closed: false };
+      ttsQueue: [], ttsFlushed: false, closed: false, voicePeak: 0 };
   }
 }
 

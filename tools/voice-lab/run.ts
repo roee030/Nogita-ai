@@ -12,6 +12,7 @@
 import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
 import { createDependencies, loadDotEnv } from '../../src/app/config.ts';
+import { AllowlistPolicy } from '../../src/core/policy.ts';
 import type { ActionReceipt, ChatPort } from '../../src/core/contracts.ts';
 import { playScenario, synthesizeTurn } from './conversation.ts';
 import { createNoise, type NoiseKind } from './noise.ts';
@@ -41,6 +42,12 @@ const dependencies = createDependencies(env);
 if (!dependencies.agent) throw new Error('Set NOGITA_MODE=live and ANTHROPIC_API_KEY to run the voice lab');
 const authorizedIds = (env.AUTHORIZED_ACTOR_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean);
 if (!authorizedIds.length) throw new Error('AUTHORIZED_ACTOR_IDS must name at least one internal ID');
+
+// Each person needs their own identity (the engine tracks who asked what). The first authorized participant
+// speaks as the configured owner; the others get lab identities that the lab's policy also authorizes.
+const actorIdFor = (participantId: string, index: number) => index === 0 ? authorizedIds[0]! : `lab:${participantId}`;
+const labIds = new Set([...authorizedIds, ...SCENARIOS.flatMap(s => s.participants.map((p, i) => actorIdFor(p.id, i)))]);
+dependencies.policy = new AllowlistPolicy(labIds);
 
 const wanted = values.scenario?.split(',').map(s => s.trim()).filter(Boolean);
 let scenarios: Scenario[] = wanted ? SCENARIOS.filter(s => wanted.includes(s.name)) : SCENARIOS;
@@ -104,7 +111,7 @@ for (const scenario of scenarios) {
     await rig.start(scenario.participants.map((p, i) => ({
       id: p.id, name: p.name, mic: p.mic,
       actor: p.authorized
-        ? { id: authorizedIds[i % authorizedIds.length]!, displayName: p.name, verified: true }
+        ? { id: actorIdFor(p.id, i), displayName: p.name, verified: true }
         : { id: `unmapped:lab:${p.id}`, displayName: p.name, verified: false },
       noise: createNoise(scenario.noise, 1000 + i * 77, babble),
     })));

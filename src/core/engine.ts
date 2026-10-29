@@ -85,10 +85,10 @@ function firstWords(text: string, max: number): string {
   }
   return out.trim();
 }
-/** True when one of the last two sentences is a question to the listener. */
+/** True when the answer asks the listener something; instructions may follow the question. */
 function asksQuestion(answer: string): boolean {
   const sentences = answer.trim().match(/[^.!?]+[.!?]*/g) ?? [];
-  return sentences.slice(-2).some(sentence => sentence.trim().endsWith('?'));
+  return sentences.some(sentence => sentence.trim().endsWith('?'));
 }
 /** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
 function speakable(text: string): string {
@@ -465,8 +465,8 @@ export class NogitaEngine {
     } else {
       await this.speakOrChat(sessionId, s.meeting, answer);
     }
-    // A question in the last sentences invites a reply without the name, even when the answer ends with
-    // instructions ("What should the task be about? Give me a title...") — the voice lab caught that case.
+    // A question invites a reply without the name, even when instructions follow it ("What should the task be
+    // about? Give me a title... Also tell me who owns it.") — the voice lab caught that case.
     if (asksQuestion(answer)) {
       s.pendingFollowUp = { actorId: utterance.actor.id, request: writeScope, question: answer,
         expiresAt: this.now() + 60_000, afterSequence: s.lastArrivalSequence };

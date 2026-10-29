@@ -150,7 +150,11 @@ export class VoiceRig {
           socket.on('message', (data, binary) => {
             if (binary) return;
             const text = data.toString();
-            if (!text.includes('"Update"')) this.log('error', { detail: `trace ${kind}#${id} ${text.slice(0, 160)}` });
+            if (text.includes('"Update"')) return;
+            try {
+              const message = JSON.parse(text) as { type?: string; event?: string; turn_index?: number; transcript?: string };
+              this.log('error', { detail: `trace ${kind}#${id} ${message.type} ${message.event ?? ''} ${message.turn_index ?? ''} ${message.transcript ?? ''}` });
+            } catch { this.log('error', { detail: `trace ${kind}#${id} ${text.slice(0, 160)}` }); }
           });
         }
         socket.on('unexpected-response', (_request, response) => {

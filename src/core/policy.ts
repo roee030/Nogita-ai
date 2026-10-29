@@ -44,7 +44,7 @@ export function isExplicitLeaveRequest(current: string): boolean {
 // Words that may follow the name without punctuation and still make it an address.
 // Imperatives are included because recognition often drops the comma ("Nogita summarize the standup"), and
 // "and" only before a question word ("Nogita and what starts it?").
-const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|which\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b|summarize\b|open\b|create\b|add\b|give\b|list\b|find\b|look\b|search\b|post\b|send\b|remind\b|repeat\b|go\b|stop\b|wait\b|read\b|make\b|write\b|and\s+(?:what|why|how|where|when|who|which)\b`;
+const ADDRESS_FOLLOW = String.raw`what\b|why\b|where\b|when\b|who\b|how\b|which\b|can\b|could\b|would\b|will\b|please\b|tell\b|explain\b|show\b|say\b|do\b|check\b|help\b|drop\b|leave\b|exit\b|end\b|verify\b|hello\b|hi\b|i\b|you\b|we\b|summari[sz]e\w*|open\b|create\b|add\b|give\b|list\b|find\b|look\b|search\b|post\b|send\b|remind\b|repeat\b|go\b|stop\b|wait\b|read\b|make\b|write\b|and\s+(?:what|why|how|where|when|who|which)\b`;
 // Greetings and spoken fillers that may come before the name ("Um, Nogita", "No, Nogita, ...", "So Nogita").
 const ADDRESS_LEAD = String.raw`hey|hi|hello|okay|ok|please|excuse me|thanks|thank you|um|uh|erm|so|and|no|oh|well|yeah|yes|alright|right|sorry`;
 // Speech recognition often writes a comma after the greeting: "Hey, Nogita, ...".

@@ -53,7 +53,7 @@ export function turnAgentPrompt(input: { speaker: string; authorized: boolean; n
     `Current time: ${input.nowIso}.`,
     `You are talking with ${input.speaker}.`,
     input.authorized ? '' : `${input.speaker} is not authorized to read the team's code, tasks or messages, or to make changes. Help with general questions only, and say so briefly if they ask for project data.`,
-    input.followUp ? 'This message is a reply right after your previous answer or question. If it is not meant for you, reply with an empty message.' : '',
+    input.followUp ? 'This message came right after your previous answer or question, without your name. If it does not answer you (the team moving on, small talk, thanks, or words you cannot make sense of), reply with an empty message: never ask them to repeat, they were not talking to you.' : '',
     input.raisedHandReason ? `You raised your hand earlier because: ${input.raisedHandReason}\nIf they are giving you the floor ("go ahead", "what did you want to add"), make that point briefly; check the code or tasks first if it depends on them.` : '',
   ].filter(Boolean).join('\n');
 }

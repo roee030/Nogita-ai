@@ -183,7 +183,9 @@ test('a slow Deepgram handshake keeps the first seconds of speech instead of reo
     assert.match(sockets[0]!.url, /utterance_end_ms=1000/);
     sockets[0]!.socket.readyState = WebSocket.OPEN;
     sockets[0]!.socket.emit('open');
-    assert.equal(sockets[0]!.socket.sent.length, 100);
+    // Half a second of lead-in silence, then every buffered frame.
+    assert.equal(sockets[0]!.socket.sent.length, 101);
+    assert.equal(sockets[0]!.socket.sent[0]!.length, 16_000);
   } finally {
     client.terminate(); hub.close();
     await new Promise<void>(resolve => server.close(() => resolve()));
@@ -229,24 +231,6 @@ test('when a participant mutes right after speaking, the recognizer gets silence
     const silent = sent.filter(audio => audio.length === 3_200 && audio.every(byte => byte === 0));
     assert.ok(sent.length - silent.length >= 5);
     assert.ok(silent.length >= 3, `silence frames: ${silent.length}`);
-  } finally { await lab.close(); }
-});
-
-test('Flux ends a turn when the speaker goes quiet, without waiting for its own timeout, and only once', async () => {
-  const lab = await hubWithFakeStt('flux-english');
-  try {
-    for (let i = 0; i < 5; i++) lab.frame(0.2);
-    await wait(50);
-    const stt = lab.sockets[0]!;
-    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'StartOfTurn', turn_index: 0, transcript: '' })), false);
-    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', turn_index: 0,
-      transcript: 'Nogita, who is blocked?' })), false);
-    // Background noise only: well below the speaker's own level.
-    for (let i = 0; i < 14; i++) { lab.frame(0.01); await wait(100); }
-    assert.deepEqual(lab.received, ['Nogita, who is blocked?']);
-    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'EndOfTurn', turn_index: 0,
-      transcript: 'Nogita, who is blocked?' })), false);
-    assert.deepEqual(lab.received, ['Nogita, who is blocked?']);
   } finally { await lab.close(); }
 });
 

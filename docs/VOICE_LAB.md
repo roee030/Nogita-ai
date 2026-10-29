@@ -45,17 +45,24 @@ any noise suppression the platform applies, are not included.
 | `barge-in` | Talking over Nogita mid-answer; she must stop and answer the new question |
 | `rapid-fire` | Short questions back to back |
 | `street-extreme` | Traffic noise 3 dB below speech |
+| `team-discussion` | Three people discussing among themselves (she stays silent), then questions and a task built from what was said |
+| `standup` | A status round in an office, then "who is blocked?", a task for a named person, and a summary |
+| `crosstalk` | A question to Nogita while someone else is still talking on their own microphone |
+| `follow-up` | "Open a task" with no details; she asks, and the answer comes without her name |
+| `context-memory` | Questions that lean on her previous answer ("and what starts it?") |
+| `hand-raise` | The team agrees to log secrets and make a bucket public; she should raise her hand and explain when given the floor |
 
 **Noise kinds:** `quiet`, `white`, `pink`, `brown`, `hum`, `keyboard`, `office`, `cafe`, `street`. The office and
 cafe profiles mix real synthesized background chatter in other voices. Noise is set by SNR against a fixed speech
 level.
 
 **Adding a scenario:** append it to `tools/voice-lab/scenarios.ts`. A turn takes a speaker, the line or lines to
-say, an optional pause, gap or barge-in, and an expectation:
+say, an optional pause, gap, barge-in or overlap with the previous speaker, and an expectation:
 - whether she should speak, stay silent or answer in chat only;
 - the phrases her answer must mention;
 - the phrases it must not mention;
-- the write it should or should not attempt;
+- the write it should or should not attempt, and what that write must contain;
+- whether she must have raised her hand earlier;
 - a note for the judge.
 
 ## What a report contains
@@ -75,6 +82,7 @@ Reports go to `.voice-lab/reports/<time>/`:
 | Thinking | utterance → first sentence ready to speak |
 | Voice | first sentence → first audio frame back (TTS and transport) |
 | **Response gap** | last word → first sound from Nogita: what the room experiences |
+| **Real content** | last word → first sound that is not a canned filler ("One sec."): her own words |
 
 The report also gives:
 - answer length;
@@ -98,3 +106,35 @@ latest report:
    If the speaker keeps talking, interim speech still extends the window.
 3. **Answer length.** Spoken answers ran 22-28 s. The voice prompt now asks for about 35 words, and the hard cap
    is 60 words. The rest goes to chat.
+4. **Noise blocked every turn (Nova-3).** Steady hum, typing or chatter kept silence-based endpointing from ever
+   firing. Interim words arrived, but no turn completed, so Nogita never answered in a noisy room. Turns now also
+   complete on Deepgram's `UtteranceEnd`, which works from word timings.
+5. **A new speaker's words were dropped.** The hub buffered 32 frames while a speaker's Deepgram stream
+   connected. At 20 ms frames that is 0.64 s, shorter than a slow handshake, so the stream was closed and
+   reopened while the person kept talking. The buffer now holds up to 5 s.
+6. **Muting right after speaking lost the words.** Without more audio the recognizer never ended the turn. After
+   200 ms without frames the hub now sends up to 3 s of silence.
+7. **Background talk interrupted every answer.** Chatter on an open microphone was transcribed and treated as a
+   barge-in, so her speech was cut before a sound was heard. Now only speech may interrupt her. Speech here means
+   at least 100 ms within 6 dB of that speaker's own level and within 12 dB of the room's loudest speaker.
+   - Both levels fade over minutes, not seconds, so a colleague talking ten seconds later does not become "the
+     speaker".
+   - Transcripts are always delivered. Dropping "quiet" turns was tried and lost real speech in a loud cafe.
+8. **Flux was slow in noise.** In an office it waited up to its 7 s end-of-turn timeout. The timeout is now 3 s.
+   - We tried ending the turn when the speaker's own voice went quiet. It cut sentences in half at 5 dB SNR,
+     where loudness cannot tell speech from the room, so it was removed.
+   - A new stream also starts with 0.5 s of silence: Flux missed an opening "Nogita" when audio began at once.
+9. **Recognition quirks around the name.** The recognizer produced "Lokita", a stray "No" before the name, the
+   name between commas mid-sentence, and dropped commas ("Nogita summarize", "Nogita and what starts it"). All of
+   these are now understood as addresses. Third-person phrases ("Nogita is great", "Dana, Nogita, and Avi") are
+   not.
+10. **A question followed by instructions closed the follow-up window.** For example: "What should the task be
+    about? Give me a title." The reply without her name was ignored. Any question in the last two sentences now
+    opens the window.
+11. **Fillers delayed ready answers.** A 2 s filler started just before the model's first sentence, which then
+    waited behind it. Agent fillers are now short ("One sec.") and stay out of chat.
+
+**Simulation caveats found along the way:**
+- Deepgram's TTS occasionally returns a near-silent, unintelligible clip. The lab now rejects clips that peak
+  below -15 dBFS and re-synthesizes them.
+- `VOICE_LAB_TRACE=1` logs every Deepgram event and stream close, for debugging a turn that was never heard.
