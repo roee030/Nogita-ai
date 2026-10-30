@@ -633,7 +633,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/readiness') {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node,
-        providerConfigValid, slackSocketConnected);
+        providerConfigValid, slackSocketConnected, env.NOGITA_TENANT_CONFIG?.trim() ? dependencies.connections : undefined);
       respond(res, report.ok ? 200 : 503, report); return;
     }
     const usageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/usage$/);

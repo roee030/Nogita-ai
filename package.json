@@ -15,6 +15,7 @@
     "slack": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/app/slack-socket.ts",
     "voice-lab": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/run.ts",
     "turn-report": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/turn-report.ts",
+    "control": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/control/main.ts",
     "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts"
   },
   "devDependencies": {

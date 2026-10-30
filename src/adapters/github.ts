@@ -1,5 +1,6 @@
 import { CodeLookupRateLimitError, type CodeFile, type CodePort, type Evidence } from '../core/contracts.ts';
 import { gunzipSync } from 'node:zlib';
+import { readToken, type TokenSource } from './token-source.ts';
 
 interface TreeEntry { path: string; type: string; sha: string; size?: number }
 interface IndexedFile { path: string; text: string; lower: string }
@@ -204,7 +205,7 @@ export class GitHubCode implements CodePort {
   private readonly indexTtlMs: number;
   private readonly now: () => number;
 
-  constructor(private readonly config: { token?: string; publicRepo?: boolean; owner: string; repo: string; ref: string },
+  constructor(private readonly config: { token?: TokenSource; publicRepo?: boolean; owner: string; repo: string; ref: string },
               private readonly http: typeof fetch = fetch,
               options: { indexTtlMs?: number; now?: () => number } = {}) {
     if ((!config.token && config.publicRepo !== true) || !/^[a-zA-Z0-9_-]+$/.test(config.owner) || !/^[\w.-]+$/.test(config.repo) || !/^[\w./-]+$/.test(config.ref)) {
@@ -221,7 +222,7 @@ export class GitHubCode implements CodePort {
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent': 'Nogita-V1',
     };
-    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
+    if (this.config.token) headers.Authorization = `Bearer ${await readToken(this.config.token)}`;
     const res = await this.http(`${this.api}${path}`, {
       headers,
       signal: AbortSignal.timeout(10000),

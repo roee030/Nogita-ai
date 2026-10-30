@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { parseIdentityRecords, type IdentityRecord } from '../core/identity.ts';
 
 export type BoardConnection = { id: string; default?: boolean } & (
-  | { provider: 'jira'; baseUrl: string; email: string; token: string; projectKey: string; issueType?: string;
+  | { provider: 'jira'; baseUrl: string; email?: string; cloudId?: string; token: string; projectKey: string; issueType?: string;
       readProjectKeys?: string[]; assigneeAccountIds?: string[] }
   | { provider: 'monday'; token: string; boardId: number; descriptionColumnId: string }
   | { provider: 'demo' });
@@ -147,7 +147,9 @@ function parseBoard(raw: unknown, path: string, seen: Set<string>): BoardConnect
   const b = object(raw, path);
   const base = { id: connectionId(b.id, `${path}.id`, seen), ...(b.default === true ? { default: true } : {}) };
   switch (b.provider) {
-    case 'jira': return { ...base, provider: 'jira', baseUrl: text(b.baseUrl, `${path}.baseUrl`), email: text(b.email, `${path}.email`),
+    // Connected with OAuth, a site is named by its cloud id and the token comes from the broker; else an account email and API token.
+    case 'jira': return { ...base, provider: 'jira', baseUrl: text(b.baseUrl, `${path}.baseUrl`),
+      ...(b.cloudId !== undefined ? { cloudId: text(b.cloudId, `${path}.cloudId`) } : { email: text(b.email, `${path}.email`) }),
       token: text(b.token, `${path}.token`), projectKey: text(b.projectKey, `${path}.projectKey`),
       issueType: text(b.issueType, `${path}.issueType`, true) || 'Task', readProjectKeys: texts(b.readProjectKeys, `${path}.readProjectKeys`),
       assigneeAccountIds: texts(b.assigneeAccountIds, `${path}.assigneeAccountIds`) };
@@ -224,10 +226,14 @@ export function parseTenantConfig(raw: string, env: NodeJS.ProcessEnv): TenantCo
   };
 }
 
-/** NOGITA_TENANT_CONFIG (a file path) when set, else the environment. */
+/**
+ * NOGITA_TENANT_CONFIG when set, else the environment. It is a file path, or the JSON itself (how the control plane
+ * hands a cell its configuration, as one environment variable).
+ */
 export function loadTenantConfig(env: NodeJS.ProcessEnv): TenantConfig {
   const file = env.NOGITA_TENANT_CONFIG?.trim();
   if (!file) return tenantConfigFromEnv(env);
+  if (file.startsWith('{')) return parseTenantConfig(file, env);
   let raw: string;
   try { raw = readFileSync(file, 'utf8'); } catch { throw new ConfigError('', `cannot read ${file}`); }
   return parseTenantConfig(raw, env);

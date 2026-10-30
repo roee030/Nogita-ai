@@ -108,3 +108,17 @@ test('the example tenant config in config/ is valid', async () => {
   assert.deepEqual(config.boards.map(board => board.id), ['web', 'marketing']);
   assert.deepEqual(config.repositories.map(repo => repo.id), ['shop', 'mobile']);
 });
+
+test('a cell can be given its company config inline, and readiness checks what that config connected', async () => {
+  const { loadTenantConfig } = await import('../src/app/tenant-config.ts');
+  const { buildReadinessReport } = await import('../src/app/readiness.ts');
+  const env = { NOGITA_TENANT_CONFIG: file(acme), ...secrets };
+  assert.equal(loadTenantConfig(env).tenant.id, 'acme');
+  const deps = createDependencies(env);
+  assert.deepEqual(deps.connections, { boards: ['jira', 'demo'], repositories: ['github', 'demo'], authorizedActorIds: ['dana'] });
+  const report = buildReadinessReport(env, deps.identities, '22.16.0', true, false, deps.connections);
+  assert.equal(report.checks.find(item => item.id === 'jira')?.status, 'ready');
+  assert.equal(report.checks.find(item => item.id === 'github')?.status, 'ready');
+  assert.throws(() => createDependencies({ ...env, NOGITA_TENANT_CONFIG: file({ ...acme, boards: [{ ...acme.boards[0], token: 'broker:web' }] }) }),
+    /needs NOGITA_BROKER_URL/);
+});

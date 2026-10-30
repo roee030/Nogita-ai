@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readToken, type TokenSource } from './token-source.ts';
 import type { ActionReceipt, AssigneeCandidate, BoardPort, CreateTask, TaskDetail, TaskSearch, TaskSummary } from '../core/contracts.ts';
 
 const REQUEST_PROPERTY = 'com.nogita.request.v1';
@@ -8,9 +9,13 @@ export function jiraRequestDigest(requestId: string): string {
 }
 
 export interface JiraConfig {
+  /** The site people open (https://acme.atlassian.net): links to issues point here. */
   baseUrl: string;
-  email: string;
-  token: string;
+  /** API token mode: the account email with `token`. Not used with `cloudId`. */
+  email?: string;
+  token: TokenSource;
+  /** OAuth (3LO) mode: requests go to api.atlassian.com for this site with a bearer `token`. */
+  cloudId?: string;
   projectKey: string;
   issueType: string;
   /** Trusted mapping from user identity to Jira account IDs must happen outside the model. */
@@ -57,15 +62,23 @@ export class JiraBoard implements BoardPort {
     if (u.protocol !== 'https:' || !u.hostname.endsWith('.atlassian.net')) {
       throw new Error('Jira base URL must be an HTTPS Atlassian Cloud host');
     }
-    if (!config.email || !config.token || !/^[A-Za-z][A-Za-z0-9_-]+$/.test(config.projectKey)) {
+    if (config.cloudId !== undefined && !/^[a-f0-9-]{8,64}$/i.test(config.cloudId)) throw new Error('Jira cloud id invalid');
+    if ((!config.cloudId && !config.email) || !config.token || !/^[A-Za-z][A-Za-z0-9_-]+$/.test(config.projectKey)) {
       throw new Error('Jira credentials or project key missing/invalid');
     }
   }
-  private headers(): Record<string, string> {
+  private async headers(): Promise<Record<string, string>> {
+    const token = await readToken(this.config.token);
     return {
-      Authorization: `Basic ${Buffer.from(`${this.config.email}:${this.config.token}`).toString('base64')}`,
+      Authorization: this.config.cloudId ? `Bearer ${token}` : `Basic ${Buffer.from(`${this.config.email}:${token}`).toString('base64')}`,
       Accept: 'application/json', 'Content-Type': 'application/json',
     };
+  }
+  /** REST URLs: the site itself with an API token, the Atlassian API gateway for the site with OAuth. */
+  private api(path: string): URL {
+    return this.config.cloudId
+      ? new URL(`/ex/jira/${this.config.cloudId}${path}`, 'https://api.atlassian.com')
+      : new URL(path, this.config.baseUrl);
   }
   private readonly verifiedAssignees = new Map<string, string>();
   /** Account ids found by email, so a person is looked up once per process. */
@@ -108,8 +121,8 @@ export class JiraBoard implements BoardPort {
       if (!accountId) throw new Error('That person has no Jira account Nogita knows about');
       clauses.push(`assignee = "${accountId.replace(/["\\]/g, '')}"`);
     }
-    const response = await this.http(new URL('/rest/api/3/search/jql', this.config.baseUrl), {
-      method: 'POST', headers: this.headers(),
+    const response = await this.http(this.api('/rest/api/3/search/jql'), {
+      method: 'POST', headers: await this.headers(),
       body: JSON.stringify({ jql: `${clauses.join(' AND ')} ${order}`, maxResults: Math.min(query.limit ?? 15, 30), fields: SEARCH_FIELDS }),
       signal: AbortSignal.timeout(12000),
     });
@@ -124,8 +137,8 @@ export class JiraBoard implements BoardPort {
   }
   async getTask(key: string): Promise<TaskDetail | undefined> {
     if (!KEY_PATTERN.test(key) || !this.readProjects.some(project => key.startsWith(`${project.toUpperCase()}-`))) return undefined;
-    const response = await this.http(new URL(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${[...SEARCH_FIELDS, 'description', 'comment', 'reporter', 'created'].join(',')}`, this.config.baseUrl), {
-      method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(12000),
+    const response = await this.http(this.api(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=${[...SEARCH_FIELDS, 'description', 'comment', 'reporter', 'created'].join(',')}`), {
+      method: 'GET', headers: await this.headers(), signal: AbortSignal.timeout(12000),
     });
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`Jira read failed: HTTP ${response.status}`);
@@ -142,11 +155,11 @@ export class JiraBoard implements BoardPort {
   async findAssignees(name: string): Promise<AssigneeCandidate[]> {
     const query = name.trim().slice(0, 100);
     if (!query) return [];
-    const url = new URL('/rest/api/3/user/assignable/search', this.config.baseUrl);
+    const url = this.api('/rest/api/3/user/assignable/search');
     url.searchParams.set('project', this.config.projectKey);
     url.searchParams.set('query', query);
     url.searchParams.set('maxResults', '20');
-    const response = await this.http(url, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(12000) });
+    const response = await this.http(url, { method: 'GET', headers: await this.headers(), signal: AbortSignal.timeout(12000) });
     if (!response.ok) throw new Error(`Jira user search failed: HTTP ${response.status}`);
     const users = await response.json() as Array<{ accountId?: string; displayName?: string; active?: boolean; accountType?: string }>;
     const wanted = query.toLocaleLowerCase();
@@ -167,8 +180,8 @@ export class JiraBoard implements BoardPort {
       url: `${this.config.baseUrl.replace(/\/$/, '')}/browse/${encodeURIComponent(key)}` };
   }
   private async findExisting(requestDigest: string): Promise<ActionReceipt | undefined> {
-    const response = await this.http(new URL('/rest/api/3/search/jql', this.config.baseUrl), {
-      method: 'POST', headers: this.headers(),
+    const response = await this.http(this.api('/rest/api/3/search/jql'), {
+      method: 'POST', headers: await this.headers(),
       body: JSON.stringify({
         jql: `project = "${this.config.projectKey}" AND creator = currentUser() ORDER BY created DESC`,
         maxResults: 100, fields: ['key'], properties: [REQUEST_PROPERTY],
@@ -219,11 +232,11 @@ export class JiraBoard implements BoardPort {
   /** The assignable account with this email. A search that does not single one out finds nobody, never a guess. */
   private async accountIdByEmail(email: string): Promise<string | undefined> {
     if (this.byEmail.has(email)) return this.byEmail.get(email);
-    const url = new URL('/rest/api/3/user/assignable/search', this.config.baseUrl);
+    const url = this.api('/rest/api/3/user/assignable/search');
     url.searchParams.set('project', this.config.projectKey);
     url.searchParams.set('query', email);
     url.searchParams.set('maxResults', '5');
-    const response = await this.http(url, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(12000) });
+    const response = await this.http(url, { method: 'GET', headers: await this.headers(), signal: AbortSignal.timeout(12000) });
     if (!response.ok) throw new Error(`Jira user search failed: HTTP ${response.status}`);
     const users = await response.json() as Array<{ accountId?: string; emailAddress?: string; active?: boolean; accountType?: string }>;
     const people = (Array.isArray(users) ? users : []).filter(user => user.active !== false && user.accountType !== 'app' &&
@@ -251,9 +264,9 @@ export class JiraBoard implements BoardPort {
       description: adfParagraph(task.description),
     };
     if (providerAssigneeId) fields.assignee = { accountId: providerAssigneeId };
-    const response = await this.http(new URL('/rest/api/3/issue', this.config.baseUrl), {
+    const response = await this.http(this.api('/rest/api/3/issue'), {
       method: 'POST',
-      headers: this.headers(),
+      headers: await this.headers(),
       body: JSON.stringify({ fields, properties: [{ key: REQUEST_PROPERTY, value: { digest: requestDigest } }] }),
       signal: AbortSignal.timeout(12000),
     });

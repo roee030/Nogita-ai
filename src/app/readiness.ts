@@ -60,9 +60,17 @@ export function buildReadinessReport(
   nodeVersion = process.versions.node,
   providerConfigValid = true,
   slackSocketConnected = false,
+  /** What a company config connected (NOGITA_TENANT_CONFIG); without it the single-company variables are checked. */
+  connections?: { boards: string[]; repositories: string[]; authorizedActorIds: string[] },
 ): ReadinessReport {
-  const hasAuthorizedOwner = (env.AUTHORIZED_ACTOR_IDS ?? '').split(',')
+  const hasAuthorizedOwner = (connections?.authorizedActorIds ?? (env.AUTHORIZED_ACTOR_IDS ?? '').split(','))
     .map(id => id.trim()).filter(Boolean).some(id => Boolean(identities.fromId(id)));
+  // A company config was validated when it loaded; its connections are what it lists.
+  const jiraConfigured = connections ? connections.boards.includes('jira')
+    : env.BOARD_PROVIDER === 'jira' && present(env, ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY']);
+  const githubConfigured = connections ? connections.repositories.includes('github')
+    : env.REPO_PROVIDER === 'github' && present(env, ['GITHUB_OWNER', 'GITHUB_REPO']) &&
+      (Boolean(env.GITHUB_TOKEN?.trim()) || env.GITHUB_PUBLIC_REPO === 'true');
   const slackCommon = Boolean(env.SLACK_BOT_TOKEN?.startsWith('xoxb-')) &&
     present(env, ['SLACK_ALLOWED_TEAM_IDS', 'SLACK_BOT_USER_ID']);
   const slackSocketModeReady = slackCommon && Boolean(env.SLACK_APP_TOKEN?.startsWith('xapp-')) && slackSocketConnected;
@@ -85,12 +93,10 @@ export function buildReadinessReport(
     check('slack', slackEventsMode || slackSocketModeReady,
       slackSocketModeReady ? 'Slack Socket Mode is connected.' : 'Signed Slack Events API configuration is complete for the HTTP service.',
       'Configure signed Events API for POST /slack/events or provide Socket Mode credentials and wait for the WebSocket connection.'),
-    check('jira', env.BOARD_PROVIDER === 'jira' &&
-      present(env, ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY']),
+    check('jira', jiraConfigured,
       'Jira is selected and its required configuration is present.',
       'Select Jira and configure its site, account email, API token, and project key.'),
-    check('github', env.REPO_PROVIDER === 'github' && present(env, ['GITHUB_OWNER', 'GITHUB_REPO']) &&
-      (Boolean(env.GITHUB_TOKEN?.trim()) || env.GITHUB_PUBLIC_REPO === 'true'),
+    check('github', githubConfigured,
       'GitHub is selected and its required configuration is present.',
       'Select GitHub, configure owner/repository, and provide either a repository-scoped read token or explicit public-repository mode.'),
     check('attendee', env.MEETING_PROVIDER === 'attendee' && present(env, ['ATTENDEE_API_KEY', 'ATTENDEE_WEBHOOK_SECRET']) &&
