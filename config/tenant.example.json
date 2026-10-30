@@ -12,7 +12,7 @@
   ],
   "chat": { "id": "slack", "provider": "slack", "botToken": "env:ACME_SLACK_BOT_TOKEN" },
   "people": [
-    { "id": "dana", "displayName": "Dana Katz", "jiraAccountId": "replace-with-jira-account-id",
+    { "id": "dana", "displayName": "Dana Katz", "email": "dana@acme.example",
       "slack": { "teamId": "T0ACME", "userId": "U0DANA" }, "githubUsername": "danak" }
   ],
   "authorizedActorIds": ["dana"]

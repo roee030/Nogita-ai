@@ -16,6 +16,8 @@ export interface JiraConfig {
   /** Trusted mapping from user identity to Jira account IDs must happen outside the model. */
   allowedAssigneeIds?: ReadonlySet<string>;
   resolveAssigneeId?: (internalId: string) => string | undefined;
+  /** A person's work email, when no account id is configured: the account is found by it and remembered. */
+  resolveAssigneeEmail?: (internalId: string) => string | undefined;
   /** Extra project keys the agent may read (search/get). Writes always go to `projectKey`. */
   readProjectKeys?: readonly string[];
 }
@@ -66,6 +68,8 @@ export class JiraBoard implements BoardPort {
     };
   }
   private readonly verifiedAssignees = new Map<string, string>();
+  /** Account ids found by email, so a person is looked up once per process. */
+  private readonly byEmail = new Map<string, string>();
   private get readProjects(): string[] {
     return [...new Set([this.config.projectKey, ...(this.config.readProjectKeys ?? [])])]
       .filter(key => /^[A-Za-z][A-Za-z0-9_-]+$/.test(key));
@@ -100,7 +104,7 @@ export class JiraBoard implements BoardPort {
     if (query.status?.trim()) clauses.push(`status = "${query.status.trim().replace(/["\\]/g, ' ').slice(0, 60)}"`);
     if (query.unassigned) clauses.push('assignee is EMPTY');
     else if (query.assigneeId) {
-      const accountId = this.accountIdFor(query.assigneeId);
+      const accountId = await this.accountIdFor(query.assigneeId);
       if (!accountId) throw new Error('That person has no Jira account Nogita knows about');
       clauses.push(`assignee = "${accountId.replace(/["\\]/g, '')}"`);
     }
@@ -201,15 +205,40 @@ export class JiraBoard implements BoardPort {
     }
     return undefined;
   }
-  /** A Jira account id for an internal person id, a verified `jira:` candidate, or an allowlisted account id. */
-  private accountIdFor(id: string): string | undefined {
-    return this.config.resolveAssigneeId?.(id) ?? this.verifiedAssignees.get(id)
+  /**
+   * A Jira account id for an internal person id (configured, or found by their email), a verified `jira:` candidate,
+   * or an allowlisted account id.
+   */
+  private async accountIdFor(id: string): Promise<string | undefined> {
+    const known = this.config.resolveAssigneeId?.(id) ?? this.verifiedAssignees.get(id)
       ?? (this.config.allowedAssigneeIds?.has(id) ? id : undefined);
+    if (known) return known;
+    const email = this.config.resolveAssigneeEmail?.(id);
+    return email ? this.accountIdByEmail(email) : undefined;
+  }
+  /** The assignable account with this email. A search that does not single one out finds nobody, never a guess. */
+  private async accountIdByEmail(email: string): Promise<string | undefined> {
+    if (this.byEmail.has(email)) return this.byEmail.get(email);
+    const url = new URL('/rest/api/3/user/assignable/search', this.config.baseUrl);
+    url.searchParams.set('project', this.config.projectKey);
+    url.searchParams.set('query', email);
+    url.searchParams.set('maxResults', '5');
+    const response = await this.http(url, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error(`Jira user search failed: HTTP ${response.status}`);
+    const users = await response.json() as Array<{ accountId?: string; emailAddress?: string; active?: boolean; accountType?: string }>;
+    const people = (Array.isArray(users) ? users : []).filter(user => user.active !== false && user.accountType !== 'app' &&
+      typeof user.accountId === 'string');
+    // Jira hides most emails; a search by a full address that returns exactly one person is that person.
+    const visible = people.filter(user => user.emailAddress?.toLowerCase() === email);
+    const found = visible.length === 1 ? visible[0] : people.length === 1 && !people[0]!.emailAddress ? people[0] : undefined;
+    // Only a confident answer is remembered; "nobody" may change when they are added to the project.
+    if (found) this.byEmail.set(email, found.accountId!);
+    return found?.accountId;
   }
   async createTask(task: CreateTask): Promise<ActionReceipt> {
     let providerAssigneeId: string | undefined;
     if (task.assigneeId) {
-      providerAssigneeId = this.accountIdFor(task.assigneeId);
+      providerAssigneeId = await this.accountIdFor(task.assigneeId);
       if (!providerAssigneeId) throw new Error('Assignee not in explicitly configured Jira allowlist');
     }
     const requestDigest = jiraRequestDigest(task.requestId);

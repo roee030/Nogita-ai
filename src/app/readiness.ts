@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { persistentStateConfigured, persistentStateRequired } from './state-storage.ts';
 import type { IdentityDirectory } from '../core/identity.ts';
 
 export interface ReadinessCheck {
@@ -67,8 +67,8 @@ export function buildReadinessReport(
     present(env, ['SLACK_ALLOWED_TEAM_IDS', 'SLACK_BOT_USER_ID']);
   const slackSocketModeReady = slackCommon && Boolean(env.SLACK_APP_TOKEN?.startsWith('xapp-')) && slackSocketConnected;
   const slackEventsMode = slackCommon && Boolean(env.SLACK_SIGNING_SECRET?.trim());
-  const queueStoragePersistent = env.RENDER !== 'true' ||
-    (env.NOGITA_STATE_PERSISTENT === 'true' && isAbsolute(env.NOGITA_STATE_DIR ?? ''));
+  const storageMustPersist = env.RENDER === 'true' || persistentStateRequired(env);
+  const queueStoragePersistent = !storageMustPersist || persistentStateConfigured(env);
   const checks: ReadinessCheck[] = [
     check('runtime', supportedNode(nodeVersion), 'The Node.js runtime is supported.',
       'Upgrade the runtime to Node.js 22.16 or newer.'),
@@ -79,7 +79,7 @@ export function buildReadinessReport(
       'Correct invalid provider configuration before processing events or sessions.'),
     check('durable_queue', validQueueKey(env.NOGITA_QUEUE_ENCRYPTION_KEY) && queueStoragePersistent,
       'The encrypted event queue has a valid key and its filesystem persistence is configured.',
-      env.RENDER === 'true' && !queueStoragePersistent
+      storageMustPersist && !queueStoragePersistent
         ? 'Mount persistent storage, set NOGITA_STATE_DIR to its absolute mount path, and set NOGITA_STATE_PERSISTENT=true only after verifying the mount.'
         : 'Set NOGITA_QUEUE_ENCRYPTION_KEY to 32 random base64-encoded bytes in deployment secrets.'),
     check('slack', slackEventsMode || slackSocketModeReady,

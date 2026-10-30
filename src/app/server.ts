@@ -33,6 +33,7 @@ import { buildToolbox } from '../core/agent-tools.ts';
 import type { ActionReceipt } from '../core/contracts.ts';
 import { directlyAddressesNogita, normalizeWakeWord } from '../core/policy.ts';
 import { readFileSync } from 'node:fs';
+import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -63,6 +64,17 @@ const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
   Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'));
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
+// A company cell does not start without persistent storage of its own; a .env setup only warns, as before.
+// With an invalid config the demo stand-in runs to report the problem, so it claims nothing.
+if (providerConfigValid) {
+  try {
+    if (claimStateDirectory(stateDirectory, dependencies.tenant.id, env).adopted) console.log('state_directory_adopted');
+  } catch (error) {
+    if (!(error instanceof StateStorageError)) throw error;
+    if (error.kind === 'other_company' || persistentStateRequired(env)) throw error;
+    console.error('state_storage_problem', error.message);
+  }
+}
 const turnLog = new TurnLog(stateDirectory, parseTurnLogMode(env.NOGITA_TURN_LOG),
   env.ATTENDEE_WEBHOOK_SECRET ?? env.NOGITA_ADMIN_TOKEN ?? '');
 const presence = new PresenceHub({ boardName: dependencies.board.name, chatName: dependencies.chat?.name,

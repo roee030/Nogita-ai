@@ -34,7 +34,8 @@ function buildBoard(connection: BoardConnection, identities: IdentityDirectory):
     case 'jira': return new JiraBoard({ baseUrl: connection.baseUrl, email: connection.email, token: connection.token,
       projectKey: connection.projectKey, issueType: connection.issueType ?? 'Task',
       allowedAssigneeIds: new Set(connection.assigneeAccountIds ?? []),
-      resolveAssigneeId: id => identities.jiraAccountIdFor(id), readProjectKeys: connection.readProjectKeys ?? [] });
+      resolveAssigneeId: id => identities.accountFor(id, connection.id, 'jira'),
+      resolveAssigneeEmail: id => identities.emailFor(id), readProjectKeys: connection.readProjectKeys ?? [] });
     case 'monday': return new MondayBoard(connection.token, connection.boardId, connection.descriptionColumnId);
     case 'demo': return new DemoBoard();
   }

@@ -5,7 +5,7 @@
 interface Issue { key: string; project: string; summary: string; description: string; status: string; assignee?: string;
   updated: number; digest?: string }
 
-export function jiraFake(people: Array<{ accountId: string; displayName: string }>, initialStatus = 'To Do'): typeof fetch {
+export function jiraFake(people: Array<{ accountId: string; displayName: string; email?: string }>, initialStatus = 'To Do'): typeof fetch {
   const issues: Issue[] = [];
   let clock = 0;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -52,8 +52,9 @@ export function jiraFake(people: Array<{ accountId: string; displayName: string 
     }
     if (url.pathname === '/rest/api/3/user/assignable/search') {
       const query = (url.searchParams.get('query') ?? '').toLowerCase();
-      return json(people.filter(person => person.displayName.toLowerCase().includes(query))
-        .map(person => ({ ...person, active: true, accountType: 'atlassian' })));
+      // Like Jira Cloud: the query also matches the email, which the answer hides.
+      return json(people.filter(person => person.displayName.toLowerCase().includes(query) || person.email === query)
+        .map(({ email: _email, ...person }) => ({ ...person, active: true, accountType: 'atlassian' })));
     }
     return json({ errorMessages: [`fake has no ${init?.method ?? 'GET'} ${url.pathname}`] }, 404);
   }) as typeof fetch;
