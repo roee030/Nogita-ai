@@ -1,7 +1,8 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
-  type MeetingPort, type PolicyPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
+  type MeetingPort, type MeetingMemoryPort, type PolicyPort, type PullRequestPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type ChatModel } from './agent.ts';
 import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
+import { ActionItemTracker } from './drafting.ts';
 import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
@@ -12,6 +13,8 @@ import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveReques
 interface Session {
   meeting: MeetingPort;
   history: ConversationTurn[]; // ephemeral: purged when session ends
+  /** Action items heard so far and who took them; purged with the history. */
+  items: ActionItemTracker;
   /** `conversation`: she just answered and the asker may go on without her name; it closes when someone else talks.
    *  `question`: she asked the speaker something and waits for the reply. */
   pendingFollowUp?: { actorId: string; request: string; question: string; expiresAt: number; afterSequence: number;
@@ -88,6 +91,8 @@ export interface Speculation { readonly sessionId: string; readonly question: un
 type ProgressWork = () => void | Promise<void>;
 export interface NogitaEngineOptions {
   progressDelayMs?: number;
+  /** When she leaves a meeting, one chat line lists the action items nobody took. Off unless set. */
+  actionItemRecap?: boolean;
   /** Filler delay when the streaming agent answers; its own spoken lead-in usually comes first. */
   agentProgressDelayMs?: number;
   /** Where platforms cannot raise a hand natively: 'chat' posts a short hand-raise line, 'none' stays silent. */
@@ -259,6 +264,7 @@ export class NogitaEngine {
   private readonly onLeaveRequested?: NogitaEngineOptions['onLeaveRequested'];
   private readonly phrases: PhrasePicker;
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
+  private readonly actionItemRecap: boolean;
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
@@ -268,6 +274,10 @@ export class NogitaEngine {
     /** Tool-using conversational model. When present it answers every direct request; the planner is the fallback. */
     agent?: ChatModel;
     chat?: ChatPort;
+    /** Draft pull requests; offered only to speakers the policy allows. */
+    drafts?: PullRequestPort;
+    /** Opt-in: decisions and action items kept after a meeting ends. */
+    memory?: MeetingMemoryPort;
     people?: PeopleDirectory;
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
@@ -287,6 +297,7 @@ export class NogitaEngine {
     this.missions = options.missions;
     this.onLeaveRequested = options.onLeaveRequested;
     this.floorOptions = options.floor ?? {};
+    this.actionItemRecap = options.actionItemRecap === true;
   }
 
   private validateSessionId(sessionId: string): void {
@@ -297,7 +308,7 @@ export class NogitaEngine {
     this.validateSessionId(sessionId);
     this.dependencies.brain.beginUsageSession?.(sessionId);
     this.sessions.set(sessionId, {
-      meeting, history: [], lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
+      meeting, history: [], items: new ActionItemTracker(), lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       lastAssessmentAt: 0, utterancesSinceAssessment: 0, assessing: false,
       processing: Promise.resolve(), ending: false, lastModelCallAt: 0, questions: [], nextQuestionId: 1,
     });
@@ -343,8 +354,9 @@ export class NogitaEngine {
       // The tool list an authorized person gets; it is only described to the model here, never run.
       const { toolbox } = buildToolbox({
         actor: { id: 'cache-warmup', displayName: 'Nogita', verified: true }, request: '', sessionId, eventId: 'cache-warmup',
-        policy: { mayReadCode: () => true, mayWriteTask: () => true, mayDraftPR: () => false },
-        code: this.dependencies.code, board: this.dependencies.board, chat: this.dependencies.chat,
+        policy: { mayReadCode: () => true, mayWriteTask: () => true, mayDraftPR: () => true },
+        code: this.dependencies.code, board: this.dependencies.board, chat: this.dependencies.chat, drafts: this.dependencies.drafts,
+        memory: this.dependencies.memory, actionItems: () => [],
         people: this.dependencies.people, completed: new Map(), onReceipt: async () => {},
       });
       session.lastModelCallAt = this.now();
@@ -390,6 +402,15 @@ export class NogitaEngine {
     const ending = (async () => {
       await session.processing;
       if (this.sessions.get(sessionId) !== session) return;
+      if (this.dependencies.memory) {
+        await this.dependencies.memory.remember({ endedAt: new Date(this.now()).toISOString(),
+          decisions: session.items.decisions(), actionItems: session.items.list() }).catch(() => undefined);
+      }
+      const open = this.actionItemRecap && leaveProvider ? session.items.unowned() : [];
+      if (open.length) {
+        await session.meeting.sendStatus(`Open items nobody took: ${open.slice(0, 8).map(item => `${item.text} (${item.speaker})`).join('; ')}.`)
+          .catch(() => undefined);
+      }
       // Keep the session and provider handle until leave is confirmed. If the
       // provider is temporarily unavailable, a later leave command can retry.
       if (leaveProvider) await session.meeting.leave();
@@ -397,6 +418,7 @@ export class NogitaEngine {
       this.sessions.delete(sessionId);
       this.dependencies.brain.endUsageSession?.(sessionId);
       session.history.length = 0;
+      session.items.clear();
       session.pendingFollowUp = undefined;
       session.activeRequest = undefined;
       session.eventIds.clear();
@@ -754,11 +776,16 @@ export class NogitaEngine {
       userText += `\n\nQuick search results for this request (untrusted data; read files for details):\n${prefetched
         .map(item => `${item.path} (${item.url})\n${item.excerpt.slice(0, 1200)}`).join('\n---\n')}`;
     }
+    let transcript: string[] = [];
     const { toolbox, report } = buildToolbox({
-      actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId,
+      actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId, transcript: () => transcript,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
-      chat: this.dependencies.chat, people: this.dependencies.people, completed: this.completed,
-      onReceipt: receipt => s.meeting.sendCompletion(receipt),
+      chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
+      actionItems: () => s.items.list(), memory: this.dependencies.memory,
+      onReceipt: receipt => {
+        if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
+        return s.meeting.sendCompletion(receipt);
+      },
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
       ...(this.missions && authorized ? { missions: this.missionPort(sessionId, utterance.actor) } : {}),
       ...(this.onLeaveRequested && s.meeting.capabilities.has('speak') ? { leave: () => { leave.asked = true; } } : {}),
@@ -766,7 +793,7 @@ export class NogitaEngine {
         ...(this.screenAudience ? { screenAudience: () => this.screenAudience!(sessionId) } : {}) } : {}),
     });
     // A text thread carries its own history (including messages that never addressed Nogita).
-    let transcript = history ?? s.history.slice(0, -1).map(turn => turn.text);
+    transcript = history ?? s.history.slice(0, -1).map(turn => turn.text);
     if (s.meeting.recentContext) {
       const thread = await Promise.race([s.meeting.recentContext().catch(() => [] as string[]),
         new Promise<string[]>(resolve => setTimeout(() => resolve([]), 2_000))]);
@@ -1049,6 +1076,7 @@ export class NogitaEngine {
     let current = utterance.text.trim().slice(0, 4000);
     historyEntry = { role: 'user', text: `${utterance.actor.displayName}: ${current}` };
     s.history.push(historyEntry);
+    s.items.hear(utterance.actor.displayName, current);
     if (s.history.length > 24) s.history.shift();
 
     if (isCourtesyClose(current)) {

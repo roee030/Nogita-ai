@@ -17,7 +17,9 @@ export type BoardConnection = { id: string; default?: boolean } & (
   | { provider: 'demo' });
 
 export type RepositoryConnection = { id: string } & (
-  | { provider: 'github'; owner: string; repo: string; ref?: string; token?: string; publicRepo?: boolean }
+  | { provider: 'github'; owner: string; repo: string; ref?: string; token?: string; publicRepo?: boolean;
+      /** Draft pull requests on request (needs a token with Contents and Pull requests write). Off by default. */
+      draftPullRequests?: boolean }
   | { provider: 'demo' });
 
 export type ChatConnection = { id: string } & { provider: 'slack'; botToken: string; userToken?: string };
@@ -70,7 +72,7 @@ export function tenantConfigFromEnv(env: NodeJS.ProcessEnv): TenantConfig {
     : [];
   const repositories: RepositoryConnection[] = env.REPO_PROVIDER === 'github'
     ? [{ id: 'github', provider: 'github', owner: env.GITHUB_OWNER ?? '', repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main',
-        token: env.GITHUB_TOKEN ?? '', publicRepo: env.GITHUB_PUBLIC_REPO === 'true' }]
+        token: env.GITHUB_TOKEN ?? '', publicRepo: env.GITHUB_PUBLIC_REPO === 'true', draftPullRequests: env.GITHUB_DRAFT_PRS === 'true' }]
     : [];
   return {
     tenant: { id: env.NOGITA_TENANT_ID || 'default', name: env.NOGITA_TENANT_NAME || 'Default' },
@@ -165,7 +167,8 @@ function parseRepository(raw: unknown, path: string, seen: Set<string>): Reposit
   const id = connectionId(r.id, `${path}.id`, seen);
   switch (r.provider) {
     case 'github': return { id, provider: 'github', owner: text(r.owner, `${path}.owner`), repo: text(r.repo, `${path}.repo`),
-      ref: text(r.ref, `${path}.ref`, true) || 'main', token: text(r.token, `${path}.token`, true), publicRepo: r.publicRepo === true };
+      ref: text(r.ref, `${path}.ref`, true) || 'main', token: text(r.token, `${path}.token`, true), publicRepo: r.publicRepo === true,
+      draftPullRequests: r.draftPullRequests === true };
     case 'demo': return { id, provider: 'demo' };
     default: throw new ConfigError(`${path}.provider`, `unknown repository provider ${JSON.stringify(r.provider)} (github, demo)`);
   }

@@ -108,12 +108,13 @@ const READ_LABELS: Record<string, string> = {
   search_code: 'Inspecting the repository', read_file: 'Reading the code', list_files: 'Inspecting the repository',
   recent_commits: 'Checking recent commits', search_tasks: 'Checking the board', get_task: 'Checking the board',
   list_channels: 'Checking chat', read_channel: 'Reading the discussion', search_messages: 'Searching the discussion',
-  create_task: 'Creating a task', post_message: 'Posting a message', record_finding: 'Found something', finish_mission: 'Verifying the result',
+  create_task: 'Creating a task', update_task: 'Updating a task', post_message: 'Posting a message', record_finding: 'Found something', finish_mission: 'Verifying the result',
 };
 
 function describeWrite(tool: string, input: Record<string, unknown>): string {
   const text = (value: unknown, max: number) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
   if (tool === 'create_task') return `create the task "${text(input.title, 120)}"${input.assignee ? ` for ${text(input.assignee, 60)}` : ''}`;
+  if (tool === 'update_task') return `change ${text(input.key, 20)}: ${[input.status && `move it to ${text(input.status, 40)}`, input.assignee && `assign it to ${text(input.assignee, 60)}`, input.comment && `comment "${text(input.comment, 120)}"`].filter(Boolean).join(', ')}`;
   if (tool === 'post_message') return `post in ${text(input.channel, 60)}: "${text(input.text, 160)}"`;
   return `run ${tool}`;
 }

@@ -1,9 +1,9 @@
-import type { AiUsage, ResponseStage, SpeechStage, UsagePort } from '../core/contracts.ts';
+import type { AiUsage, ExternalAction, ResponseStage, SpeechStage, UsagePort } from '../core/contracts.ts';
 
 interface SessionTiming {
   provider: string; startedAt: number; endedAt?: number; realtimeAudio?: boolean;
   deepgramSttAudioSeconds: number; deepgramTtsCharacters: number;
-  ttsRequests: number; ttsFailures: number; createTasks: number; codeLookups: number;
+  ttsRequests: number; ttsFailures: number; actions: Record<ExternalAction, number>;
   responseMs: number[];
   responseStageMs: Record<ResponseStage, number[]>;
   speechMs: Record<SpeechStage, number[]>;
@@ -22,7 +22,7 @@ export interface SessionUsageReport {
   deepgramEstimatedUsd: number;
   deepgramUsage?: { sttAudioSeconds: number; ttsCharacters: number };
   tts: { requests: number; failures: number };
-  externalActions: { create_task: number; code_lookup: number };
+  externalActions: Record<ExternalAction, number>;
   ai?: AiUsage;
   totalEstimatedUsd: number;
   processingLatency: { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
@@ -43,7 +43,7 @@ export class SessionUsageRegistry implements UsagePort {
   start(sessionId: string, provider: string, realtimeAudio = false): void {
     this.sessions.set(sessionId, { provider, startedAt: this.now(), ttsRequests: 0, ttsFailures: 0,
       deepgramSttAudioSeconds: 0, deepgramTtsCharacters: 0,
-      createTasks: 0, codeLookups: 0, responseMs: [], speechMs: {
+      actions: { create_task: 0, update_task: 0, draft_pr: 0, code_lookup: 0 }, responseMs: [], speechMs: {
         chat_mirror: [], tts_synthesis: [], audio_submission: [], speech_submission: [],
       }, responseStageMs: { transcript_to_chat_ack: [], model_roundtrip: [], turn_to_first_speech_attempt: [] } });
     if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value!);
@@ -73,9 +73,9 @@ export class SessionUsageRegistry implements UsagePort {
     samples.push(Math.round(durationMs));
     if (samples.length > 200) samples.shift();
   }
-  recordExternalAction(sessionId: string, action: 'create_task' | 'code_lookup'): void {
-    const session = this.sessions.get(sessionId); if (!session) return;
-    if (action === 'create_task') session.createTasks++; else session.codeLookups++;
+  recordExternalAction(sessionId: string, action: ExternalAction): void {
+    const session = this.sessions.get(sessionId); if (!session || !(action in session.actions)) return;
+    session.actions[action]++;
   }
   recordDeepgramSttBytes(sessionId: string, bytes: number): void {
     const session = this.sessions.get(sessionId);
@@ -127,7 +127,7 @@ export class SessionUsageRegistry implements UsagePort {
         ttsCharacters: session.deepgramTtsCharacters,
       } } : {}),
       tts: { requests: session.ttsRequests, failures: session.ttsFailures },
-      externalActions: { create_task: session.createTasks, code_lookup: session.codeLookups },
+      externalActions: { ...session.actions },
       ...(ai ? { ai } : {}), totalEstimatedUsd,
       processingLatency: summarize(durations),
       responseStages: {

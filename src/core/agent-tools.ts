@@ -1,4 +1,6 @@
-import type { ActionReceipt, Actor, BoardPort, ChatPort, CodePort, Evidence, PolicyPort, ScreenCard, TaskSearch } from './contracts.ts';
+import type { ActionReceipt, Actor, BoardPort, ChatPort, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, ScreenCard, TaskSearch } from './contracts.ts';
+import { isExplicitPRRequest } from './policy.ts';
+import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
@@ -19,12 +21,20 @@ export interface ToolboxContext {
   code: CodePort;
   board: BoardPort;
   chat?: ChatPort;
+  /** Draft pull requests, when the team turned them on. */
+  drafts?: PullRequestPort;
   people?: PeopleDirectory;
+  /** What was said before this request, "Name: text" oldest first: quoted in new tasks and read for a volunteer owner. */
+  transcript?: () => readonly string[];
+  /** Action items heard in this meeting so far, with their owners. */
+  actionItems?: () => ActionItem[];
+  /** Decisions and action items of earlier meetings, when the team turned meeting memory on. */
+  memory?: MeetingMemoryPort;
   /** Called after a successful write so the meeting chat gets the link immediately. */
   onReceipt: (receipt: ActionReceipt) => Promise<void>;
   /** Idempotency memory shared across retries of the same event. */
   completed: Map<string, ActionReceipt>;
-  recordAction?: (action: 'create_task' | 'code_lookup') => void;
+  recordAction?: (action: ExternalAction) => void;
   /** Puts a card on the meeting's shared screen (undefined clears it). Voice meetings with a presence screen only. */
   show?: (card: ScreenCard | undefined) => void;
   /** Who can see the shared screen: participants not mapped to a known team member. Unknown when undefined. */
@@ -74,6 +84,20 @@ export function requestsTaskWrite(request: string): boolean {
   return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${TASK_NOUN}\\b`).test(cleaned) ||
     /\b(?:add|put|move|log)\s+(?:it|this|that|these|those|them|both)\b.{0,40}\b(?:backlog|jira|board|sprint)\b/.test(cleaned) ||
     /\bwrite (?:it|this|that) up\b/.test(cleaned);
+}
+const TASK_TARGET = String.raw`(?:[a-z][a-z0-9_]+-\d+|(?:the|this|that|my|his|her|their|our)\s+(?:[\w'-]+\s+){0,3}?${TASK_NOUN}|it|this|that|them|those|both)`;
+const STATUS_CHANGE = new RegExp(String.raw`\b(?:(?:move|set|put|change|switch|push|bump)\s+${TASK_TARGET}\b.{0,40}\b(?:to|in|into|as)\b|mark\s+${TASK_TARGET}\b|(?:close|resolve|reopen|finish)\s+${TASK_TARGET}\b|set\s+the\s+status\b)`);
+const ASSIGN_CHANGE = new RegExp(String.raw`\b(?:(?:re)?assign\s+${TASK_TARGET}\b.{0,40}\bto\b|(?:give|hand)\s+${TASK_TARGET}\s+to\b|make\s+\w+(?:\s+\w+)?\s+(?:the\s+)?owner\b)`);
+const COMMENT_CHANGE = new RegExp(String.raw`\b(?:comment\s+on\s+${TASK_TARGET}\b|(?:add|leave|write|put)\s+(?:a\s+|an?\s+)?(?:comment|note)\b)`);
+
+/**
+ * Which parts of an existing task the request explicitly asks to change. A question about a task ("what's the status of
+ * KAN-12?") changes nothing, and each part needs its own words, so a move never brings along a comment nobody asked for.
+ */
+export function requestedTaskChanges(request: string): { status: boolean; assignee: boolean; comment: boolean } {
+  const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (isInformationQuestion(t)) return { status: false, assignee: false, comment: false };
+  return { status: STATUS_CHANGE.test(t), assignee: ASSIGN_CHANGE.test(t), comment: COMMENT_CHANGE.test(t) };
 }
 /** A direct request to send something to a Slack channel. */
 export function requestsChatPost(request: string): boolean {
@@ -262,27 +286,75 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       if (!title) return { content: 'title is required (at most 200 characters)', isError: true };
       let assigneeId: string | undefined;
       let assigneeName: string | undefined;
+      let volunteered = false;
       const target = board.boards ? str(input.board, 40) : undefined;
       const wanted = str(input.assignee, 100);
+      const lines = context.transcript?.() ?? [];
       if (wanted) {
         const resolved = await resolveAssignee(wanted, context, target);
         if ('problem' in resolved) return { content: `Not created: ${resolved.problem}`, isError: true };
         assigneeId = resolved.id;
         assigneeName = resolved.displayName;
+      } else if (taskIndex === 0) {
+        // Someone already said "I'll take it": they own it, if the board knows exactly one person by that name.
+        const volunteer = findVolunteer(lines);
+        const resolved = volunteer ? await resolveAssignee(volunteer, context, target).catch(() => undefined) : undefined;
+        if (resolved && !('problem' in resolved)) { assigneeId = resolved.id; assigneeName = resolved.displayName; volunteered = true; }
       }
+      const fullDescription = withMeetingQuotes(description, lines);
       writes++;
       // Index-based so a retried event maps its n-th task to the same Jira issue even if wording changes.
       const requestId = `${context.sessionId}:${context.eventId}:task:${++taskIndex}`;
       let receipt = context.completed.get(requestId);
       if (!receipt) {
-        receipt = await board.createTask({ title, description, assigneeId, requestId, ...(target ? { board: target } : {}) });
+        receipt = await board.createTask({ title, description: fullDescription, assigneeId, requestId, ...(target ? { board: target } : {}) });
         context.completed.set(requestId, receipt);
         context.recordAction?.('create_task');
         report.receipts.push(receipt);
         report.wroteSomething = true;
         await context.onReceipt(receipt).catch(() => undefined);
       }
-      return { content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}` : ', unassigned'}: ${receipt.url}. The link is already in the chat.` };
+      return { content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}${volunteered ? ', who said they would take it' : ''}` : ', unassigned'}: ${receipt.url}. The link is already in the chat.` };
+    }, true);
+    if (board.updateTask) add({ name: 'update_task', description: `Change an existing ${board.name} task: move it to a status, assign it to someone, and/or add a comment. Only the changes the person explicitly asked for in this request. Use the key they named or the task just discussed; if unclear which task, ask.`,
+      input_schema: { type: 'object', properties: { key: { type: 'string', description: 'Task key such as KAN-12.' },
+        status: { type: 'string', description: 'Target status as they said it ("In Progress", "Done").' },
+        assignee: { type: 'string', description: 'New owner: a name, or "me" for the speaker.' },
+        comment: { type: 'string', description: 'Comment text, ready to post.' } }, required: ['key'] } },
+    async input => {
+      const key = str(input.key, 40)?.toUpperCase();
+      if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
+      const status = str(input.status, 60);
+      const comment = str(input.comment, 3000);
+      const wanted = str(input.assignee, 100);
+      if (!status && !comment && !wanted) return { content: 'Nothing to change: give a status, an assignee or a comment.', isError: true };
+      if (!context.writesApproved) {
+        const asked = requestedTaskChanges(context.request);
+        const extra = [status && !asked.status && 'a status change', wanted && !asked.assignee && 'a new owner', comment && !asked.comment && 'a comment'].filter(Boolean);
+        if (extra.length) return { content: `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
+      }
+      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
+      let assigneeId: string | undefined;
+      let assigneeName: string | undefined;
+      if (wanted) {
+        const resolved = await resolveAssignee(wanted, context);
+        if ('problem' in resolved) return { content: `Not changed: ${resolved.problem}`, isError: true };
+        assigneeId = resolved.id;
+        assigneeName = resolved.displayName;
+      }
+      writes++;
+      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${comment ?? ''}`;
+      let receipt = context.completed.get(requestId);
+      if (!receipt) {
+        receipt = await board.updateTask!({ key, status, assigneeId, comment, requestId });
+        context.completed.set(requestId, receipt);
+        context.recordAction?.('update_task');
+        report.receipts.push(receipt);
+        report.wroteSomething = true;
+        await context.onReceipt(receipt).catch(() => undefined);
+      }
+      const done = [status && `moved to ${status}`, assigneeName && `assigned to ${assigneeName}`, comment && 'commented'].filter(Boolean).join(', ');
+      return { content: `${receipt.label} ${done}: ${receipt.url}. The link is already in the chat.` };
     }, true);
     if (chat) add({ name: 'post_message', description: `Post a message to a ${chat.name} channel. Only when the person explicitly asked you to post/send/share something there. Write the message itself, ready to send.`,
       input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] } },
@@ -305,6 +377,34 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         await context.onReceipt(receipt).catch(() => undefined);
       }
       return { content: `Posted to ${receipt.label}: ${receipt.url}` };
+    }, true);
+  }
+
+  if (context.drafts && context.policy.mayDraftPR(context.actor)) {
+    const drafts = context.drafts;
+    let prIndex = 0;
+    add({ name: 'open_draft_pr', description: `Open a draft pull request on ${drafts.name}: a new branch with a note describing the change, for a developer to build on. Only when the person explicitly asked for a PR or pull request in this request. You do not write the code. Title it like a commit; in the description say what should change, why, where in the code (files you found), and how to know it works, from the conversation.`,
+      input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'description'] } },
+    async input => {
+      if (!context.writesApproved && !isExplicitPRRequest(context.request)) {
+        return { content: 'Not opened: the request does not explicitly ask for a pull request. Ask the person to confirm with a direct request.', isError: true };
+      }
+      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not opened: too many writes in one request.', isError: true };
+      const title = str(input.title, 200);
+      const description = str(input.description, 6000);
+      if (!title || !description) return { content: 'title and description are required', isError: true };
+      writes++;
+      const requestId = `${context.sessionId}:${context.eventId}:pr:${++prIndex}`;
+      let receipt = context.completed.get(requestId);
+      if (!receipt) {
+        receipt = await drafts.openDraft({ title, description, requestId });
+        context.completed.set(requestId, receipt);
+        context.recordAction?.('draft_pr');
+        report.receipts.push(receipt);
+        report.wroteSomething = true;
+        await context.onReceipt(receipt).catch(() => undefined);
+      }
+      return { content: `Opened ${receipt.label} as a draft: ${receipt.url}. It holds a note, not code; the link is already in the chat.` };
     }, true);
   }
 
@@ -336,6 +436,30 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       if (decision !== 'approve' && decision !== 'decline' && decision !== 'resume' && decision !== 'cancel') return { content: 'decision must be approve, decline, resume or cancel', isError: true };
       const result = await missions.decide(decision, str(input.mission_id, 30)?.toUpperCase(), str(input.note, 600));
       return { content: result.message, ...(result.ok ? {} : { isError: true }) };
+    });
+  }
+
+  if (mayRead && context.memory) {
+    const memory = context.memory;
+    add({ name: 'past_decisions', description: 'Decisions and action items from earlier meetings (only what people said plainly, with dates). Use for "what did we decide last week about X", "who was supposed to do Y". Pass the topic words; empty lists the latest meetings.',
+      input_schema: { type: 'object', properties: { topic: { type: 'string' } } } },
+    async input => {
+      const records = await memory.search(str(input.topic, 200) ?? '', 5);
+      if (!records.length) return { content: 'Nothing about that in the remembered meetings.' };
+      return { content: records.map(record => [`Meeting ended ${record.endedAt.slice(0, 16).replace('T', ' ')} UTC:`,
+        ...record.decisions.map(item => `- decided: ${item.text} (${item.speaker})`),
+        ...record.actionItems.map(item => `- to do: ${item.text} (${item.owner ? `owner ${item.owner}` : 'nobody took it'})`)].join('\n')).join('\n\n') };
+    });
+  }
+
+  if (mayRead && context.actionItems) {
+    const items = context.actionItems;
+    add({ name: 'meeting_action_items', description: 'The action items said in this meeting so far ("we need to...", "someone should...", "I\x27ll update the docs") and who took each one, or that nobody did. Use for "what did we agree to do", "what\x27s still open", "who\x27s doing what". Then say the ones nobody took first.',
+      input_schema: { type: 'object', properties: {} } },
+    async () => {
+      const list = items();
+      if (!list.length) return { content: 'No action items were said in this meeting yet.' };
+      return { content: list.map(item => `- ${item.text} (raised by ${item.speaker}; ${item.owner ? `owner: ${item.owner}` : 'NOBODY took it yet'})`).join('\n') };
     });
   }
 

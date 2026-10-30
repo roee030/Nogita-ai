@@ -60,6 +60,16 @@ export interface CreateTask {
   /** Which connected board (id from `BoardPort.boards`); the default board when absent. */
   board?: string;
 }
+/** A change to an existing task. Each field is optional; at least one is set. */
+export interface UpdateTask {
+  key: string;
+  /** A status as people say it ("In Progress", "done"); the board finds the move that gets there. */
+  status?: string;
+  /** An id from `findAssignees` or an internal person id, as for `CreateTask.assigneeId`. */
+  assigneeId?: string;
+  comment?: string;
+  requestId: string;
+}
 export interface TaskSummary {
   key: string;
   title: string;
@@ -100,11 +110,33 @@ export interface BoardPort {
   /** Connected boards a task can go to, when there is more than one (ids, for `CreateTask.board`). */
   readonly boards?: ReadonlyArray<{ id: string; name: string }>;
   createTask(input: CreateTask): Promise<ActionReceipt>;
+  /** Moves, reassigns or comments on a task in a board Nogita may write to. A retried request changes nothing twice. */
+  updateTask?(input: UpdateTask): Promise<ActionReceipt>;
   /** Read-only lookups used by the conversational agent. Optional per provider. */
   searchTasks?(query: TaskSearch): Promise<TaskSummary[]>;
   getTask?(key: string): Promise<TaskDetail | undefined>;
   /** `board`: which connected board the person will be assigned on (the default board when absent). */
   findAssignees?(name: string, board?: string): Promise<AssigneeCandidate[]>;
+}
+/** A draft pull request asked for out loud: what to change and why, for a person to build on. */
+export interface DraftPullRequest { title: string; description: string; requestId: string }
+/** Opens draft pull requests on a new branch. Never writes to an existing branch and never merges. */
+export interface PullRequestPort {
+  readonly name: string;
+  openDraft(input: DraftPullRequest): Promise<ActionReceipt>;
+}
+/** What a meeting decided and who took which action item: sentences people said plainly, never the transcript. */
+export interface MeetingRecord {
+  /** ISO time the meeting ended. */
+  endedAt: string;
+  decisions: Array<{ speaker: string; text: string }>;
+  actionItems: Array<{ speaker: string; text: string; owner?: string }>;
+}
+/** Opt-in memory across meetings, so "what did we decide last week about the release?" has an answer. */
+export interface MeetingMemoryPort {
+  remember(record: MeetingRecord): Promise<void>;
+  /** Newest first; records with any of the words, or the latest ones when no words are given. */
+  search(words: string, limit?: number): Promise<MeetingRecord[]>;
 }
 /** Team messaging workspace (Slack today) as a source of context and an explicitly requested action target. */
 export interface ChatChannel { id: string; name: string }
@@ -136,11 +168,13 @@ export interface AiUsage {
   modelBreakdown?: Array<{ model: string; modelCalls: number; inputTokens: number;
     outputTokens: number; estimatedUsd: number }>;
 }
+/** Work Nogita does in another system, counted per meeting. */
+export type ExternalAction = 'create_task' | 'update_task' | 'draft_pr' | 'code_lookup';
 export interface UsagePort {
   recordResponse?(sessionId: string, durationMs: number): void;
   recordResponseStage?(sessionId: string, stage: ResponseStage, durationMs: number): void;
   recordTts(sessionId: string, success: boolean): void;
-  recordExternalAction(sessionId: string, action: 'create_task' | 'code_lookup'): void;
+  recordExternalAction(sessionId: string, action: ExternalAction): void;
 }
 export interface CodePort {
   readonly name: string;

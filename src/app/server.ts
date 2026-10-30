@@ -34,6 +34,7 @@ import type { ActionReceipt } from '../core/contracts.ts';
 import { directlyAddressesNogita, normalizeWakeWord } from '../core/policy.ts';
 import { readFileSync } from 'node:fs';
 import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
+import { FileMeetingMemory } from './meeting-memory.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -126,8 +127,11 @@ const publicBaseUrl = (() => {
   try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
 })();
 const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
-const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage },
+const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
+  ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
+const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
+    actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
       turnLog.record(sessionId, { type: 'question', id: event.id, status: event.status, speaker: turnLog.person(event.speaker),

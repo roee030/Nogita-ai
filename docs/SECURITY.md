@@ -13,7 +13,8 @@
 - GitHub repository is fixed by configuration; no model-selected arbitrary endpoint or token scope.
 - Jira Cloud domain is allowlisted; Recall meeting URL has an explicit host allowlist.
 - No persistent meeting transcript or recording in app code; bounded in-memory buffer cleared on leave.
-- Draft PR deliberately rejected until a trusted isolated code runner and policy exist.
+- Draft PRs are off by default. When turned on (`GITHUB_DRAFT_PRS=true`) Nogita writes no code: a new branch, one note file and a draft pull request, on an explicit request from an authorized speaker. She never writes to an existing branch, merges or deletes. Running code changes still needs a trusted isolated runner.
+- Meeting memory is off by default. `NOGITA_MEETING_MEMORY=decisions` stores only plainly stated decisions and action items (speaker names included) under the state directory, deleted after `NOGITA_MEETING_MEMORY_DAYS`. Tell participants before turning it on.
 - API secret strings are environment variables and never written into demo output.
 - The authenticated readiness report exposes only fixed status messages; it never returns configured values, identifiers, URLs, or secrets.
 - Accepted Slack and Attendee payloads are encrypted with AES-256-GCM before atomic persistence; keyed filenames, exclusive leases, bounded retries/retention, and hash-only completion markers support recovery without plaintext at rest when the backing filesystem persists.

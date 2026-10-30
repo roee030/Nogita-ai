@@ -9,8 +9,8 @@ An extensible virtual engineering teammate for real-time meetings, project knowl
 1. **Nogita speaks only after a direct address by name**, such as `Nogita, how does auth work?`. The one exception: when Nogita has just asked the same speaker a question (for example "Which Moshe, Cohen or Levi?"), that speaker's reply within 60 seconds reaches her without the name; if the reply is not meant for her she stays silent.
 2. When Nogita detects something critical without being addressed (security or privacy risk, data loss, a contradiction, a factual mistake), it may **raise a hand**. It never speaks or creates a task merely because it raised a hand. Someone must then address it by name ("Nogita, go ahead") to hear its contribution. Where the platform has no native hand raise, `NOGITA_HAND_RAISE_FALLBACK=chat` posts one short chat line instead.
 3. **After an explicitly requested task or message completes, Nogita sends the result/link in the meeting chat.** No unrequested completion speech.
-4. No autonomous Jira/Monday writes, Slack posts, draft PRs, merging, deployments, or background task execution. Writes happen only on an explicit request from an authorized speaker. Draft PR workflow is **deliberately disabled** in this starter.
-5. Meetings are **invitation only**. Meeting context exists in memory for the session and is purged on session end. Live media privacy requires provider-level verification before deployment.
+4. No autonomous Jira/Monday writes, Slack posts, draft PRs, merging, deployments, or background task execution. Writes happen only on an explicit request from an authorized speaker. Draft PRs are **off unless `GITHUB_DRAFT_PRS=true`**; even then she only opens a new branch with a note and a draft pull request, never code, never a merge.
+5. Meetings are **invitation only**. Meeting context exists in memory for the session and is purged on session end. The one opt-in exception, `NOGITA_MEETING_MEMORY=decisions`, keeps only the plainly stated decisions and action items (no transcript, no audio) for `NOGITA_MEETING_MEMORY_DAYS`. Live media privacy requires provider-level verification before deployment.
 6. English only for speech and language reasoning.
 
 ## Fast local demo (no credentials needed)
@@ -118,7 +118,7 @@ The `.env.example` file documents environment variables. Never commit real secre
 | Provider | Supported in this starter | Still missing |
 | --- | --- | --- |
 | Demo meeting / board / repo | Fully executable local simulation | N/A |
-| Jira Cloud | REST v3 create issue with crash-safe idempotency, search (text/JQL) and read issues, owner by name (identity map or assignable-user search) | Dynamic create metadata, custom fields, issue updates |
+| Jira Cloud | REST v3 create issue with crash-safe idempotency, search (text/JQL) and read issues, owner by name (identity map or assignable-user search), move/assign/comment on request (write project only) | Dynamic create metadata, custom fields |
 | GitHub | Pinned in-memory index: keyword search, whole-file reads, file listing, recent commits | Semantic/vector search, branch/PR creation, access checks for whole meeting audience |
 | monday.com | GraphQL item creation (title + required configured description Text column) | Column discovery, assignee mapping, robust error reconciliation |
 | Slack | Signed Events API and Socket Mode ingestion, encrypted retry queue, mentions, DMs and thread replies; agent reads channels/threads, searches (user token) and posts on request | Queue persistence across instance replacement without a persistent disk; Marketplace OAuth distribution |
@@ -159,6 +159,22 @@ To inspect estimated cost during or after a session, call the admin-authenticate
 Before acknowledging accepted Slack or Attendee deliveries, Nogita encrypts the raw provider payload with AES-256-GCM and writes it atomically under `NOGITA_STATE_DIR`. Filenames use keyed hashes rather than raw IDs; leases are exclusive, failed work is retried, completed/dead records are bounded, and successful processing deletes the ciphertext. The separate bounded hash-only ledger suppresses completed replays. Jira task creation also stores a hidden, domain-separated SHA-256 request marker on the issue and scans a bounded set of recent Nogita-created issues before retrying, so a restart after Jira accepted the task reuses the existing issue rather than creating another. This queue is designed for the current single Render instance or multiple processes sharing one filesystem; active/active hosts without shared storage require PostgreSQL or another shared queue.
 
 Generate `NOGITA_QUEUE_ENCRYPTION_KEY` as exactly 32 random bytes encoded with base64 and keep it stable in the local/deployment secret store. Rotating it while queued records exist makes those records unreadable, so drain the queue before rotation. Slack Socket Mode and signed Events API use the same encrypted queue and hash-only replay ledger. On `SIGTERM` or `SIGINT`, both runtimes stop polling and drain accepted work before shutdown.
+
+## Working from the meeting
+
+- **Changing tasks.** "Nogita, move KAN-12 to done", "assign it to Dana", "add a comment that the fix is in review": `update_task`
+  moves, reassigns or comments, only in the write project. Each part needs its own words in the request, so a move never
+  brings along a comment nobody asked for, and a repeated request changes nothing twice.
+- **Tasks drafted from the conversation.** A new task quotes the lines said just before the request, with who said them,
+  and goes to the person who already said "I'll take it" (when the board knows exactly one person by that name).
+- **Action items.** She keeps the meeting's "we need to...", "someone should..." and "I'll update..." lines with their
+  owners, in memory only. "Nogita, what's still open?" lists them; `NOGITA_ACTION_ITEM_RECAP=true` also posts the
+  unowned ones to meeting chat when she leaves.
+- **Draft PRs (opt-in).** With `GITHUB_DRAFT_PRS=true` and a token that can write, "Nogita, open a draft PR for the retry
+  fix" makes a new branch from `GITHUB_REF`, one note file describing the change, and a draft pull request. A retried
+  request finds the same branch and pull request.
+- **Decisions across meetings (opt-in).** With `NOGITA_MEETING_MEMORY=decisions`, "Nogita, what did we decide last week
+  about the release?" answers from earlier meetings' decisions and action items.
 
 ## Missions and her webcam
 

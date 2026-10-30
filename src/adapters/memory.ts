@@ -3,7 +3,7 @@
  * adapter should, so they are the reference the conformance kits are written against, and stand-ins in tests.
  */
 import type { ActionReceipt, AssigneeCandidate, BoardPort, CodeFile, CodePort, CreateTask, Evidence, TaskDetail, TaskSearch,
-  TaskSummary } from '../core/contracts.ts';
+  TaskSummary, UpdateTask } from '../core/contracts.ts';
 
 interface MemoryTask { key: string; title: string; description: string; status: string; assigneeId?: string; updated: number;
   comments: Array<{ author?: string; text: string }> }
@@ -42,6 +42,22 @@ export class MemoryBoard implements BoardPort {
       updated: ++this.clock, comments: [] });
     this.byRequest.set(input.requestId, key);
     return this.receipt(key);
+  }
+
+  async updateTask(input: UpdateTask): Promise<ActionReceipt> {
+    const task = this.tasks.find(item => item.key === input.key.toUpperCase());
+    if (!task) throw new Error(`${input.key} was not found`);
+    let assigneeId: string | undefined;
+    if (input.assigneeId) {
+      assigneeId = this.personFor(input.assigneeId);
+      if (!assigneeId) throw new Error(`${this.name} cannot assign that person`);
+    }
+    if (input.status?.trim()) task.status = input.status.trim();
+    if (assigneeId) task.assigneeId = assigneeId;
+    const comment = input.comment?.trim();
+    if (comment && !task.comments.some(existing => existing.text === comment)) task.comments.push({ author: 'Nogita', text: comment });
+    task.updated = ++this.clock;
+    return this.receipt(task.key);
   }
 
   async searchTasks(query: TaskSearch): Promise<TaskSummary[]> {

@@ -82,6 +82,20 @@ export function boardConformance(label: string, make: () => BoardSubject, option
     assert.equal(await board.getTask('ZZZ-999999'), undefined);
   });
 
+  test(`${label}: a task moves, changes owner and takes a comment, and a repeated change does nothing twice`, async t => {
+    const { board, person } = make();
+    if (!board.updateTask || !board.getTask) return t.skip('no updates');
+    const receipt = await create(board, 'Ship the invoice export');
+    const change = { key: receipt.label, status: 'in progress', assigneeId: person.id, comment: 'Picked up in planning.', requestId: 'u-1' };
+    assert.equal((await board.updateTask(change)).label, receipt.label);
+    await board.updateTask(change);
+    const task = await board.getTask(receipt.label);
+    assert.equal(task?.status?.toLowerCase(), 'in progress');
+    assert.equal(task?.assignee, person.name);
+    assert.equal(task?.comments.filter(comment => comment.text === 'Picked up in planning.').length, 1);
+    await assert.rejects(() => board.updateTask!({ key: receipt.label, assigneeId: 'not-a-person', requestId: 'u-2' }));
+  });
+
   test(`${label}: a person found by name can be assigned`, async t => {
     const { board, person } = make();
     if (!board.findAssignees) return t.skip('no people search');

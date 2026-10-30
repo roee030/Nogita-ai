@@ -1,10 +1,11 @@
 import type { Actor, PolicyPort } from './contracts.ts';
 
 export class AllowlistPolicy implements PolicyPort {
-  constructor(private readonly authorized: ReadonlySet<string>) {}
+  /** `draftPullRequests`: the team turned on draft PRs (a new branch with a note, never a merge). Off unless configured. */
+  constructor(private readonly authorized: ReadonlySet<string>, private readonly options: { draftPullRequests?: boolean } = {}) {}
   mayReadCode(actor: Actor): boolean { return actor.verified && this.authorized.has(actor.id); }
   mayWriteTask(actor: Actor): boolean { return actor.verified && this.authorized.has(actor.id); }
-  mayDraftPR(actor: Actor): boolean { return false; } // Deliberately disabled until safe sandbox/review workflow exists.
+  mayDraftPR(actor: Actor): boolean { return this.options.draftPullRequests === true && this.mayWriteTask(actor); }
 }
 
 /** Prevent a model from autonomously turning discussion into a write action. */

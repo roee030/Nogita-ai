@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { BoardPort, BrainPort, ChatPort, CodePort, PolicyPort } from '../core/contracts.ts';
+import type { BoardPort, BrainPort, ChatPort, CodePort, PolicyPort, PullRequestPort } from '../core/contracts.ts';
 import type { ChatModel } from '../core/agent.ts';
 import { SlackWorkspace } from '../adapters/slack-workspace.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
@@ -10,6 +10,7 @@ import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.t
 import { JiraBoard } from '../adapters/jira.ts';
 import { MondayBoard } from '../adapters/monday.ts';
 import { GitHubCode } from '../adapters/github.ts';
+import { GitHubDrafts } from '../adapters/github-drafts.ts';
 import { MultiBoard, MultiCode } from '../adapters/multi.ts';
 import { BROKER_PREFIX, BrokerClient, type TokenSource } from '../adapters/token-source.ts';
 import { loadTenantConfig, type BoardConnection, type RepositoryConnection, type TenantConfig } from './tenant-config.ts';
@@ -25,7 +26,7 @@ export function loadDotEnv(name = '.env'): void {
 export type Dependencies = { tenant: TenantConfig['tenant'];
   /** Which providers are connected and who may act: no secrets, for readiness. */
   connections: { boards: string[]; repositories: string[]; authorizedActorIds: string[] }; board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort;
-  identities: IdentityDirectory; agent?: ChatModel; chat?: ChatPort; people: IdentityDirectory };
+  identities: IdentityDirectory; agent?: ChatModel; chat?: ChatPort; people: IdentityDirectory; drafts?: PullRequestPort };
 
 /** The company's Nogita from NOGITA_TENANT_CONFIG, or from the environment as before. */
 export function createDependencies(env: NodeJS.ProcessEnv = process.env): Dependencies {
@@ -69,6 +70,12 @@ export function buildDependencies(config: TenantConfig, broker?: BrokerClient): 
     : new MultiBoard(boards, config.boards.find(connection => connection.default)?.id);
   const repos = config.repositories.map(connection => ({ id: connection.id, code: buildCode(connection, broker) }));
   const code: CodePort = repos.length === 0 ? new DemoCode() : repos.length === 1 ? repos[0]!.code : new MultiCode(repos);
+  // Draft PRs go to the one repository that turned them on with a token that can write; several would need a choice.
+  const draftRepos = config.repositories.filter(c => c.provider === 'github' && c.draftPullRequests === true && c.token);
+  if (draftRepos.length > 1) throw new Error('Draft pull requests can be turned on for one repository only');
+  const draftRepo = draftRepos[0];
+  const drafts = draftRepo?.provider === 'github' ? new GitHubDrafts({ token: tokenFor(draftRepo.token!, broker),
+    owner: draftRepo.owner, repo: draftRepo.repo, ref: draftRepo.ref ?? 'main' }) : undefined;
   const { ai } = config;
   const brain: BrainPort = ai.mode === 'live'
     ? new AnthropicBrain(ai.anthropicApiKey ?? '', ai.model ?? DEFAULT_ANTHROPIC_MODEL, fetch, {
@@ -88,6 +95,6 @@ export function buildDependencies(config: TenantConfig, broker?: BrokerClient): 
   const chat = config.chat ? new SlackWorkspace(config.chat.botToken, config.chat.userToken) : undefined;
   const connections = { boards: config.boards.map(c => c.provider), repositories: config.repositories.map(c => c.provider),
     authorizedActorIds: config.authorizedActorIds };
-  return { tenant: config.tenant, connections, board, code, brain, policy: new AllowlistPolicy(new Set(config.authorizedActorIds)), identities,
-    agent, chat, people: identities };
+  return { tenant: config.tenant, connections, board, code, brain, identities, agent, chat, people: identities, drafts,
+    policy: new AllowlistPolicy(new Set(config.authorizedActorIds), { draftPullRequests: drafts !== undefined }) };
 }

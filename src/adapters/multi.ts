@@ -3,7 +3,7 @@
  * with one connection or many. Each connection has a short id ("web", "mobile-jira") chosen when it was connected.
  */
 import type { ActionReceipt, AssigneeCandidate, BoardPort, CodeFile, CodePort, CreateTask, Evidence, TaskDetail, TaskSearch,
-  TaskSummary } from '../core/contracts.ts';
+  TaskSummary, UpdateTask } from '../core/contracts.ts';
 
 export interface BoardEntry { id: string; board: BoardPort }
 
@@ -46,6 +46,17 @@ export class MultiBoard implements BoardPort {
     if (who.board && who.board !== target.id) throw new Error(`That person was found on ${who.board}, not on ${target.id}`);
     const { board: _board, ...rest } = input;
     return target.board.createTask({ ...rest, ...(who.id ? { assigneeId: who.id } : { assigneeId: undefined }) });
+  }
+
+  /** The board that holds the task makes the change; a person found on another board cannot be assigned there. */
+  async updateTask(input: UpdateTask): Promise<ActionReceipt> {
+    const who = this.assignee(input.assigneeId);
+    for (const entry of this.entries) {
+      if (!entry.board.updateTask || !await entry.board.getTask?.(input.key)) continue;
+      if (who.board && who.board !== entry.id) throw new Error(`That person was found on ${who.board}, not on ${entry.id}`);
+      return entry.board.updateTask({ ...input, assigneeId: who.id });
+    }
+    throw new Error(`${input.key} is not on a board Nogita can change`);
   }
 
   async searchTasks(query: TaskSearch): Promise<TaskSummary[]> {

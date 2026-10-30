@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readToken, type TokenSource } from './token-source.ts';
-import type { ActionReceipt, AssigneeCandidate, BoardPort, CreateTask, TaskDetail, TaskSearch, TaskSummary } from '../core/contracts.ts';
+import type { ActionReceipt, AssigneeCandidate, BoardPort, CreateTask, TaskDetail, TaskSearch, TaskSummary, UpdateTask } from '../core/contracts.ts';
 
 const REQUEST_PROPERTY = 'com.nogita.request.v1';
 
@@ -247,6 +247,47 @@ export class JiraBoard implements BoardPort {
     // Only a confident answer is remembered; "nobody" may change when they are added to the project.
     if (found) this.byEmail.set(email, found.accountId!);
     return found?.accountId;
+  }
+  /**
+   * Moves, reassigns and comments on an issue in the write project only. Each part is safe to repeat: a move to the
+   * status it is already in, the same assignee, and a comment already among the latest ones change nothing.
+   */
+  async updateTask(input: UpdateTask): Promise<ActionReceipt> {
+    const key = input.key.toUpperCase();
+    if (!KEY_PATTERN.test(key) || !key.startsWith(`${this.config.projectKey.toUpperCase()}-`)) {
+      throw new Error(`Nogita may change tasks only in ${this.config.projectKey}`);
+    }
+    if (!input.status?.trim() && !input.assigneeId && !input.comment?.trim()) throw new Error('Nothing to change');
+    let accountId: string | undefined;
+    if (input.assigneeId) {
+      accountId = await this.accountIdFor(input.assigneeId);
+      if (!accountId) throw new Error('Assignee not in explicitly configured Jira allowlist');
+    }
+    const current = await this.getTask(key);
+    if (!current) throw new Error(`${key} was not found`);
+    const issue = this.api(`/rest/api/3/issue/${encodeURIComponent(key)}`);
+    const send = async (url: URL, method: string, body: unknown, what: string) => {
+      const response = await this.http(url, { method, headers: await this.headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
+      if (!response.ok) throw new Error(`Jira ${what} failed: HTTP ${response.status}`);
+    };
+    const wanted = input.status?.trim().toLowerCase();
+    if (wanted && current.status?.toLowerCase() !== wanted) {
+      const response = await this.http(new URL(`${issue.pathname}/transitions`, issue), { method: 'GET', headers: await this.headers(), signal: AbortSignal.timeout(12000) });
+      if (!response.ok) throw new Error(`Jira transitions read failed: HTTP ${response.status}`);
+      const transitions = ((await response.json()) as { transitions?: Array<{ id?: string; name?: string; to?: { name?: string } }> }).transitions ?? [];
+      const hit = transitions.find(t => (t.to?.name ?? t.name ?? '').toLowerCase() === wanted) ?? transitions.find(t => (t.name ?? '').toLowerCase() === wanted);
+      if (!hit?.id) {
+        const options = [...new Set(transitions.map(t => t.to?.name ?? t.name).filter(Boolean))].join(', ');
+        throw new Error(`${key} cannot move to "${input.status!.trim()}"${options ? `; it can go to: ${options}` : ''}`);
+      }
+      await send(new URL(`${issue.pathname}/transitions`, issue), 'POST', { transition: { id: hit.id } }, 'move');
+    }
+    if (accountId) await send(new URL(`${issue.pathname}/assignee`, issue), 'PUT', { accountId }, 'assign');
+    const comment = input.comment?.trim();
+    if (comment && !current.comments.some(existing => existing.text === comment.slice(0, 1200))) {
+      await send(new URL(`${issue.pathname}/comment`, issue), 'POST', { body: adfParagraph(comment) }, 'comment');
+    }
+    return this.receipt(key);
   }
   async createTask(task: CreateTask): Promise<ActionReceipt> {
     let providerAssigneeId: string | undefined;

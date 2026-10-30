@@ -23,7 +23,7 @@ test('session usage estimates Attendee bot time and combines meeting-scoped AI u
     meetingEstimatedUsd: 0.083333,
     deepgramEstimatedUsd: 0,
     tts: { requests: 1, failures: 1 },
-    externalActions: { create_task: 1, code_lookup: 0 },
+    externalActions: { create_task: 1, update_task: 0, draft_pr: 0, code_lookup: 0 },
     ai: { model: 'claude-haiku-5-5', modelCalls: 1, inputTokens: 1_000, outputTokens: 100, estimatedUsd: 0.00015 },
     totalEstimatedUsd: 0.083483,
     processingLatency: { samples: 0, p50Ms: 0, p95Ms: 0, maxMs: 0 },
@@ -89,7 +89,7 @@ test('session usage distinguishes estimate from free credits and rejects unknown
   assert.equal(report.meetingEstimatedUsd, 0);
   assert.equal(report.totalEstimatedUsd, 0);
   assert.deepEqual(report.tts, { requests: 0, failures: 0 });
-  assert.deepEqual(report.externalActions, { create_task: 0, code_lookup: 0 });
+  assert.deepEqual(report.externalActions, { create_task: 0, update_task: 0, draft_pr: 0, code_lookup: 0 });
   assert.equal(usage.report('missing'), undefined);
 });
 
@@ -99,8 +99,8 @@ test('usage counters stay isolated between simultaneous sessions', () => {
   usage.recordTts('one', true); usage.recordExternalAction('two', 'code_lookup');
   assert.deepEqual(usage.report('one')?.tts, { requests: 1, failures: 0 });
   assert.deepEqual(usage.report('two')?.tts, { requests: 0, failures: 0 });
-  assert.deepEqual(usage.report('one')?.externalActions, { create_task: 0, code_lookup: 0 });
-  assert.deepEqual(usage.report('two')?.externalActions, { create_task: 0, code_lookup: 1 });
+  assert.deepEqual(usage.report('one')?.externalActions, { create_task: 0, update_task: 0, draft_pr: 0, code_lookup: 0 });
+  assert.deepEqual(usage.report('two')?.externalActions, { create_task: 0, update_task: 0, draft_pr: 0, code_lookup: 1 });
 });
 
 test('realtime voice cost uses submitted PCM bytes and TTS characters as a clearly separate estimate', () => {
