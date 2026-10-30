@@ -33,7 +33,12 @@ export interface ToolboxContext {
   writesApproved?: boolean;
   /** Delegated missions of the person speaking (start, check, approve, decline, resume, cancel). */
   missions?: MissionPort;
+  /** Leaves the meeting once this reply is over. Live meetings only. */
+  leave?: () => void;
 }
+
+/** Leaving needs words that ask for it in the request itself, never only in something she read. */
+const LEAVE_WORDS = /\b(?:leave|leaving|go|bye|goodbye|drop|exit|disconnect|hang up|sign off|log off|get off|get out|head out|end (?:the|this) (?:call|meeting)|done)\b/i;
 
 /** What a conversation may do with missions, already bound to the person speaking. */
 export interface MissionPort {
@@ -323,6 +328,17 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       if (decision !== 'approve' && decision !== 'decline' && decision !== 'resume' && decision !== 'cancel') return { content: 'decision must be approve, decline, resume or cancel', isError: true };
       const result = await missions.decide(decision, str(input.mission_id, 30)?.toUpperCase(), str(input.note, 600));
       return { content: result.message, ...(result.ok ? {} : { isError: true }) };
+    });
+  }
+
+  if (context.leave) {
+    const leave = context.leave;
+    add({ name: 'leave_meeting', description: 'Leave the meeting. Use it whenever they tell you to go, in any words ("you can go", "bye Nogita", "we\x27re done, drop off", "that\x27s all, thanks, you can leave"). Not for a question about leaving or "don\x27t leave". Say a short, warm goodbye in the same reply ("Sure, bye everyone."), nothing more.',
+      input_schema: { type: 'object', properties: {} } },
+    async () => {
+      if (!LEAVE_WORDS.test(context.request)) return { content: 'Nobody asked you to leave in this request. Stay.', isError: true };
+      leave();
+      return { content: 'You will leave as soon as this reply is spoken. Say only a short goodbye.' };
     });
   }
 

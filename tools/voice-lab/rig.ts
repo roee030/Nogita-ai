@@ -67,6 +67,8 @@ class LabMeeting implements MeetingPort {
   async raiseHand(): Promise<boolean> { return false; }
   async sendCompletion(receipt: ActionReceipt): Promise<void> { await this.sendStatus(`${receipt.label}: ${receipt.url}`); }
   async sendStatus(message: string): Promise<void> { this.rig.log('chat', { text: message }); }
+  /** As in production (server.ts gives AttendeeMeeting the hub's interrupt): a "stop" cuts the audio playing now. */
+  interruptSpeech(): boolean { return this.rig.hub.interruptSpeech(this.id); }
   /** Same contract as AttendeeMeeting with the realtime bridge: chat mirror unless told otherwise, audio via the hub. */
   async speak(message: string, options: SpeakOptions = {}): Promise<void> {
     this.rig.log('speak_call', { text: message, detail: options.chatMirror === false ? 'no-mirror' : 'mirror' });

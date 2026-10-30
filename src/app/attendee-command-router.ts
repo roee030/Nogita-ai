@@ -231,7 +231,12 @@ export class AttendeeCommandRouter {
     try {
       const bound = state.bindings.get(speakerUuid);
       const actor = bound ?? entry.actor;
-      if (!actor.verified) {
+      // Anyone in the call may send her away, verified or not: leaving changes nothing and nobody should have to
+      // prove who they are to get a bot out of their meeting.
+      const leaving = directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave;
+      if (leaving) {
+        await this.onLeave!(sessionId);
+      } else if (!actor.verified) {
         if (state.owner && state.challenge && matchesSpokenChallenge(text, state.challenge)) {
           await this.sendStatus(sessionId, `Verified ${state.owner.displayName} for this meeting.`);
           this.onChatAck?.(sessionId, performance.now() - entry.receivedAt);
@@ -245,19 +250,15 @@ export class AttendeeCommandRouter {
         }
       } else {
         const at = ordered.find(fragment => fragment.at !== undefined)?.at;
-        if (directlyAddressesNogita(text) && isExplicitLeaveRequest(removeAddress(text)) && this.onLeave) {
-          await this.onLeave(sessionId);
-        } else {
-          if (this.chatAck && directlyAddressesNogita(text)) {
-            // The chat note goes out alongside the answer; waiting for it delayed every spoken reply.
-            void this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
-              'I heard you. I’m checking that now.')
-              .then(() => this.onChatAck?.(sessionId, performance.now() - entry.receivedAt), error => this.onError(error));
-          }
-          handedOver = true;
-          await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) },
-            { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}) });
+        if (this.chatAck && directlyAddressesNogita(text)) {
+          // The chat note goes out alongside the answer; waiting for it delayed every spoken reply.
+          void this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'ack',
+            'I heard you. I’m checking that now.')
+            .then(() => this.onChatAck?.(sessionId, performance.now() - entry.receivedAt), error => this.onError(error));
         }
+        handedOver = true;
+        await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) },
+          { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}) });
       }
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {
@@ -268,7 +269,7 @@ export class AttendeeCommandRouter {
       if (!terminal) for (const fragment of ordered) state.acceptedEventIds.delete(fragment.eventId);
       try {
         await this.notifyOnce(state, sessionId, ordered.map(fragment => fragment.eventId), 'failure',
-          'I could not complete that request. Please try again; you can still ask me to leave.');
+          'Sorry, that didn’t go through. Try again?');
       } catch { /* The delivery retry is bounded by the durable queue. */ }
       for (const waiter of entry.waiters) {
         if (terminal) waiter.resolve(); else waiter.reject(error);

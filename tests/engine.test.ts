@@ -645,7 +645,7 @@ test('repository connection question performs a live code lookup instead of lett
   };
   const f = fixture(brain); await f.engine.startSession('s', f.meeting);
   assert.equal(await f.utter('Nogita, are you connected to our repository?', 'repo-status'), 'completed');
-  assert.match(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /read-only access/i);
+  assert.match(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /can read the GitHub repo/i);
   assert.match(f.meeting.events.find(event => event.type === 'chat')?.text ?? '', /Code reference/i);
 });
 test('asking what a connected repository builds is treated as a content question, not a connection check', async () => {
@@ -674,7 +674,7 @@ test('asking what a connected repository builds is treated as a content question
   await f.utter('Nogita, what is the project that you connected to our repository working on?', 'project-intent');
   assert.equal(planned, true);
   assert.deepEqual(queries, ['README package.json']);
-  assert.doesNotMatch(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /read-only access/i);
+  assert.doesNotMatch(f.meeting.events.find(event => event.type === 'speak')?.text ?? '', /can read the GitHub repo/i);
 });
 test('draft PR has an explicit not-supported response; never modifies repo', async () => {
   const f = fixture(); await f.engine.startSession('s', f.meeting);

@@ -9,7 +9,7 @@ import { playScenario, type TurnRecord } from '../tools/voice-lab/conversation.t
 import { SPEECH_RMS, createNoise } from '../tools/voice-lab/noise.ts';
 import { VoiceRig } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
-import { scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
+import { machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
 import { transcriptLines, transcriptMarkdown } from '../tools/voice-lab/report.ts';
 import { conversationStats, questionLedger } from '../tools/voice-lab/conversation-metrics.ts';
 
@@ -212,4 +212,13 @@ test('conversation stats: what became of every question, early starts, speaking 
     askedAgain: stats.askedAgain, spokeOverPeople: stats.spokeOverPeople, duplicateWrites: stats.duplicateWrites, completion: stats.completion },
   { questions: 3, answered: 1, cancelled: 1, unresolved: 1, earlyAdopted: 1, earlyRolledBack: 1, cutOff: 1, resumed: 1,
     askedAgain: 1, spokeOverPeople: 1, duplicateWrites: 1, completion: 0.5 });
+});
+
+test('machine tells: what gives her away as a bot in what she said aloud', () => {
+  assert.deepEqual(machineTells(['Yep, it lives in server.ts.'], 'Roee'), []);
+  assert.deepEqual(machineTells(['Certainly! The main file is src/app/server.ts.'], 'Roee'), ['chatbot phrase', 'reads a file path aloud']);
+  assert.deepEqual(machineTells(['Roee wants a task to add caching.'], 'Roee'), ['talks about the speaker in the third person']);
+  assert.deepEqual(machineTells(['Follow-up questions without my name don\'t activate me.'], 'Roee'), ['explains her own mechanics']);
+  assert.deepEqual(machineTells(["I'll look at the attendee lifecycle and command router to walk you through it accurately."], 'Roee'), ['narrates her plan']);
+  assert.deepEqual(machineTells(['The usual fix is to back off and reduce request volume or'], 'Roee'), ['stops mid-sentence']);
 });

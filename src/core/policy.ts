@@ -36,11 +36,22 @@ export function isRepositoryQuestion(current: string): boolean {
   return /\b(?:project|repo|repository|github|code|source|implementation|function|module|file|commit|push(?:ed)?|branch|merge|pull request|authentication|authorization|login|log-in|sign-in|webhook|endpoint|provider|configuration|database|deployment|architecture)\b/i.test(current);
 }
 
+// Courtesy people wrap a goodbye in: "thanks, that's all, you can leave now, thank you".
+const LEAVE_COURTESY_BEFORE = /^(?:(?:thanks|thank you(?: so much| very much)?|great|perfect|cool|nice|alright|all right|that's all|that is all|that's it|that is it|that's everything|we're done|we are done|we're good|we are good|we're all set|we are all set|nothing else)[,.;\s]+)+/;
+const LEAVE_COURTESY_AFTER = /(?:[,.;\s]+(?:thanks|thank you(?: so much| very much)?|bye(?: bye)?|goodbye|see you(?: later)?|cheers|everyone|nogita))+$/;
+
 export function isExplicitLeaveRequest(current: string): boolean {
-  const text = current.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
-  if (current.trim().endsWith('?') && !/^(?:please\s+)?(?:can you|could you|would you)\s+/.test(text)) return false;
+  const raw = current.trim().toLowerCase().replace(/[‘’]/g, "'");
+  const question = raw.endsWith('?');
+  let text = raw.replace(/[.!?]+$/, '').trim().replace(LEAVE_COURTESY_BEFORE, '');
+  // "Bye", "goodbye everyone", "bye bye, Nogita".
+  if (!question && /^(?:bye(?: bye)?|good ?bye|see you(?: later)?|see ya)(?:[,\s]+(?:everyone|all|guys|nogita|now|for now))*$/.test(text)) return true;
+  text = text.replace(LEAVE_COURTESY_AFTER, '').trim();
+  if (question && !/^(?:please\s+)?(?:can you|could you|would you)\s+/.test(text)) return false;
   // "You can drop", "drop from this meeting" and "dropped from the call" (as recognition hears it) mean leave too.
-  return /^(?:(?:ok(?:ay)?|now|please|you can|can you|could you|would you)[,\s]+)*(?:leave|exit|disconnect|get\s+off|drop(?:ped)?(?:\s+(?:off|out))?)(?:\s+(?:from|of))?(?:\s+(?:this|the)\s+(?:call|meeting))?(?:[,\s]+(?:now|please))*$/.test(text)
+  return /^(?:(?:ok(?:ay)?|now|please|you can|you may|can you|could you|would you|go ahead and|feel free to|you're free to|you are free to|i need you to|i want you to|it's time to|time to|time for you to)[,\s]+)*(?:leave|exit|disconnect|head\s+out|hang\s+up|sign\s+off|log\s+off|get\s+(?:off|out)|drop(?:ped)?(?:\s+(?:off|out))?)(?:\s+(?:from|of))?(?:\s+(?:this|the|our)\s+(?:call|meeting))?(?:\s+us)?(?:[,\s]+(?:now|please|for now|for today))*$/.test(text)
+    // "Go" only with a lead that makes it a dismissal: "you can go", "time to go"; never "go ahead".
+    || /^(?:(?:ok(?:ay)?|please|you can|you may|feel free to|you're free to|you are free to|it's time to|time to|time for you to)[,\s]+)+go(?:[,\s]+(?:now|please|for now|for today))*$/.test(text)
     || /^(?:(?:please|you can|can you|could you|would you)\s+)*end\s+(?:this|the)\s+(?:call|meeting)(?:\s+(?:now|please))?$/.test(text);
 }
 

@@ -53,8 +53,12 @@ function lead(prefix: string, text: string): string {
     word => word.toLowerCase());
 }
 
+/** How she picks up a cut-off answer after someone else spoke; rotated so it never sounds like a loop. */
+const RESUME_BRIDGES = ['As I was saying, ', 'Anyway, ', 'So, '];
+
 export class SpeechFloor {
   private readonly queue: Item[] = [];
+  private resumes = 0;
   private readonly talking = new Map<string, number>();
   private holder?: number;
   private holderSince = 0;
@@ -215,7 +219,7 @@ export class SpeechFloor {
     this.playing = item;
     let text = item.text;
     if (item.resumed && this.interruptedOwner === item.owner) {
-      if (this.heardSinceInterrupt) text = lead('As I was saying, ', text);
+      if (this.heardSinceInterrupt) text = lead(RESUME_BRIDGES[this.resumes++ % RESUME_BRIDGES.length]!, text);
       this.interruptedOwner = undefined;
       this.options.onResumed?.(item.owner);
     } else {

@@ -17,21 +17,23 @@ const DEEPGRAM_IDLE_MS = 10_000;
 export const DEFAULT_EAGER_EOT_THRESHOLD = 0.5;
 
 export type SttMode = 'nova3-multilingual' | 'flux-english';
-/** Languages Nogita must understand unless NOGITA_LANGUAGES says otherwise: English and Hebrew, mixed freely. */
-export const DEFAULT_LANGUAGES: readonly string[] = ['en', 'he'];
+/** Languages Nogita must understand unless NOGITA_LANGUAGES says otherwise: English (decided 2026-10-30). */
+export const DEFAULT_LANGUAGES: readonly string[] = ['en'];
 
 /**
  * The recognizer for the meeting's languages. Deepgram Flux is English only (flux-general-en; flux-general-multi has no
  * Hebrew), so it is used only when every configured language is English. Nova-3 with language=multi transcribes Hebrew
- * and mixed Hebrew-English and is the default. `refused` explains a requested mode that was not used.
+ * and mixed Hebrew-English. Unset: Flux for an English-only meeting (its early end-of-turn lets her start answering
+ * sooner: voice lab 2026-10-30, p50 3.1 s -> 1.9 s), else Nova-3. `refused` explains a requested mode that was not used.
  */
 export function chooseSttMode(requested: string | undefined, languages: readonly string[]): { mode: SttMode; refused?: string } {
-  if (requested !== 'flux-english') return { mode: 'nova3-multilingual' };
   const other = languages.filter(language => language !== 'en');
+  if (!requested) return { mode: other.length ? 'nova3-multilingual' : 'flux-english' };
+  if (requested !== 'flux-english') return { mode: 'nova3-multilingual' };
   return other.length ? { mode: 'nova3-multilingual', refused: `Flux does not support ${other.join(', ')}` } : { mode: 'flux-english' };
 }
 
-/** NOGITA_LANGUAGES ("en,he") as two-letter codes; the default when unset or invalid. */
+/** NOGITA_LANGUAGES ("en", or "en,he") as two-letter codes; the default when unset or invalid. */
 export function parseLanguages(value: string | undefined): string[] {
   const codes = (value ?? '').split(',').map(code => code.trim().toLowerCase()).filter(Boolean);
   return codes.length && codes.every(code => /^[a-z]{2}$/.test(code)) ? [...new Set(codes)] : [...DEFAULT_LANGUAGES];
@@ -122,7 +124,7 @@ export interface RealtimeAudioOptions {
   signingSecret: string;
   deepgramApiKey: string;
   sttMode?: SttMode;
-  /** Language hints for Nova-3 multilingual (default English and Hebrew). */
+  /** Language hints for Nova-3 multilingual (default English). */
   languages?: readonly string[];
   ttsModel?: string;
   /** Flux end-of-turn confidence. Deepgram's default 0.7 ended turns at the pause after "Nogita," in the voice lab,
@@ -549,7 +551,7 @@ export class AttendeeRealtimeAudioHub {
       for (const [key, value] of Object.entries({ model: 'nova-3', language: 'multi',
         encoding: 'linear16', sample_rate: String(AUDIO_SAMPLE_RATE), channels: '1', interim_results: 'true',
         endpointing: '500', utterance_end_ms: '1000', smart_format: 'true' })) url.searchParams.set(key, value);
-      // Hints bias detection toward the team's languages without restricting it (Hebrew and English by default).
+      // Hints bias detection toward the team's languages without restricting it (English by default).
       for (const language of this.options.languages ?? DEFAULT_LANGUAGES) url.searchParams.append('language_hint', language);
     }
     // Without a keyterm, Nova-3 and Flux hear the wake word as "Nokita", "Notita" or "Nikita".

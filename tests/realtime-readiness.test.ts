@@ -20,9 +20,13 @@ test('Flux is refused while Hebrew is a meeting language; Nova-3 multilingual ke
   assert.equal(chooseSttMode('flux-english', ['en', 'he']).mode, 'nova3-multilingual');
   assert.match(chooseSttMode('flux-english', ['en', 'he']).refused ?? '', /he/);
   assert.deepEqual(chooseSttMode('flux-english', ['en']), { mode: 'flux-english' });
-  assert.deepEqual(parseLanguages(undefined), ['en', 'he']);
+  // Unset: Flux for an English-only meeting; an explicit choice wins.
+  assert.deepEqual(chooseSttMode(undefined, ['en']), { mode: 'flux-english' });
+  assert.deepEqual(chooseSttMode('', ['en']), { mode: 'flux-english' });
+  assert.deepEqual(chooseSttMode('nova3-multilingual', ['en']), { mode: 'nova3-multilingual' });
+  assert.deepEqual(parseLanguages(undefined), ['en']);
   assert.deepEqual(parseLanguages('en'), ['en']);
-  assert.deepEqual(parseLanguages('en,hebrew'), ['en', 'he']);
+  assert.deepEqual(parseLanguages('en,hebrew'), ['en']); // invalid: falls back to the default
   assert.equal(finalConfidence({ is_final: true, channel: { alternatives: [{ transcript: 'hi', confidence: 0.91 }] } }), 0.91);
   assert.equal(finalConfidence({ is_final: false, channel: { alternatives: [{ transcript: 'hi', confidence: 0.5 }] } }), undefined);
 });

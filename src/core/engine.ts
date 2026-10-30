@@ -5,6 +5,7 @@ import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-to
 import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
+import { PhrasePicker, toSpoken } from './spoken.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
 
@@ -109,6 +110,8 @@ export interface NogitaEngineOptions {
   screenAudience?: (sessionId: string) => { unverified: number } | undefined;
   /** Delegated missions: enables delegate_mission, missions_status and decide_mission for authorized people. */
   missions?: MissionRunner;
+  /** Someone asked her to leave in words the fast check missed; called once the reply is over (enables leave_meeting). */
+  onLeaveRequested?: (sessionId: string) => void;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
@@ -150,19 +153,20 @@ function isAffirmativeFollowUp(text: string): boolean {
 
 // The agent usually speaks its own lead-in first; when it is late, a filler must be short, because the
 // answer queues behind it (the voice lab measured a 2 s filler delaying a ready answer by 2 s).
-export const agentProgressPhrases = ['One sec.', 'Let me check.', 'Checking.', 'Hmm, one moment.', 'Looking.'];
+// They must not promise a lookup: the model may answer from what it knows (the judge flagged a "Let me check" with none).
+export const agentProgressPhrases = ['One sec.', 'Hmm, one moment.', 'Mm, let me think.', 'Good one, one sec.', 'Hmm.'];
 
 export const progressPhrases = [
-  'Let me think for a moment.',
-  'One second, I’m checking that.',
-  'Hmm, I want to get this right.',
-  'Give me a moment to work through it.',
-  'I’m on it; just checking the details.',
-  'Just a sec, I’m putting that together.',
-  'Let me make sure I understand.',
-  'I’m checking the relevant details now.',
-  'Hang on a moment; I’ll make sure I have this right.',
+  'Hmm, let me think.',
+  'One sec, checking.',
+  'Give me a second.',
+  'Okay, let me look.',
+  'Hang on, looking.',
+  'Let me pull that up.',
+  'Mm, one moment.',
 ];
+/** When the spoken cap is reached; the whole answer is in the chat. */
+export const REST_IN_CHAT = ['The rest is in the chat.', 'I put the details in the chat.', 'More in the chat.'];
 function missingCodeEvidenceMessage(code: CodePort): string {
   const skipped = code.getCoverage?.()?.skippedLargeFiles ?? 0;
   return 'I could not find enough code evidence to answer that reliably.' +
@@ -181,7 +185,7 @@ const DETAIL_SPOKEN_WORDS = 120;
 function wantsDetail(request: string): boolean {
   return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
 }
-export const STILL_WORKING = ['Still checking, one more moment.', 'Almost there.', 'Still on it.'];
+export const STILL_WORKING = ['Still digging, one more sec.', 'Almost there.', 'Still on it.', 'Nearly got it.'];
 /** Whole sentences up to about `max` words (at least the first sentence). */
 function firstWords(text: string, max: number): string {
   const sentences = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [text];
@@ -231,19 +235,6 @@ function asksQuestion(answer: string): boolean {
   return sentences.some(sentence => sentence.trim().endsWith('?'));
 }
 /** Markdown and URLs read badly through text-to-speech; the chat copy keeps them. */
-function speakable(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/(^|\s)[*_]([^*_]+)[*_](?=\s|[.,!?]|$)/g, '$1$2')
-    .replace(/^\s*(?:[-*\u2022]|\d+[.)])\s+/gm, '')
-    .replace(/^#+\s*/gm, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed' | 'denied' | 'not_supported';
 
 export class NogitaEngine {
@@ -265,6 +256,8 @@ export class NogitaEngine {
   private readonly onSpeech?: NogitaEngineOptions['onSpeech'];
   private readonly screenAudience?: NogitaEngineOptions['screenAudience'];
   private readonly missions?: MissionRunner;
+  private readonly onLeaveRequested?: NogitaEngineOptions['onLeaveRequested'];
+  private readonly phrases: PhrasePicker;
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   constructor(private readonly dependencies: {
     board: BoardPort;
@@ -284,6 +277,7 @@ export class NogitaEngine {
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
     this.cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.random = options.random ?? Math.random;
+    this.phrases = new PhrasePicker(this.random);
     this.now = options.now ?? Date.now;
     this.onQuestion = options.onQuestion;
     this.onActivity = options.onActivity;
@@ -291,6 +285,7 @@ export class NogitaEngine {
     this.onSpeech = options.onSpeech;
     this.screenAudience = options.screenAudience;
     this.missions = options.missions;
+    this.onLeaveRequested = options.onLeaveRequested;
     this.floorOptions = options.floor ?? {};
   }
 
@@ -674,11 +669,13 @@ export class NogitaEngine {
     if (isCancelCommand(text)) {
       const target = open.filter(q => q.actorId === actorId).at(-1) ?? (addressed ? open.at(-1) : undefined);
       if (!target) return undefined;
+      // "Dropping that" only makes sense while she is still looking; once she was answering, a plain "Okay" does.
+      const wasAnswering = target.status === 'answering' || target.status === 'interrupted';
       target.abort.abort();
       this.clearQuestionProgress(target);
       floor.drop(target.id);
       this.reportQuestion(sessionId, target, 'cancelled', 'asked to drop it');
-      this.sayAside(s, 'Okay, dropping that.');
+      this.sayAside(s, wasAnswering ? 'Okay.' : 'Okay, dropping that.');
       void s.meeting.sendStatus(`Dropped the question${target.topic ? ` about ${target.topic}` : `: "${target.request}"`}.`).catch(() => undefined);
       return 'answered';
     }
@@ -705,7 +702,8 @@ export class NogitaEngine {
     const current = utterance.text.trim().slice(0, 4000);
     if (!s || s.ending || !s.floor || !this.dependencies.agent || !utterance.actor.verified || !directlyAddressesNogita(current)) return undefined;
     const request = removeAddress(current);
-    if (!request || isCancelCommand(request) || isStopCommand(request) || isExplicitLeaveRequest(request)) return undefined;
+    // "Stop. Just tell me..." is handled when the turn is confirmed: the stop first, then the rest as its own question.
+    if (!request || isCancelCommand(request) || isStopCommand(request) || splitLeadingStop(request) || isExplicitLeaveRequest(request)) return undefined;
     const key = questionKey(request);
     if (s.questions.some(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key)) return undefined;
     const q = this.newQuestion(s, utterance, request, 'speculative', performance.now());
@@ -726,6 +724,17 @@ export class NogitaEngine {
    */
   private async runAgentTurn(sessionId: string, s: Session, utterance: Utterance, request: string,
     pending: Session['pendingFollowUp'], q?: Question, history?: string[]): Promise<ProcessResult | undefined> {
+    const leave = { asked: false };
+    try { return await this.agentTurn(sessionId, s, utterance, request, pending, q, history, leave); }
+    finally {
+      // After her goodbye was spoken; a rolled-back early start never leaves.
+      if (leave.asked && !q?.abort.signal.aborted && !s.ending) this.onLeaveRequested?.(sessionId);
+    }
+  }
+
+  private async agentTurn(sessionId: string, s: Session, utterance: Utterance, request: string,
+    pending: Session['pendingFollowUp'], q: Question | undefined, history: string[] | undefined,
+    leave: { asked: boolean }): Promise<ProcessResult | undefined> {
     const agent = this.dependencies.agent!;
     const raisedReason = s.raisedReason;
     // A speculative start reads the reason but leaves it for the confirmed question.
@@ -752,6 +761,7 @@ export class NogitaEngine {
       onReceipt: receipt => s.meeting.sendCompletion(receipt),
       recordAction: action => this.dependencies.usage?.recordExternalAction(sessionId, action),
       ...(this.missions && authorized ? { missions: this.missionPort(sessionId, utterance.actor) } : {}),
+      ...(this.onLeaveRequested && s.meeting.capabilities.has('speak') ? { leave: () => { leave.asked = true; } } : {}),
       ...(s.floor && this.onScreen ? { show: (card: ScreenCard | undefined) => this.onScreen!(sessionId, card),
         ...(this.screenAudience ? { screenAudience: () => this.screenAudience!(sessionId) } : {}) } : {}),
     });
@@ -802,7 +812,7 @@ export class NogitaEngine {
         if (q) this.clearQuestionProgress(q);
       }
       if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
-      const text = speakable(raw);
+      const text = toSpoken(raw);
       if (!text || truncatedSpeech) return;
       // Spoken answers stay short; anything longer is in the chat copy of the answer.
       if (!streaming) {
@@ -810,13 +820,13 @@ export class NogitaEngine {
         const short = firstWords(text, Math.max(1, maxWords - spokenWords));
         spokenWords += short.split(/\s+/).length;
         queueSpeech(short, step);
-        if (short !== text) { truncatedSpeech = true; queueSpeech('I have put the rest in the chat.', step); }
+        if (short !== text) { truncatedSpeech = true; queueSpeech(this.phrases.pick(REST_IN_CHAT), step); }
         return;
       }
       const words = text.split(/\s+/).length;
       if (spokenWords > 0 && spokenWords + words > maxWords) {
         truncatedSpeech = true;
-        queueSpeech('I have put the rest in the chat.', step);
+        queueSpeech(this.phrases.pick(REST_IN_CHAT), step);
         return;
       }
       spokenWords += words;
@@ -827,7 +837,7 @@ export class NogitaEngine {
           stillWorking = undefined;
           if (stillWorkingUsed || truncatedSpeech || this.sessions.get(sessionId) !== s || q?.abort.signal.aborted) return;
           stillWorkingUsed = true;
-          queueSpeech(STILL_WORKING[Math.floor(this.random() * STILL_WORKING.length) % STILL_WORKING.length]!, step, true);
+          queueSpeech(this.phrases.pick(STILL_WORKING), step, true);
         }, 6_000);
       }
     };
@@ -873,11 +883,11 @@ export class NogitaEngine {
       }
       this.clearProgressTimer(s);
       if (floor && q) {
-        await floor.say(q.id, 'Sorry, I hit a problem and could not finish that.');
+        await floor.say(q.id, 'Sorry, something broke on my end and I couldn’t finish that.');
         this.reportQuestion(sessionId, q, 'failed', 'model error after speaking');
         return report.wroteSomething ? 'completed' : 'answered';
       }
-      await this.speakOrChat(sessionId, s.meeting, 'Sorry, I hit a problem and could not finish that.');
+      await this.speakOrChat(sessionId, s.meeting, 'Sorry, something broke on my end and I couldn’t finish that.');
       return report.wroteSomething ? 'completed' : 'answered';
     }
     if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
@@ -886,7 +896,7 @@ export class NogitaEngine {
     if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
     if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
     let answer = result.answer;
-    if (!answer && result.stoppedEarly) answer = 'That is taking me too long. Ask me again with a narrower question.';
+    if (!answer && result.stoppedEarly) answer = 'This is taking me too long. Can you narrow it down a bit?';
     if (floor && q && answer && !result.answer) queueSpeech(answer, result.steps);
     await speech;
     const outcomes = await settleSpeech();
@@ -943,7 +953,7 @@ export class NogitaEngine {
     await s.meeting.sendStatus(text).catch(() => undefined);
     // Spoken after the answers people are waiting for, never ahead of them.
     const open = s.questions.filter(q => NogitaEngine.isOpen(q) && q.run).map(q => q.run!);
-    if (s.floor) void Promise.allSettled(open).then(() => { if (this.sessions.get(sessionId) === s && !s.ending) this.sayAside(s, speakable(text)); });
+    if (s.floor) void Promise.allSettled(open).then(() => { if (this.sessions.get(sessionId) === s && !s.ending) this.sayAside(s, toSpoken(text)); });
     return true;
   }
 
@@ -1194,7 +1204,7 @@ export class NogitaEngine {
     s.activeRequest = { actorId: utterance.actor.id, request, startedAt: processingStartedAt, firstSpeechRecorded: false };
     if (isRepositoryConnectionQuestion(request)) {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
-        await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
+        await this.speakOrChat(sessionId, s.meeting, 'Sorry, I can’t look at the project code for you.');
         return 'denied';
       }
       let evidence;
@@ -1202,7 +1212,7 @@ export class NogitaEngine {
         evidence = await this.dependencies.code.findEvidence('README package.json');
       } catch {
         await this.speakOrChat(sessionId, s.meeting,
-          'I tried to check the repository, but GitHub refused the request. My server connection needs attention.');
+          'I couldn’t get into GitHub just now. Someone should check my connection.');
         return 'answered';
       }
       this.dependencies.usage?.recordExternalAction(sessionId, 'code_lookup');
@@ -1211,7 +1221,7 @@ export class NogitaEngine {
         return 'answered';
       }
       await this.speakOrChat(sessionId, s.meeting,
-        'Yes. I have live read-only access to the configured GitHub repository.');
+        'Yep, I can read the GitHub repo.');
       await s.meeting.sendCompletion({
         provider: this.dependencies.code.name, kind: 'code_lookup', url: evidence[0]!.url,
         label: 'Code reference',
@@ -1221,7 +1231,7 @@ export class NogitaEngine {
     let initialEvidence: Evidence[] = [];
     if (this.dependencies.code.name === 'github' && isRepositoryQuestion(request) &&
         !this.dependencies.policy.mayReadCode(utterance.actor)) {
-      await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
+      await this.speakOrChat(sessionId, s.meeting, 'Sorry, I can’t look at the project code for you.');
       return 'denied';
     }
     try {
@@ -1237,7 +1247,7 @@ export class NogitaEngine {
     catch (error) {
       if (error instanceof CodeLookupRateLimitError) {
         await this.speakOrChat(sessionId, s.meeting,
-          'GitHub has reached its rate limit. I cannot check the repository right now; please try again later.');
+          'GitHub’s rate limit is blocking me right now. Give it a few minutes and ask again.');
         return 'answered';
       }
       /* Let ordinary questions proceed; an explicit code-inspection plan retries with expanded terms below. */
@@ -1273,7 +1283,7 @@ export class NogitaEngine {
     }
     if (plan.kind === 'inspect_code') {
       if (!this.dependencies.policy.mayReadCode(utterance.actor)) {
-        await this.speakOrChat(sessionId, s.meeting, 'I cannot access restricted project code for this request.');
+        await this.speakOrChat(sessionId, s.meeting, 'Sorry, I can’t look at the project code for you.');
         return 'denied';
       }
       let evidence: Evidence[];
@@ -1281,7 +1291,7 @@ export class NogitaEngine {
       catch (error) {
         await this.speakOrChat(sessionId, s.meeting,
           error instanceof CodeLookupRateLimitError
-            ? 'GitHub has reached its rate limit. I cannot check the repository right now; please try again later.'
+            ? 'GitHub’s rate limit is blocking me right now. Give it a few minutes and ask again.'
             : 'I could not check the repository right now. The connection needs attention; please try again later.');
         return 'answered';
       }
@@ -1304,7 +1314,7 @@ export class NogitaEngine {
         return 'denied';
       }
       if (!plan.title.trim() || plan.title.length > 200) {
-        await this.speakOrChat(sessionId, s.meeting, 'Please give me a clear task title.');
+        await this.speakOrChat(sessionId, s.meeting, 'Sure, what should the task be about?');
         return 'denied';
       }
       // One acknowledgement on a direct address; never speak again on completion.
@@ -1323,7 +1333,7 @@ export class NogitaEngine {
     }
     // No unsafe placeholder: draft PR remains intentionally denied.
     if (!isExplicitPRRequest(request) || !this.dependencies.policy.mayDraftPR(utterance.actor)) {
-      await this.speakOrChat(sessionId, s.meeting, 'Draft pull requests are not enabled yet. I will not change code without an approved workflow.');
+      await this.speakOrChat(sessionId, s.meeting, 'I can’t open pull requests yet, sorry. I can make a task for it instead.');
       return 'not_supported';
     }
     return 'not_supported';

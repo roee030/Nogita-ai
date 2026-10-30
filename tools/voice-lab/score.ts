@@ -36,6 +36,24 @@ export function wordErrorRate(reference: string, heard: string): number {
   return previous[hyp.length]! / ref.length;
 }
 
+/**
+ * What gives her away as a machine in what she said aloud, one short label per problem (empty: she sounded like a
+ * person). `speaker` is the person she answered, to catch "Roee wants..." said to Roee's face.
+ */
+export function machineTells(spoken: readonly string[], speaker?: string): string[] {
+  const said = spoken.join(' ').trim();
+  if (!said) return [];
+  const tells: string[] = [];
+  if (/\b(?:certainly|great question|good question|i'd be happy to|i would be happy to|happy to help|as an ai language model|is there anything else)\b/i.test(said)) tells.push('chatbot phrase');
+  if (speaker && new RegExp(String.raw`\b${speaker}\s+(?:wants|asked|asks|said|says|needs|would like|is asking|mentioned)\b`, 'i').test(said)) tells.push('talks about the speaker in the third person');
+  if (/\b(?:wake word|activate me|my name to|follow-up window|call me by name)\b/i.test(said)) tells.push('explains her own mechanics');
+  if (/\bto (?:walk you through|answer|explain) (?:it|this|that) (?:accurately|properly|correctly)\b|\bI (?:will|'ll) (?:look at|check) .{3,60} (?:to|so I can) (?:walk|answer|explain)\b/i.test(said)) tells.push('narrates her plan');
+  if (/(?:^|\s)(?:\.{0,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-z]{1,5}\b/i.test(said)) tells.push('reads a file path aloud');
+  if (/\b(?:I have put the rest in the chat|please try again later|I cannot|I could not|I am unable)\b/.test(said)) tells.push('stiff wording');
+  if (!/[.!?…"')\]]$/.test(said)) tells.push('stops mid-sentence');
+  return tells;
+}
+
 export function scoreTurn(record: TurnRecord): TurnScore {
   const expect = record.turn.expect;
   const checks: Check[] = [];
@@ -99,6 +117,11 @@ export function scoreTurn(record: TurnRecord): TurnScore {
     checks.push({ name: `answer within ${expect.contentWithinMs / 1000} s`, ok: gap !== undefined && gap <= expect.contentWithinMs,
       detail: gap === undefined ? 'no answer' : `${(gap / 1000).toFixed(2)} s` });
   }
+  if (spoke) {
+    const speaker = record.turn.speaker.charAt(0).toUpperCase() + record.turn.speaker.slice(1);
+    const tells = machineTells(record.spoken, speaker);
+    checks.push({ name: 'sounds human', ok: tells.length === 0, ...(tells.length ? { detail: tells.join(', ') } : {}) });
+  }
   if (record.interruptedByNoise) checks.push({ name: 'not cut off', ok: false, detail: 'speech was interrupted without anyone talking over her' });
   if (record.turn.bargeIn) {
     const stop = record.timing.bargeInStop;
@@ -131,7 +154,7 @@ What Nogita wrote in chat: ${record.chat.join(' | ') || '(nothing)'}
 Lookups Nogita made: ${record.tools.join('; ') || '(none)'}
 Actions Nogita took: ${record.writes.join('; ') || '(none)'}
 Grader notes: ${record.turn.expect.note ?? 'none'}
-Score 1-5: correct (answers the actual question, no invented facts), natural (sounds like a helpful colleague speaking, not a document), concise (right length for speech).
+Score 1-5: correct (answers the actual question, no invented facts), natural (sounds like a real colleague talking in the meeting, not a chatbot, a form or a document), concise (right length for speech).
 Reply with only JSON: {"correct": n, "natural": n, "concise": n, "comment": "one short sentence"}`;
   const response = await http('https://api.anthropic.com/v1/messages', {
     method: 'POST', signal: AbortSignal.timeout(30_000),

@@ -279,7 +279,7 @@ test('a lead-in cut off by a participant is not repeated', async () => {
 
 test('the speaker goes on after a pause: the answer to the first half is dropped and the whole question answered', async () => {
   const model = new RoutedModel([
-    { match: /server/, steps: [{ text: 'The server starts in src/app/server.ts.' }] },
+    { match: /server/, steps: [{ text: 'The server starts in server.ts.' }] },
     { match: /can you check\?$/, steps: [{ text: 'What should I check?', delayMs: 150 }] },
   ]);
   const f = fixture(model);
@@ -288,7 +288,7 @@ test('the speaker goes on after a pause: the answer to the first half is dropped
   await sleep(30);
   await f.engine.onUtterance('s', { text: 'which file starts the server?', eventId: '2', actor: roee });
   await first;
-  assert.deepEqual(f.meeting.spoken, ['The server starts in src/app/server.ts.']);
+  assert.deepEqual(f.meeting.spoken, ['The server starts in server.ts.']);
   assert.equal(f.statuses(1).at(-1), 'superseded');
   assert.equal(f.statuses(2).at(-1), 'answered');
 });
@@ -296,7 +296,7 @@ test('the speaker goes on after a pause: the answer to the first half is dropped
 test('"Stop." then a new request without her name: she stops and answers the request', async () => {
   const model = new RoutedModel([
     { match: /meeting works/, steps: [{ text: 'First the bot joins. Then it listens for its name. Then it answers.' }] },
-    { match: /main file/, steps: [{ text: 'It is src/core/engine.ts.' }] },
+    { match: /main file/, steps: [{ text: 'It is engine.ts.' }] },
   ]);
   const f = fixture(model);
   f.meeting.interruptAt = 1;
@@ -306,13 +306,13 @@ test('"Stop." then a new request without her name: she stops and answers the req
   assert.equal(await f.engine.onUtterance('s', { text: 'Nogita, stop.', eventId: '2', actor: roee }), 'answered');
   assert.equal(await f.engine.onUtterance('s', { text: 'Just tell me the name of the main file.', eventId: '3', actor: roee }), 'answered');
   await first;
-  assert.deepEqual(f.meeting.spoken, ['First the bot joins.', 'It is src/core/engine.ts.']);
+  assert.deepEqual(f.meeting.spoken, ['First the bot joins.', 'It is engine.ts.']);
 });
 
 test('a live conversation goes on without her name; in a group, an unnamed question to someone else is left alone', async () => {
   const model = new RoutedModel([
     { match: /open tasks/, steps: [{ text: 'Two tasks are open.' }] },
-    { match: /which one is older/, steps: [{ text: 'KAN-11 is older.' }] },
+    { match: /which one is older/, steps: [{ text: 'KAN 11 is older.' }] },
     { match: /lunch/, steps: [{ text: '' }] },
   ]);
   const f = fixture(model);
@@ -321,7 +321,7 @@ test('a live conversation goes on without her name; in a group, an unnamed quest
   await f.engine.onUtterance('s', { text: 'What are the open tasks in Jira?', eventId: '1', actor: roee });
   assert.deepEqual(f.meeting.spoken, ['Two tasks are open.']);
   await f.engine.onUtterance('s', { text: 'And which one is older?', eventId: '2', actor: roee });
-  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'KAN-11 is older.']);
+  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'KAN 11 is older.']);
   // Dana joins the talk: Dana's unnamed question goes to the room, not to Nogita.
   const before = model.requests.length;
   await f.engine.onUtterance('s', { text: 'Roee, do you want lunch?', eventId: '3', actor: dana });

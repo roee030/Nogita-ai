@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { SpeechChunker, runAgent, type AgentContent, type ChatModel, type ChatModelRequest, type ChatModelResponse } from '../src/core/agent.ts';
 import { buildToolbox, requestsChatPost, requestsTaskWrite } from '../src/core/agent-tools.ts';
-import { NogitaEngine } from '../src/core/engine.ts';
+import { NogitaEngine, REST_IN_CHAT } from '../src/core/engine.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
 import { AnthropicBrain } from '../src/adapters/anthropic.ts';
@@ -449,6 +449,6 @@ test('voice without queued playback: the lead-in and a short answer are each spo
   assert.equal(spoken[0], 'Let me look at the cache.');
   assert.ok(spoken[1]!.startsWith('The cache keeps entries for five minutes.'));
   assert.ok(spoken[1]!.split(/\s+/).length <= 90);
-  assert.equal(spoken[2], 'I have put the rest in the chat.');
+  assert.ok(REST_IN_CHAT.includes(spoken[2]!));
   assert.equal(spoken.length, 3);
 });

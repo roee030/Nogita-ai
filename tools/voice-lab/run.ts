@@ -12,6 +12,7 @@
 import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
 import { createDependencies, loadDotEnv } from '../../src/app/config.ts';
+import { DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from '../../src/app/attendee-realtime-audio.ts';
 import { AllowlistPolicy } from '../../src/core/policy.ts';
 import type { ActionReceipt, ChatPort } from '../../src/core/contracts.ts';
 import { playScenario, synthesizeTurn } from './conversation.ts';
@@ -57,7 +58,10 @@ if (values.noise || values.snr) {
   scenarios = scenarios.map(s => ({ ...s, noise: {
     kind: (values.noise as NoiseKind | undefined) ?? s.noise.kind, snrDb: values.snr ? Number(values.snr) : s.noise.snrDb } }));
 }
-const sttMode = (values.stt ?? env.DEEPGRAM_STT_MODE) === 'flux-english' ? 'flux-english' : 'nova3-multilingual';
+// The same choice as production: Flux for an English-only meeting unless set otherwise.
+const sttMode = chooseSttMode(values.stt ?? env.DEEPGRAM_STT_MODE, parseLanguages(env.NOGITA_LANGUAGES)).mode;
+// Early starts as in production (Flux only); --eager off turns them off.
+const eager = values.eager ?? (sttMode === 'flux-english' ? String(DEFAULT_EAGER_EOT_THRESHOLD) : 'off');
 const routerQuietMs = values['router-quiet-ms'] ? Number(values['router-quiet-ms']) : undefined;
 const frameMs = values['frame-ms'] ? Number(values['frame-ms']) : 20;
 
@@ -120,7 +124,7 @@ if (dependencies.code.prepare) await dependencies.code.prepare();
 const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
   routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
-  eot: values.eot ?? '0.8', eager: values.eager ?? 'off', thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
+  eot: values.eot ?? '0.8', eager, thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
 for (const scenario of scenarios) {
   console.log(`\n▶ ${scenario.title}`);
@@ -129,7 +133,7 @@ for (const scenario of scenarios) {
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
     dependencies: { ...dependencies, chat }, routerQuietMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
-    eagerThreshold: values.eager && values.eager !== 'off' ? Number(values.eager) : undefined,
+    eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
     engineOptions: { handRaiseFallback: 'chat' } });
   const errors: string[] = [];

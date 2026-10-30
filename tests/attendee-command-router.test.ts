@@ -348,7 +348,7 @@ test('invalid planner output ends one request with one acknowledgement and one f
   await router.accept(request);
   assert.equal(attempts, 1);
   assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
-  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /didn’t go through/i.test(status)).length, 1);
 });
 
 test('a provider retry does not repeat acknowledgement or failure notice for the same utterance', async () => {
@@ -373,7 +373,7 @@ test('a provider retry does not repeat acknowledgement or failure notice for the
   }
   assert.equal(attempts, 3);
   assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
-  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /didn’t go through/i.test(status)).length, 1);
 });
 
 test('a provider retry of one fragment does not repeat notices for the original combined utterance', async () => {
@@ -396,7 +396,7 @@ test('a provider retry of one fragment does not repeat notices for the original 
   await jobs.shift()!();
   await assert.rejects(retry, /transient failure/);
   assert.equal(statuses.filter(status => /checking/i.test(status)).length, 1);
-  assert.equal(statuses.filter(status => /could not complete/i.test(status)).length, 1);
+  assert.equal(statuses.filter(status => /didn’t go through/i.test(status)).length, 1);
 });
 
 test('failed verification acknowledgement does not bind the speaker prematurely', async () => {

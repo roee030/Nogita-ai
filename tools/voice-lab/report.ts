@@ -38,6 +38,8 @@ export interface RunSummary {
   passed: number;
   total: number;
   addressHeard: { heard: number; total: number };
+  /** Spoken answers with no machine tell (chatbot phrases, paths read aloud, talking about the asker...). */
+  soundsHuman?: { ok: number; total: number };
   meanWer?: number;
   judge?: { correct?: number; natural?: number; concise?: number };
 }
@@ -72,6 +74,10 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
     bargeInStop: stats(turns.map(({ record }) => record.timing.bargeInStop)),
     passed: turns.filter(({ score }) => score.passed).length, total: turns.length,
     addressHeard: { heard: address.filter(({ score }) => score.addressHeard).length, total: address.length },
+    soundsHuman: (() => {
+      const checks = turns.flatMap(({ score }) => score.checks.filter(check => check.name === 'sounds human'));
+      return { ok: checks.filter(check => check.ok).length, total: checks.length };
+    })(),
     meanWer: mean(wers),
     ...(judged.length ? { judge: { correct: mean(judged.map(j => j!.correct)), natural: mean(judged.map(j => j!.natural)),
       concise: mean(judged.map(j => j!.concise)) } } : {}),
@@ -98,6 +104,7 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     '## Quality', '',
     `- Turns passed: **${summary.passed}/${summary.total}**`,
     `- Name recognized when addressed: ${summary.addressHeard.heard}/${summary.addressHeard.total}`,
+    ...(summary.soundsHuman ? [`- Sounded human (no machine tells): **${summary.soundsHuman.ok}/${summary.soundsHuman.total}** spoken answers`] : []),
     `- Mean word error rate of the transcript: ${summary.meanWer ?? '–'}`,
     ...(summary.judge ? [`- Judge (1-5): correct ${summary.judge.correct} · natural ${summary.judge.natural} · concise ${summary.judge.concise}`] : []),
     `- Lookups as expected: ${summary.toolChecks.ok}/${summary.toolChecks.total}`,

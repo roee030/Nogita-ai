@@ -130,6 +130,8 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage },
     onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, phase: event.phase,
       ...(event.outcome ? { outcome: event.outcome } : {}), ...(event.heardMs !== undefined ? { heardMs: event.heardMs } : {}) }),
     ...(missionRunner ? { missions: missionRunner } : {}),
+    // The model already said goodbye in its reply.
+    onLeaveRequested: sessionId => { void leaveMeeting(sessionId, { goodbye: false }); },
     screenAudience: sessionId => {
       const participants = participantsBySession.get(sessionId);
       return participants ? { unverified: [...participants.values()].filter(verified => !verified).length } : undefined;
@@ -196,25 +198,45 @@ const attendeeCommands = new AttendeeCommandRouter(
     chatAck: !realtimeAudioEnabled,
     ...(fluxStt && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
       ? { speculate: (sessionId: string, utterance: Utterance) => nogita.speculate(sessionId, utterance) } : {}),
-    onLeave: async sessionId => {
-      const meeting = attendeeMeetingsBySession.get(sessionId);
-      const botId = meeting?.botIdentifier;
-      if (meeting) {
-        try { await meeting.sendStatus('I’m leaving the call now, as requested.'); }
-        catch { console.error('leave_acknowledgement_failed'); }
-      }
-      try { await nogita.endSession(sessionId); }
-      catch {
-        if (meeting) {
-          try { await meeting.sendStatus('I could not leave the call yet; I may still be connected. Please ask me to leave again or remove me from the meeting.'); }
-          catch { console.error('leave_failure_notice_failed'); }
-        }
-        return;
-      }
-      sessionUsage.end(sessionId);
-      await forgetAttendeeSession(sessionId, botId);
-    } },
+    onLeave: sessionId => leaveMeeting(sessionId, { goodbye: true }) },
 );
+
+const leavingSessions = new Set<string>();
+const GOODBYES = ['Sure, bye everyone.', 'Okay, bye everyone.', 'Sure thing. Bye, everyone.'];
+
+/** Says goodbye (unless the model already did), leaves the call, then forgets the session. */
+async function leaveMeeting(sessionId: string, { goodbye }: { goodbye: boolean }): Promise<void> {
+  if (leavingSessions.has(sessionId)) return;
+  leavingSessions.add(sessionId);
+  try {
+    const meeting = attendeeMeetingsBySession.get(sessionId);
+    const botId = meeting?.botIdentifier ?? attendeeBotsBySession.get(sessionId);
+    // Whatever she was saying stops now; the goodbye must not wait behind a long answer.
+    meeting?.interruptSpeech?.();
+    if (meeting && goodbye) {
+      const line = GOODBYES[Math.floor(Math.random() * GOODBYES.length)]!;
+      // A goodbye that cannot play within a few seconds must not keep her in the call.
+      const said = await Promise.race([meeting.speak(line).then(() => true, () => false),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 4_000))]);
+      if (!said) await meeting.sendStatus(line).catch(() => console.error('leave_acknowledgement_failed'));
+    }
+    try {
+      // The engine may not know the session (it was never restored, or already ended); the bot must still leave.
+      if (nogita.hasSession(sessionId)) await nogita.endSession(sessionId);
+      else await meeting?.leave();
+    } catch {
+      if (meeting) {
+        try { await meeting.sendStatus('I couldn’t leave the call just now. Ask me again, or remove me from the meeting.'); }
+        catch { console.error('leave_failure_notice_failed'); }
+      }
+      return;
+    }
+    sessionUsage.end(sessionId);
+    await forgetAttendeeSession(sessionId, botId);
+  } finally {
+    leavingSessions.delete(sessionId);
+  }
+}
 
 let realtimeAudio: AttendeeRealtimeAudioHub | undefined;
 if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API_KEY && env.ATTENDEE_WEBHOOK_SECRET) {

@@ -86,7 +86,7 @@ test('corrections are told apart from new questions', () => {
 test('group meeting: the follow-up window closes once someone else spoke', async () => {
   const model = new ScriptedModel([
     { match: /open tasks/, text: 'Two tasks are open.' },
-    { match: /older/, text: 'KAN-11 is older.' },
+    { match: /older/, text: 'KAN 11 is older.' },
     { match: /tomorrow/, text: '' },
   ]);
   const f = fixture(model, 5);
@@ -101,7 +101,7 @@ test('group meeting: the follow-up window closes once someone else spoke', async
 });
 
 test('group meeting: within the window, words to another person by name and a "yeah" do not reach her', async () => {
-  const model = new ScriptedModel([{ match: /open tasks/, text: 'Two tasks are open.' }, { match: /older/, text: 'KAN-11 is older.' }]);
+  const model = new ScriptedModel([{ match: /open tasks/, text: 'Two tasks are open.' }, { match: /older/, text: 'KAN 11 is older.' }]);
   const f = fixture(model, 5);
   await f.engine.startSession('s', f.meeting);
   await f.engine.onUtterance('s', { text: 'Hi all.', eventId: '0', actor: dana });
@@ -115,7 +115,7 @@ test('group meeting: within the window, words to another person by name and a "y
   const after = model.calls();
   assert.equal(await f.engine.onUtterance('s', { text: 'Dana, can you take the older one?', eventId: '4', actor: roee }), 'ignored');
   assert.equal(model.calls(), after);
-  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'KAN-11 is older.']);
+  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'KAN 11 is older.']);
 });
 
 test('thanks closes the conversation quietly instead of starting another model turn', async () => {
@@ -175,7 +175,7 @@ test('"stop" stops the piece playing now even when her voice detector missed it,
 
 test('"stop" followed by a new request stops the old answer and answers the remainder', async () => {
   const model = new ScriptedModel([
-    { match: /main file/, text: 'The main file is src/app/server.ts.' },
+    { match: /main file/, text: 'The main file is server.ts.' },
     { match: /meeting works/, text: 'First the bot joins. Then it listens. Then it answers.' },
   ]);
   const f = fixture(model, 200);
@@ -188,7 +188,7 @@ test('"stop" followed by a new request stops the old answer and answers the rema
     text: 'Nogita, stop. Just tell me the name of the main file.', eventId: '2', actor: roee,
   }), 'answered');
   await first;
-  assert.deepEqual(f.meeting.heard, ['The main file is src/app/server.ts.']);
+  assert.deepEqual(f.meeting.heard, ['The main file is server.ts.']);
   assert.equal(f.statuses(1).at(-1), 'stopped');
   assert.equal(f.statuses(2).at(-1), 'answered');
 });
@@ -202,7 +202,7 @@ test('"never mind" while the answer plays stops it; only the acknowledgement fol
   assert.equal(await f.engine.onUtterance('s', { text: 'Never mind.', eventId: '2', actor: roee }), 'answered');
   await first;
   await until(() => !f.meeting.playing && f.meeting.heard.length === 1, 3_000);
-  assert.deepEqual(f.meeting.heard, ['Okay, dropping that.']);
+  assert.deepEqual(f.meeting.heard, ['Okay.']); // she was already answering: nothing left to "drop"
   assert.equal(f.statuses(1).at(-1), 'cancelled');
 });
 
