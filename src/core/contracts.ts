@@ -57,6 +57,8 @@ export interface CreateTask {
   description: string;
   assigneeId?: string;
   requestId: string;
+  /** Which connected board (id from `BoardPort.boards`); the default board when absent. */
+  board?: string;
 }
 export interface TaskSummary {
   key: string;
@@ -74,16 +76,35 @@ export interface TaskDetail extends TaskSummary {
   created?: string;
   comments: Array<{ author?: string; created?: string; text: string }>;
 }
-export interface TaskSearch { text?: string; jql?: string; limit?: number }
+/** A task search any board can answer; each adapter translates it into its own query language. */
+export interface TaskSearch {
+  text?: string;
+  /** A status as people say it ("In Progress", "done"), matched without regard to case. */
+  status?: string;
+  /** Someone's tasks: an id from `findAssignees`, or an internal person id the board can map. */
+  assigneeId?: string;
+  /** Only tasks nobody owns. */
+  unassigned?: boolean;
+  /** One connected board (its id) or project key; every readable one when absent. */
+  board?: string;
+  /** Raw query for boards that declare `queryLanguage` (Jira: a JQL condition), for what the fields cannot say. */
+  jql?: string;
+  limit?: number;
+}
 /** A person a board can assign work to. `id` is accepted back by `createTask` as `assigneeId`. */
 export interface AssigneeCandidate { id: string; displayName: string }
 export interface BoardPort {
   readonly name: string;
+  /** Set when `TaskSearch.jql` is understood. */
+  readonly queryLanguage?: 'jql';
+  /** Connected boards a task can go to, when there is more than one (ids, for `CreateTask.board`). */
+  readonly boards?: ReadonlyArray<{ id: string; name: string }>;
   createTask(input: CreateTask): Promise<ActionReceipt>;
   /** Read-only lookups used by the conversational agent. Optional per provider. */
   searchTasks?(query: TaskSearch): Promise<TaskSummary[]>;
   getTask?(key: string): Promise<TaskDetail | undefined>;
-  findAssignees?(name: string): Promise<AssigneeCandidate[]>;
+  /** `board`: which connected board the person will be assigned on (the default board when absent). */
+  findAssignees?(name: string, board?: string): Promise<AssigneeCandidate[]>;
 }
 /** Team messaging workspace (Slack today) as a source of context and an explicitly requested action target. */
 export interface ChatChannel { id: string; name: string }

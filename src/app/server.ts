@@ -44,10 +44,11 @@ let providerConfigValid = true;
 let dependencies: ReturnType<typeof createDependencies>;
 try {
   dependencies = createDependencies(env);
-} catch {
+} catch (error) {
   providerConfigValid = false;
-  console.error('provider_configuration_invalid');
-  const safeEnv = { ...env, BOARD_PROVIDER: 'demo', REPO_PROVIDER: 'demo', NOGITA_MODE: 'demo' };
+  // A tenant config error names the field (never a secret's value); provider constructor errors stay generic.
+  console.error('provider_configuration_invalid', error instanceof Error && error.name === 'TenantConfigError' ? error.message : '');
+  const safeEnv = { ...env, NOGITA_TENANT_CONFIG: '', BOARD_PROVIDER: 'demo', REPO_PROVIDER: 'demo', NOGITA_MODE: 'demo' };
   try {
     dependencies = createDependencies(safeEnv);
   } catch {

@@ -1,0 +1,19 @@
+{
+  "tenant": { "id": "acme", "name": "Acme Engineering" },
+  "ai": { "mode": "live", "anthropicApiKey": "env:ANTHROPIC_API_KEY", "agent": true },
+  "boards": [
+    { "id": "web", "provider": "jira", "default": true, "baseUrl": "https://acme.atlassian.net", "email": "nogita@acme.example",
+      "token": "env:ACME_JIRA_TOKEN", "projectKey": "WEB", "readProjectKeys": ["OPS"] },
+    { "id": "marketing", "provider": "monday", "token": "env:ACME_MONDAY_TOKEN", "boardId": 1234567890, "descriptionColumnId": "text" }
+  ],
+  "repositories": [
+    { "id": "shop", "provider": "github", "owner": "acme", "repo": "shop", "ref": "main", "token": "env:ACME_GITHUB_TOKEN" },
+    { "id": "mobile", "provider": "github", "owner": "acme", "repo": "mobile-app", "token": "env:ACME_GITHUB_TOKEN" }
+  ],
+  "chat": { "id": "slack", "provider": "slack", "botToken": "env:ACME_SLACK_BOT_TOKEN" },
+  "people": [
+    { "id": "dana", "displayName": "Dana Katz", "jiraAccountId": "replace-with-jira-account-id",
+      "slack": { "teamId": "T0ACME", "userId": "U0DANA" }, "githubUsername": "danak" }
+  ],
+  "authorizedActorIds": ["dana"]
+}

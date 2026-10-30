@@ -49,6 +49,7 @@ export function adfParagraph(text: string): object {
 }
 export class JiraBoard implements BoardPort {
   readonly name = 'jira';
+  readonly queryLanguage = 'jql' as const;
   constructor(private readonly config: JiraConfig, private readonly http: typeof fetch = fetch) {
     const u = new URL(config.baseUrl);
     if (u.protocol !== 'https:' || !u.hostname.endsWith('.atlassian.net')) {
@@ -78,7 +79,8 @@ export class JiraBoard implements BoardPort {
       url: this.receipt(issue.key).url };
   }
   async searchTasks(query: TaskSearch): Promise<TaskSummary[]> {
-    const projects = this.readProjects.map(key => `"${key}"`).join(', ');
+    const only = query.board && this.readProjects.find(key => key.toUpperCase() === query.board!.toUpperCase());
+    const projects = (only ? [only] : this.readProjects).map(key => `"${key}"`).join(', ');
     let condition = query.jql?.trim() ?? '';
     let order = 'ORDER BY updated DESC';
     const orderAt = condition.search(/\border\s+by\b/i);
@@ -95,6 +97,13 @@ export class JiraBoard implements BoardPort {
     const clauses = [`project in (${projects})`];
     if (condition) clauses.push(`(${condition})`);
     if (query.text?.trim()) clauses.push(`text ~ "${query.text.trim().replace(/["\\]/g, ' ').slice(0, 200)}"`);
+    if (query.status?.trim()) clauses.push(`status = "${query.status.trim().replace(/["\\]/g, ' ').slice(0, 60)}"`);
+    if (query.unassigned) clauses.push('assignee is EMPTY');
+    else if (query.assigneeId) {
+      const accountId = this.accountIdFor(query.assigneeId);
+      if (!accountId) throw new Error('That person has no Jira account Nogita knows about');
+      clauses.push(`assignee = "${accountId.replace(/["\\]/g, '')}"`);
+    }
     const response = await this.http(new URL('/rest/api/3/search/jql', this.config.baseUrl), {
       method: 'POST', headers: this.headers(),
       body: JSON.stringify({ jql: `${clauses.join(' AND ')} ${order}`, maxResults: Math.min(query.limit ?? 15, 30), fields: SEARCH_FIELDS }),
@@ -192,12 +201,15 @@ export class JiraBoard implements BoardPort {
     }
     return undefined;
   }
+  /** A Jira account id for an internal person id, a verified `jira:` candidate, or an allowlisted account id. */
+  private accountIdFor(id: string): string | undefined {
+    return this.config.resolveAssigneeId?.(id) ?? this.verifiedAssignees.get(id)
+      ?? (this.config.allowedAssigneeIds?.has(id) ? id : undefined);
+  }
   async createTask(task: CreateTask): Promise<ActionReceipt> {
     let providerAssigneeId: string | undefined;
     if (task.assigneeId) {
-      providerAssigneeId = this.config.resolveAssigneeId?.(task.assigneeId)
-        ?? this.verifiedAssignees.get(task.assigneeId)
-        ?? (this.config.allowedAssigneeIds?.has(task.assigneeId) ? task.assigneeId : undefined);
+      providerAssigneeId = this.accountIdFor(task.assigneeId);
       if (!providerAssigneeId) throw new Error('Assignee not in explicitly configured Jira allowlist');
     }
     const requestDigest = jiraRequestDigest(task.requestId);

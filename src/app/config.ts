@@ -4,12 +4,14 @@ import type { BoardPort, BrainPort, ChatPort, CodePort, PolicyPort } from '../co
 import type { ChatModel } from '../core/agent.ts';
 import { SlackWorkspace } from '../adapters/slack-workspace.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
-import { IdentityDirectory, parseIdentityRecords } from '../core/identity.ts';
+import { IdentityDirectory } from '../core/identity.ts';
 import { DemoBoard, DemoBrain, DemoCode } from '../adapters/demo.ts';
 import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
 import { JiraBoard } from '../adapters/jira.ts';
 import { MondayBoard } from '../adapters/monday.ts';
 import { GitHubCode } from '../adapters/github.ts';
+import { MultiBoard, MultiCode } from '../adapters/multi.ts';
+import { loadTenantConfig, type BoardConnection, type RepositoryConnection, type TenantConfig } from './tenant-config.ts';
 
 export function loadDotEnv(): void {
   const filename = resolve(process.cwd(), '.env');
@@ -19,43 +21,57 @@ export function loadDotEnv(): void {
     if (match && process.env[match[1]!] === undefined) process.env[match[1]!] = match[2]!;
   }
 }
-export function createDependencies(env: NodeJS.ProcessEnv = process.env): { board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort; identities: IdentityDirectory; agent?: ChatModel; chat?: ChatPort; people: IdentityDirectory } {
-  const identities = new IdentityDirectory(env.IDENTITY_MAP_JSON ? parseIdentityRecords(env.IDENTITY_MAP_JSON) : []);
-  const board: BoardPort = env.BOARD_PROVIDER === 'jira'
-    ? new JiraBoard({ baseUrl: env.JIRA_BASE_URL ?? '', email: env.JIRA_EMAIL ?? '',
-        token: env.JIRA_API_TOKEN ?? '', projectKey: env.JIRA_PROJECT_KEY ?? '',
-        issueType: env.JIRA_ISSUE_TYPE ?? 'Task',
-        allowedAssigneeIds: new Set((env.JIRA_ASSIGNEE_ACCOUNT_ID ?? '').split(',').filter(Boolean)),
-        resolveAssigneeId: id => identities.jiraAccountIdFor(id),
-        readProjectKeys: (env.JIRA_READ_PROJECT_KEYS ?? '').split(',').map(s => s.trim()).filter(Boolean) })
-    : env.BOARD_PROVIDER === 'monday'
-    ? new MondayBoard(env.MONDAY_API_TOKEN ?? '', Number(env.MONDAY_BOARD_ID ?? NaN), env.MONDAY_DESCRIPTION_COLUMN_ID ?? '')
-    : new DemoBoard();
-  const code: CodePort = env.REPO_PROVIDER === 'github'
-    ? new GitHubCode({ token: env.GITHUB_TOKEN ?? '', publicRepo: env.GITHUB_PUBLIC_REPO === 'true', owner: env.GITHUB_OWNER ?? '',
-        repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main' })
-    : new DemoCode();
-  const brain: BrainPort = env.NOGITA_MODE === 'live'
-    ? new AnthropicBrain(env.ANTHROPIC_API_KEY ?? '', env.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL, fetch, {
-        inputUsdPerMillion: Number(env.ANTHROPIC_INPUT_USD_PER_MILLION ?? '0.10'),
-        outputUsdPerMillion: Number(env.ANTHROPIC_OUTPUT_USD_PER_MILLION ?? '0.50'),
+export type Dependencies = { tenant: TenantConfig['tenant']; board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort;
+  identities: IdentityDirectory; agent?: ChatModel; chat?: ChatPort; people: IdentityDirectory };
+
+/** The company's Nogita from NOGITA_TENANT_CONFIG, or from the environment as before. */
+export function createDependencies(env: NodeJS.ProcessEnv = process.env): Dependencies {
+  return buildDependencies(loadTenantConfig(env));
+}
+
+function buildBoard(connection: BoardConnection, identities: IdentityDirectory): BoardPort {
+  switch (connection.provider) {
+    case 'jira': return new JiraBoard({ baseUrl: connection.baseUrl, email: connection.email, token: connection.token,
+      projectKey: connection.projectKey, issueType: connection.issueType ?? 'Task',
+      allowedAssigneeIds: new Set(connection.assigneeAccountIds ?? []),
+      resolveAssigneeId: id => identities.jiraAccountIdFor(id), readProjectKeys: connection.readProjectKeys ?? [] });
+    case 'monday': return new MondayBoard(connection.token, connection.boardId, connection.descriptionColumnId);
+    case 'demo': return new DemoBoard();
+  }
+}
+
+function buildCode(connection: RepositoryConnection): CodePort {
+  switch (connection.provider) {
+    case 'github': return new GitHubCode({ token: connection.token ?? '', publicRepo: connection.publicRepo === true,
+      owner: connection.owner, repo: connection.repo, ref: connection.ref ?? 'main' });
+    case 'demo': return new DemoCode();
+  }
+}
+
+export function buildDependencies(config: TenantConfig): Dependencies {
+  const identities = new IdentityDirectory(config.people);
+  const boards = config.boards.map(connection => ({ id: connection.id, board: buildBoard(connection, identities) }));
+  const board: BoardPort = boards.length === 0 ? new DemoBoard() : boards.length === 1 ? boards[0]!.board
+    : new MultiBoard(boards, config.boards.find(connection => connection.default)?.id);
+  const repos = config.repositories.map(connection => ({ id: connection.id, code: buildCode(connection) }));
+  const code: CodePort = repos.length === 0 ? new DemoCode() : repos.length === 1 ? repos[0]!.code : new MultiCode(repos);
+  const { ai } = config;
+  const brain: BrainPort = ai.mode === 'live'
+    ? new AnthropicBrain(ai.anthropicApiKey ?? '', ai.model ?? DEFAULT_ANTHROPIC_MODEL, fetch, {
+        inputUsdPerMillion: ai.prices.input, outputUsdPerMillion: ai.prices.output,
       }, {
-        codeReasoningModel: env.ANTHROPIC_CODE_REASONING_MODEL,
-        inputUsdPerMillion: Number(env.ANTHROPIC_CODE_INPUT_USD_PER_MILLION ?? '3'),
-        outputUsdPerMillion: Number(env.ANTHROPIC_CODE_OUTPUT_USD_PER_MILLION ?? '15'),
-        maxCodeReasoningCallsPerSession: Number(env.ANTHROPIC_MAX_CODE_REASONING_CALLS_PER_SESSION ?? '3'),
+        codeReasoningModel: ai.codeReasoningModel,
+        inputUsdPerMillion: ai.prices.codeInput, outputUsdPerMillion: ai.prices.codeOutput,
+        maxCodeReasoningCallsPerSession: ai.maxCodeReasoningCallsPerSession,
       }, {
-        model: env.ANTHROPIC_AGENT_MODEL,
-        inputUsdPerMillion: Number(env.ANTHROPIC_AGENT_INPUT_USD_PER_MILLION ?? '0.10'),
-        outputUsdPerMillion: Number(env.ANTHROPIC_AGENT_OUTPUT_USD_PER_MILLION ?? '0.50'),
-        thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'default' : 'off',
+        model: ai.agentModel,
+        inputUsdPerMillion: ai.prices.agentInput, outputUsdPerMillion: ai.prices.agentOutput,
+        thinking: ai.agentThinking ? 'default' : 'off',
       })
     : new DemoBrain();
-  // The tool-using agent answers direct requests in live mode; NOGITA_AGENT=off keeps the one-shot planner.
-  const agent = brain instanceof AnthropicBrain && env.NOGITA_AGENT !== 'off' ? brain : undefined;
-  const chat = env.SLACK_BOT_TOKEN?.startsWith('xoxb-')
-    ? new SlackWorkspace(env.SLACK_BOT_TOKEN, env.SLACK_USER_TOKEN?.startsWith('xoxp-') ? env.SLACK_USER_TOKEN : undefined)
-    : undefined;
-  const authorized = new Set((env.AUTHORIZED_ACTOR_IDS ?? 'demo-lead').split(',').map(s => s.trim()).filter(Boolean));
-  return { board, code, brain, policy: new AllowlistPolicy(authorized), identities, agent, chat, people: identities };
+  // The tool-using agent answers direct requests in live mode; agent off keeps the one-shot planner.
+  const agent = brain instanceof AnthropicBrain && ai.agent ? brain : undefined;
+  const chat = config.chat ? new SlackWorkspace(config.chat.botToken, config.chat.userToken) : undefined;
+  return { tenant: config.tenant, board, code, brain, policy: new AllowlistPolicy(new Set(config.authorizedActorIds)), identities,
+    agent, chat, people: identities };
 }
