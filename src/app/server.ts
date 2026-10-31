@@ -222,6 +222,7 @@ const attendeeCommands = new AttendeeCommandRouter(
   { onError: error => console.error('attendee_command_failed', error instanceof Error ? error.message : 'unknown'),
     onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
     onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
+    onTurnEnded: (sessionId, speakerUuid) => nogita.noteTurnEnded(sessionId, speakerUuid),
     chatAck: !realtimeAudioEnabled,
     incompleteTurnHoldMs: Number(env.NOGITA_INCOMPLETE_TURN_HOLD_MS || 0),
     earlyCommitMs: Number(env.NOGITA_EARLY_COMMIT_MS || 0),

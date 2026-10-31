@@ -284,6 +284,7 @@ export class VoiceRig {
         earlyCommitMs: this.options.earlyCommitMs, onError: error => this.log('error',
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
       onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),
+      onTurnEnded: (sessionId, speakerUuid) => this.engine.noteTurnEnded(sessionId, speakerUuid),
       chatAck: false,
       ...(this.options.eagerThreshold !== undefined ? { speculate: (sessionId: string, utterance: Utterance) => {
         const handle = this.engine.speculate(sessionId, utterance);

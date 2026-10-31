@@ -50,6 +50,8 @@ export interface AttendeeCommandRouterOptions {
   onLeave?: (sessionId: string) => Promise<void>;
   onChatAck?: (sessionId: string, durationMs: number) => void;
   onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
+  /** The speaker's turn is over without a new utterance (an early commit's confirmation): the floor stops waiting. */
+  onTurnEnded?: (sessionId: string, speakerUuid: string) => void;
   /** Starts an answer from an early end-of-turn; nothing may be said or changed until the turn is confirmed. */
   speculate?: (sessionId: string, utterance: Utterance) => EarlyStart | undefined;
 }
@@ -91,6 +93,7 @@ export class AttendeeCommandRouter {
   private readonly onLeave?: (sessionId: string) => Promise<void>;
   private readonly onChatAck?: (sessionId: string, durationMs: number) => void;
   private readonly onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
+  private readonly onTurnEnded?: (sessionId: string, speakerUuid: string) => void;
   private readonly speculate?: AttendeeCommandRouterOptions['speculate'];
   private sequence = 0;
 
@@ -118,6 +121,7 @@ export class AttendeeCommandRouter {
     this.onLeave = options.onLeave;
     this.onChatAck = options.onChatAck;
     this.onSpeechActivity = options.onSpeechActivity;
+    this.onTurnEnded = options.onTurnEnded;
     this.speculate = options.speculate;
   }
 
@@ -179,12 +183,16 @@ export class AttendeeCommandRouter {
     const state = this.sessions.get(request.sessionId);
     if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
     const committed = state.committed.get(request.speakerUuid);
+    if (committed) state.committed.delete(request.speakerUuid);
     if (committed && (request.utterance.inputTurnIds ?? []).some(id => committed.turnIds.includes(id))) {
       // Flux confirms a turn that was already committed early: the same words are no new question, and words
       // added after it go on alone, so the engine answers the whole question as it does for any continuation.
-      state.committed.delete(request.speakerUuid);
       const rest = remainderAfter(committed.text, request.utterance.text);
-      if (rest === '') { state.acceptedEventIds.add(request.utterance.eventId); return Promise.resolve(); }
+      if (rest === '') {
+        state.acceptedEventIds.add(request.utterance.eventId);
+        this.onTurnEnded?.(request.sessionId, request.speakerUuid);
+        return Promise.resolve();
+      }
       if (rest !== undefined) request = { ...request, utterance: { ...request.utterance, text: rest } };
     }
     const completion = this.accept(request);
@@ -259,8 +267,11 @@ export class AttendeeCommandRouter {
 
   /** Keep waiting while live interim recognition shows the speaker has resumed. */
   noteSpeechActivity(sessionId: string, speakerUuid: string): void {
-    if (!this.sessions.has(sessionId)) return;
-    this.onSpeechActivity?.(sessionId, speakerUuid);
+    const state = this.sessions.get(sessionId);
+    if (!state) return;
+    // After an early commit, recognition activity until Flux confirms the turn is the room, not the speaker
+    // (their own voice reaches the floor through the level gate): it must not hold her answer back.
+    if (!state.committed.has(speakerUuid)) this.onSpeechActivity?.(sessionId, speakerUuid);
     const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
     if (!entry) return;
     this.cancel(entry.timer);
@@ -377,6 +388,7 @@ export function isCommitReady(raw: string): boolean {
   const text = normalizeWakeWord(raw.trim());
   if (!directlyAddressesNogita(text) || NAME_ONLY.test(text) || incompleteRequest(text) || !/[.?!]$/.test(text)) return false;
   const words = removeAddress(text).toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  if (/^(?:stop|cancel(?: that)?|never ?mind|that's enough|hold on|wait)$/.test(words.join(' '))) return true;
   return words.length >= 3 && !DANGLING.has(words.at(-1)!);
 }
 

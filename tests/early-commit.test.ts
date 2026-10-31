@@ -89,3 +89,30 @@ test('off by default: no commit timer, the confirmed turn decides', async () => 
   await f.router.acceptCompletedTurn(f.request('Nogita, which file has the main meeting entry.', 'f1'));
   assert.equal(f.emitted.length, 1);
 });
+
+test('a stop or cancel to her commits too: commands must not wait for noisy endpointing', () => {
+  for (const text of ['Nogita, stop.', 'Nogita, never mind.', 'Nogita, cancel that.']) assert.equal(isCommitReady(text), true, text);
+});
+
+test('the floor is told the turn ended when the confirmation is dropped, and room noise in between does not hold her', async () => {
+  const ended: string[] = [];
+  const activity: string[] = [];
+  const jobs = new Map<object, { work: () => void | Promise<void>; ms: number }>();
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    chatAck: false, earlyCommitMs: 300,
+    schedule: (work, ms) => { const key = {}; jobs.set(key, { work, ms }); return key; }, cancel: key => { jobs.delete(key as object); },
+    speculate: () => ({ cancel() {} }),
+    onTurnEnded: (_s, speaker) => ended.push(speaker), onSpeechActivity: (_s, speaker) => activity.push(speaker),
+  });
+  router.beginSession('s');
+  const request = (text: string, id: string, turn: string) => ({ sessionId: 's', botId: 'bot_test', speakerUuid: 'p',
+    utterance: { eventId: id, inputTurnIds: [turn], text, actor: { id: 'a', displayName: 'A', verified: true } } });
+  router.acceptEagerTurn(request('Nogita, which file starts the server?', 'e1', 't1'));
+  for (const [key, job] of [...jobs]) if (job.ms === 300) { jobs.delete(key); await job.work(); }
+  router.noteSpeechActivity('s', 'p');
+  assert.deepEqual(activity, [], 'recognition activity after a commit is the room');
+  await router.acceptCompletedTurn(request('Nogita, which file starts the server?', 'f1', 't1'));
+  assert.deepEqual(ended, ['p']);
+  router.noteSpeechActivity('s', 'p');
+  assert.deepEqual(activity, ['p'], 'their next turn counts again');
+});

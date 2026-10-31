@@ -511,6 +511,12 @@ export class NogitaEngine {
     if (session && !session.ending) session.floor?.noteTalking(speakerKey);
   }
 
+  /** The speaker's turn ended without a new utterance (it was already taken early): stop waiting for them. */
+  noteTurnEnded(sessionId: string, speakerKey: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !session.ending) session.floor?.noteTalking(speakerKey, true);
+  }
+
   /** Interim human speech cancels unsent filler for the prior turn, and Nogita's next words wait for an opening. */
   cancelProgressForSpeechActivity(sessionId: string, speakerKey?: string): void {
     const session = this.sessions.get(sessionId);
