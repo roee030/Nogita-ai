@@ -127,6 +127,11 @@ export interface NogitaEngineOptions {
   onLeaveRequested?: (sessionId: string) => void;
   /** Voice meetings proactively prime the model prompt cache. False is reserved for cold-baseline measurement. */
   agentCacheWarmup?: boolean;
+  /**
+   * Receipts of writes already made, keyed per event and item, so a retried event never writes twice. In memory unless
+   * given a durable store (NOGITA_DURABLE_RECEIPTS), which also survives a restart.
+   */
+  receipts?: Map<string, ActionReceipt>;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
@@ -294,7 +299,7 @@ export type ProcessResult = 'ignored' | 'raised_hand' | 'answered' | 'completed'
 export class NogitaEngine {
   private readonly sessions = new Map<string, Session>();
   private readonly startingSessions = new Set<string>();
-  private readonly completed = new Map<string, ActionReceipt>(); // Process-local; durable idempotency is TODO.
+  private readonly completed: Map<string, ActionReceipt>;
   private readonly progressDelayMs: number;
   private readonly agentProgressDelayMs: number;
   private readonly handRaiseFallback: 'none' | 'chat';
@@ -356,6 +361,7 @@ export class NogitaEngine {
     this.floorOptions = options.floor ?? {};
     this.actionItemRecap = options.actionItemRecap === true;
     this.agentCacheWarmup = options.agentCacheWarmup !== false;
+    this.completed = options.receipts ?? new Map();
   }
 
   private validateSessionId(sessionId: string): void {
