@@ -17,6 +17,22 @@ export interface TurnScore {
   judgement?: Judgement;
 }
 
+export interface ConversationFailures {
+  /** Scripted questions that should have received a spoken answer but did not. */
+  lostQuestions: number;
+  /** Replies Nogita gave to turns that were conversations between other people. */
+  answersToOthers: number;
+}
+
+export function conversationFailures(turns: ReadonlyArray<{ record: TurnRecord; score: TurnScore }>): ConversationFailures {
+  return {
+    lostQuestions: turns.filter(({ record, score }) => record.turn.expect.respond === 'speak' &&
+      score.checks.some(check => check.name === 'answered aloud' && !check.ok)).length,
+    answersToOthers: turns.filter(({ record, score }) => record.turn.expect.respond === 'silent' &&
+      score.checks.some(check => check.name === 'stayed silent' && !check.ok)).length,
+  };
+}
+
 function wakeWordHeard(text: string): boolean {
   const normalized = normalizeWakeWord(text);
   return directlyAddressesNogita(normalized) || /\bnogita\b/i.test(normalized);

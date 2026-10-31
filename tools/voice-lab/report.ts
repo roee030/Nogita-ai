@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { wav } from './audio.ts';
 import { FILLERS, type TurnRecord } from './conversation.ts';
-import { stats, type Stats, type TurnScore } from './score.ts';
+import { conversationFailures, stats, type ConversationFailures, type Stats, type TurnScore } from './score.ts';
 import type { Scenario } from './scenarios.ts';
 import type { LabEvent } from './rig.ts';
 import { conversationStats, questionLedger, type ConversationStats } from './conversation-metrics.ts';
@@ -30,6 +30,7 @@ export interface RunSummary {
   /** The answer itself: her first words after the last lookup (time to meaningful speech). */
   meaningfulGap: Stats;
   conversation: ConversationStats;
+  conversationFailures: ConversationFailures;
   /** Turns whose expected lookups were made. */
   toolChecks: { ok: number; total: number };
   breakdown: { endpointing: Stats; router: Stats; thinking: Stats; voice: Stats };
@@ -95,6 +96,7 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
     contentGap: stats(t.map(timing => timing.firstContentAudio)),
     meaningfulGap: stats(t.map(timing => timing.meaningfulAudio)),
     conversation: conversationStats(results.map(result => result.events)),
+    conversationFailures: conversationFailures(turns),
     toolChecks: (() => {
       const checks = turns.flatMap(({ score }) => score.checks.filter(check => /^looked up |at most once$/.test(check.name)));
       return { ok: checks.filter(check => check.ok).length, total: checks.length };
@@ -153,7 +155,9 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     `- Lookups as expected: ${summary.toolChecks.ok}/${summary.toolChecks.total}`,
     ...(summary.backchannels.total ? [`- Backchannels kept playback: **${summary.backchannels.kept}/${summary.backchannels.total}**; false-stop rate ${Math.round((summary.backchannels.falseStopRate ?? 0) * 1000) / 10}% (95% upper bound ${Math.round((summary.backchannels.upper95 ?? 0) * 1000) / 10}%)`] : []),
     ...(summary.falsePauses.total ? [`- Non-speech perturbations without a pause: **${summary.falsePauses.clean}/${summary.falsePauses.total}**; false-pause rate ${Math.round((summary.falsePauses.rate ?? 0) * 1000) / 10}% (95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%); pause duration ${statLine(summary.falsePauses.duration)}`] : []),
-    '', '## Conversation management', '', ...conversationLines(summary.conversation), '',
+    '', '## Conversation management', '', ...conversationLines(summary.conversation),
+    `- Lost questions: **${summary.conversationFailures.lostQuestions}**`,
+    `- Answers to conversations that were not hers: **${summary.conversationFailures.answersToOthers}**`, '',
   ];
   for (const result of results) {
     lines.push(`## ${result.scenario.title} (\`${result.scenario.name}\`, ${result.scenario.noise.kind} ${result.scenario.noise.kind === 'quiet' ? '' : `${result.scenario.noise.snrDb} dB`})`, '');
@@ -324,7 +328,8 @@ summary{cursor:pointer}.pass{color:var(--voice);font-weight:600}.failc{color:var
 <div class="tiles">${tile('Response gap p50', ms(summary.responseGap.p50))}${tile('Response gap p90', ms(summary.responseGap.p90))}${tile('Real content p50', ms(summary.contentGap.p50))}
 ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recognized', `${summary.addressHeard.heard}/${summary.addressHeard.total}`)}
 ${tile('Answer itself p50', ms(summary.meaningfulGap.p50))}${tile('Question completion', summary.conversation.completion === undefined ? '–' : `${Math.round(summary.conversation.completion * 100)}%`)}
-${tile('Lost answers', String(summary.conversation.unresolved))}${tile('Spoke over someone', String(summary.conversation.spokeOverPeople))}
+${tile('Lost questions', String(summary.conversationFailures.lostQuestions))}${tile('Answered other people', String(summary.conversationFailures.answersToOthers))}
+${tile('Open tracked questions', String(summary.conversation.unresolved))}${tile('Spoke over someone', String(summary.conversation.spokeOverPeople))}
 ${summary.backchannels.total ? tile('Backchannels kept', `${summary.backchannels.kept}/${summary.backchannels.total}`) : ''}
 ${summary.falsePauses.total ? tile('False pauses', `${summary.falsePauses.pauses}/${summary.falsePauses.total}`) : ''}
 ${tile('Early starts used / rolled back', `${summary.conversation.earlyAdopted} / ${summary.conversation.earlyRolledBack}`)}
@@ -332,7 +337,10 @@ ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? til
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>
 <span><i style="background:var(--think)"></i>thinking to first sentence</span><span><i style="background:var(--voice)"></i>voice synthesis to first sound</span></div>
 <table>${rows}</table>
-<h2>Conversation management</h2><ul>${conversationLines(summary.conversation).map(line => `<li>${escape(line.replace(/^- /, '')).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')}</li>`).join('')}</ul>
+<h2>Conversation management</h2><ul>${[...conversationLines(summary.conversation),
+  `- Lost questions: **${summary.conversationFailures.lostQuestions}**`,
+  `- Answers to conversations that were not hers: **${summary.conversationFailures.answersToOthers}**`]
+  .map(line => `<li>${escape(line.replace(/^- /, '')).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')}</li>`).join('')}</ul>
 <h2>Conversations</h2><div class="muted">Everything that happened, in order. Times are seconds after the person stopped talking. Scenarios with a failure are open.</div>
 ${conversations}</main></body></html>`;
 }
