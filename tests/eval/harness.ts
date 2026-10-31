@@ -13,7 +13,8 @@ import { NOW, SPEAKERS, TEAM, evalWorld, isWrite } from './world.ts';
 
 /** Spoken words in one answer above which it is no longer short (the voice prompt asks for about 20). */
 const MAX_SPOKEN_WORDS = 75;
-const REASONING_ALOUD = /\b(?:I should|I need to (?:check|look|find)|let me think|this is a question about|the user (?:is|wants|asked))\b/i;
+// "I should" inside a question to them ("a different spelling I should try?") is not reasoning.
+const REASONING_ALOUD = /\b(?:I should\b(?![^.!?]*\?)|I need to (?:check|look|find)|let me think|this is a question about|the user (?:is|wants|asked))\b/i;
 
 class TracedModel implements ChatModel {
   readonly tools: string[] = [];
@@ -48,20 +49,33 @@ export async function runCase(model: ChatModel, item: EvalCase): Promise<CaseRun
   const meeting = new EvalMeeting(item.id, new Set<Capability>(voice ? ['listen', 'speak', 'streaming_speech', 'chat_receipt'] : ['chat_receipt']));
   // Time starts at the frozen moment and runs at real speed, so timers inside the engine still behave.
   const started = Date.now();
-  const engine = new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
+  // Kept across a restart, as NOGITA_DURABLE_RECEIPTS keeps them on disk.
+  const receipts = new Map<string, ActionReceipt>();
+  const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy: new AllowlistPolicy(new Set(['roee'])), agent: traced, people: world.people, tenant: TEAM },
-  { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now: () => NOW + Date.now() - started,
+  { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now: () => NOW + Date.now() - started, receipts,
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
+  let engine = newEngine();
   const actor = SPEAKERS[item.speaker ?? 'roee'];
   const run: CaseRun = { turns: [], receipts: meeting.receipts, calls: world.calls, tools: traced.tools, stops: traced.stops,
     board: world.board, posted: world.chat.posted, ms: 0 };
+  const deliver = async (text: string, eventId: string) => {
+    meeting.spoken = [];
+    meeting.chat = [];
+    const result = await engine.onUtterance(item.id, { eventId, text, actor });
+    run.turns.push({ text, result, spoken: meeting.spoken, chat: meeting.chat, tasksAfter: world.board.tasks.length });
+  };
   await engine.startSession(item.id, meeting);
   try {
-    for (const [index, text] of item.turns.entries()) {
-      meeting.spoken = [];
-      meeting.chat = [];
-      const result = await engine.onUtterance(item.id, { eventId: `${item.id}-${index}`, text, actor });
-      run.turns.push({ text, result, spoken: meeting.spoken, chat: meeting.chat, tasksAfter: world.board.tasks.length });
+    for (const [index, text] of item.turns.entries()) await deliver(text, `${item.id}-${index}`);
+    if (item.retry) {
+      // The meeting provider delivers the last utterance again, with the same event id; after a restart the process
+      // lost the session and its seen events, and only the stored receipts remain.
+      if (item.retry === 'restart') {
+        engine = newEngine();
+        await engine.startSession(item.id, meeting);
+      }
+      await deliver(item.turns.at(-1)!, `${item.id}-${item.turns.length - 1}`);
     }
   } catch (error) {
     run.error = error instanceof Error ? error.message : String(error);

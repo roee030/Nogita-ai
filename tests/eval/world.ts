@@ -36,9 +36,10 @@ export const DAYS = {
 export const inDay = (iso: string, day: keyof typeof DAYS) => iso >= DAYS[day][0] && iso < DAYS[day][1];
 
 export const PEOPLE = [
-  { id: 'roee', displayName: 'Roee Angel' },
-  { id: 'dana', displayName: 'Dana Katz' },
-  { id: 'yossi', displayName: 'Yossi Levi' },
+  // An email lets the board find each of them, as in production; without one "my tasks" could not be resolved.
+  { id: 'roee', displayName: 'Roee Angel', email: 'roee@team.invalid' },
+  { id: 'dana', displayName: 'Dana Katz', email: 'dana@team.invalid' },
+  { id: 'yossi', displayName: 'Yossi Levi', email: 'yossi@team.invalid' },
 ];
 export const SPEAKERS = {
   roee: { id: 'roee', displayName: 'Roee Angel', verified: true },
