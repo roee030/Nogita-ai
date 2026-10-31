@@ -1,4 +1,4 @@
-import { CodeLookupRateLimitError, type CodeChange, type CodeFile, type CodePort, type Evidence,
+import { CodeLookupRateLimitError, type CiRun, type CiStatus, type CodeChange, type CodeFile, type CodePort, type Evidence,
   type RepoActivity } from '../core/contracts.ts';
 import { gunzipSync } from 'node:zlib';
 import { readToken, type TokenSource } from './token-source.ts';
@@ -49,8 +49,22 @@ interface GitHubFile { filename?: string; status?: string; additions?: number; d
 interface GitHubPull {
   number?: number; title?: string; body?: string | null; state?: string; user?: { login?: string } | null;
   merged_at?: string | null; updated_at?: string; created_at?: string; additions?: number; deletions?: number;
+  head?: { ref?: string; sha?: string };
 }
+interface GitHubRun {
+  id?: number; name?: string; status?: string; conclusion?: string | null; head_sha?: string; head_branch?: string | null;
+  event?: string; html_url?: string; run_started_at?: string;
+}
+interface GitHubJob { name?: string; conclusion?: string | null; html_url?: string; steps?: Array<{ name?: string; conclusion?: string | null }> }
+interface GitHubDeployment { id?: number; sha?: string; environment?: string; created_at?: string }
+interface GitHubDeploymentStatus { state?: string; environment_url?: string; target_url?: string }
 
+const MAX_CI_RUNS = 10;
+/** Jobs are read for this many of the newest failed runs: one call each. */
+const MAX_FAILED_RUNS_DETAILED = 3;
+/** Deployments whose state is read while looking for the newest successful one: one call each. */
+const MAX_DEPLOYMENTS_CHECKED = 5;
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure', 'action_required']);
 const MAX_ACTIVITY_PAGES = 3;
 const MAX_TOP_FILES = 15;
 const MAX_BODY_CHARS = 600;
@@ -657,6 +671,87 @@ export class GitHubCode implements CodePort {
       author: pull.user?.login ?? 'unknown', date: pull.merged_at ?? pull.created_at,
       state: pull.merged_at ? 'merged' : pull.state, additions: pull.additions ?? 0, deletions: pull.deletions ?? 0,
       ...changedFiles(files, more) };
+  }
+
+  /** Reads live: "did CI pass on main?" must see the run that finished a minute ago. */
+  async ciStatus(target: { branch?: string; sha?: string; pr?: number }): Promise<CiStatus | undefined> {
+    const { owner, repo } = this.config;
+    const unlessMissing = <T>(promise: Promise<T>) => promise.catch((error: unknown) => {
+      if (error instanceof Error && /HTTP (?:404|422)\b/.test(error.message)) return undefined;
+      throw error;
+    });
+    let branch: string | undefined;
+    let sha: string | undefined;
+    if (target.pr !== undefined) {
+      if (!Number.isSafeInteger(target.pr) || target.pr < 1) throw new Error('invalid pull request number');
+      const pull = await unlessMissing(this.get<GitHubPull>(`/repos/${owner}/${repo}/pulls/${target.pr}`));
+      if (!pull?.head?.sha || !/^[a-f0-9]{40}$/i.test(pull.head.sha)) return undefined;
+      sha = pull.head.sha.toLowerCase();
+      branch = pull.head.ref;
+    } else if (target.sha !== undefined) {
+      if (!/^[a-f0-9]{7,40}$/i.test(target.sha)) throw new Error('invalid commit sha');
+      // Runs are filtered by the full sha only, so a short one is resolved first.
+      const full = target.sha.length === 40 ? target.sha
+        : (await unlessMissing(this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${target.sha}`)))?.sha;
+      if (!full || !/^[a-f0-9]{40}$/i.test(full)) return undefined;
+      sha = full.toLowerCase();
+    } else {
+      branch = target.branch?.trim() || this.config.ref;
+      if (!/^[\w./-]{1,100}$/.test(branch)) throw new Error('invalid branch name');
+    }
+    const filter = sha ? `head_sha=${sha}` : `branch=${encodeURIComponent(branch!)}`;
+    const listed = await this.get<{ workflow_runs?: GitHubRun[] }>(`/repos/${owner}/${repo}/actions/runs?${filter}&per_page=${MAX_CI_RUNS}`);
+    if (!Array.isArray(listed?.workflow_runs)) throw new Error('GitHub returned an invalid workflow run list');
+    const runs = listed.workflow_runs.filter(run => Number.isSafeInteger(run.id) && run.head_sha).slice(0, MAX_CI_RUNS)
+      .map(run => ({ id: run.id!, run: {
+        workflow: (run.name || 'workflow').slice(0, 100), status: run.status ?? 'unknown',
+        ...(run.conclusion ? { conclusion: run.conclusion } : {}), sha: run.head_sha!,
+        ...(run.head_branch ? { branch: run.head_branch } : {}), ...(run.event ? { event: run.event } : {}),
+        url: run.html_url ?? `https://github.com/${owner}/${repo}/actions/runs/${run.id}`,
+        ...(run.run_started_at ? { startedAt: run.run_started_at } : {}) } as CiRun }));
+    const failed = (conclusion?: string | null) => !!conclusion && FAILED_CONCLUSIONS.has(conclusion);
+    await Promise.all(runs.filter(({ run }) => failed(run.conclusion)).slice(0, MAX_FAILED_RUNS_DETAILED).map(async ({ id, run }) => {
+      const jobs = await this.get<{ jobs?: GitHubJob[] }>(`/repos/${owner}/${repo}/actions/runs/${id}/jobs?filter=latest&per_page=100`)
+        .catch(() => undefined);
+      // Left unset when the jobs could not be read, so "no failed job listed" is never claimed by mistake.
+      if (!Array.isArray(jobs?.jobs)) return;
+      run.failedJobs = jobs.jobs.filter(job => failed(job.conclusion)).map(job => {
+        const step = job.steps?.find(item => failed(item.conclusion))?.name;
+        return { name: (job.name || 'job').slice(0, 100), url: job.html_url ?? run.url, ...(step ? { step: step.slice(0, 100) } : {}) };
+      });
+    }));
+    // A token without deployment access, or a repository that never deploys, still gets its CI answer.
+    const deployment = await this.deployed(sha ? undefined : branch).catch(() => undefined);
+    return { repository: `${owner}/${repo}`,
+      target: { ...(target.pr !== undefined ? { pr: target.pr } : {}), ...(branch ? { branch } : {}), ...(sha ? { sha } : {}) },
+      runs: runs.map(({ run }) => run), ...(deployment ? { deployment } : {}) };
+  }
+
+  /** The newest successful non-preview deployment (or the newest one, when none succeeded), and how far `branch` is past it. */
+  private async deployed(branch?: string): Promise<CiStatus['deployment']> {
+    const { owner, repo } = this.config;
+    const list = await this.get<Array<GitHubDeployment & { transient_environment?: boolean }>>(
+      `/repos/${owner}/${repo}/deployments?per_page=${MAX_DEPLOYMENTS_CHECKED * 2}`);
+    if (!Array.isArray(list)) return undefined;
+    const candidates = list.filter(item => Number.isSafeInteger(item.id) && item.sha && /^[a-f0-9]{40}$/i.test(item.sha)
+      && item.transient_environment !== true).slice(0, MAX_DEPLOYMENTS_CHECKED);
+    let chosen: NonNullable<CiStatus['deployment']> | undefined;
+    for (const item of candidates) {
+      const [status] = await this.get<GitHubDeploymentStatus[]>(`/repos/${owner}/${repo}/deployments/${item.id}/statuses?per_page=1`)
+        .catch(() => [] as GitHubDeploymentStatus[]);
+      const url = status?.environment_url || status?.target_url;
+      const found = { sha: item.sha!.toLowerCase(), environment: (item.environment || 'unknown').slice(0, 100),
+        state: status?.state ?? 'unknown', createdAt: item.created_at ?? '', ...(url ? { url } : {}) };
+      chosen ??= found;
+      if (found.state === 'success') { chosen = found; break; }
+    }
+    if (!chosen || !branch) return chosen;
+    const compare = await this.get<{ status?: string; ahead_by?: number }>(
+      `/repos/${owner}/${repo}/compare/${chosen.sha}...${branch}`).catch(() => undefined);
+    if ((compare?.status === 'ahead' || compare?.status === 'identical') && Number.isSafeInteger(compare.ahead_by ?? 0)) {
+      chosen.notDeployed = compare.ahead_by ?? 0;
+    }
+    return chosen;
   }
 
   async overview(): Promise<{ paths: string[]; readme?: string; revision?: string }> {

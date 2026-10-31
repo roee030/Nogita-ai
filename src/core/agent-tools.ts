@@ -1,4 +1,4 @@
-import type { ActionReceipt, Actor, BoardPort, ChatPort, CodeChange, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, RepoActivity, ScreenCard, TaskSearch } from './contracts.ts';
+import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, RepoActivity, ScreenCard, TaskSearch } from './contracts.ts';
 import { isExplicitPRRequest } from './policy.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
@@ -51,6 +51,8 @@ export interface ToolboxContext {
   now?: () => number;
   /** Offers create_tasks and update_tasks (up to 10 items each, one chat receipt). Off unless the team turned it on. */
   batchTasks?: boolean;
+  /** Offers ci_status (CI runs and the deployed commit). Off unless the team turned it on. */
+  ciStatus?: boolean;
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -166,6 +168,30 @@ function formatChange(change: CodeChange): string {
   }
   return lines.join('\n');
 }
+function formatCiStatus(ci: CiStatus): string {
+  const { target } = ci;
+  const what = target.pr !== undefined ? `pull request #${target.pr} (branch ${target.branch ?? '?'}, head ${target.sha?.slice(0, 7)})`
+    : target.sha ? `commit ${target.sha.slice(0, 7)}` : `branch ${target.branch}`;
+  const lines = [`${ci.repository}, CI for ${what}, read live.`];
+  if (!ci.runs.length) lines.push('No CI runs found for it.');
+  else lines.push('', 'Runs (newest first):');
+  for (const run of ci.runs) {
+    lines.push(`- ${run.workflow}: ${run.conclusion ?? run.status} on ${run.sha.slice(0, 7)}${run.branch ? ` (${run.branch})` : ''}` +
+      `${run.event ? `, ${run.event}` : ''}${run.startedAt ? `, started ${run.startedAt}` : ''} ${run.url}`);
+    for (const job of run.failedJobs ?? []) lines.push(`  failed job: ${job.name}${job.step ? `, at step "${job.step}"` : ''} ${job.url}`);
+  }
+  const deployed = ci.deployment;
+  if (!deployed) lines.push('', 'No deployment is recorded on GitHub, so what is deployed is unknown.');
+  else {
+    lines.push('', `Deployed: ${deployed.sha.slice(0, 7)} to ${deployed.environment} (${deployed.state}, ${deployed.createdAt})` +
+      `${deployed.url ? ` ${deployed.url}` : ''}.`);
+    if (deployed.notDeployed !== undefined) {
+      lines.push(deployed.notDeployed ? `${deployed.notDeployed} commit(s) on ${target.branch} are not deployed yet.`
+        : `The deployment is the head of ${target.branch}.`);
+    }
+  }
+  return lines.join('\n');
+}
 function formatEvidence(items: readonly Evidence[]): string {
   if (!items.length) return 'No matching code found. Try other words, a likely symbol name, or list_files.';
   return items.map((item, index) => `[${index + 1}] ${item.path}\n${item.url}\n${item.excerpt}`).join('\n---\n');
@@ -261,6 +287,23 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       context.recordAction?.('code_lookup');
       remember([{ path: change.kind === 'commit' ? `commit ${change.id.slice(0, 7)}` : `PR ${change.id}`, url: change.url, excerpt: change.title }]);
       return { content: formatChange(change) };
+    });
+    if (code.ciStatus && context.ciStatus) add({ name: 'ci_status', description: 'CI runs for a branch, commit or pull request, read live: the result of each workflow, the jobs and steps that failed with links, and which commit is deployed (and how many commits are not deployed yet). Use for "did CI pass on main?", "why is the build red?", "is the fix deployed?". Give one of branch, sha or pr; none means the main branch.',
+      input_schema: { type: 'object', properties: { branch: { type: 'string' },
+        sha: { type: 'string', description: 'Commit sha (7-40 hex characters).' },
+        pr: { type: 'integer', description: 'Pull request number.' } } } },
+    async input => {
+      const sha = str(input.sha, 40);
+      const pr = int(input.pr, 1, 10_000_000);
+      const branch = str(input.branch, 100);
+      if (sha && !/^[a-f0-9]{7,40}$/i.test(sha)) return { content: 'sha must be 7-40 hex characters', isError: true };
+      if (input.pr !== undefined && pr === undefined) return { content: 'pr must be a pull request number', isError: true };
+      const ci = await code.ciStatus!(pr !== undefined ? { pr } : sha ? { sha } : { branch });
+      if (!ci) return { content: `No ${pr !== undefined ? `pull request #${pr}` : `commit ${sha}`} in the repository.`, isError: true };
+      context.recordAction?.('code_lookup');
+      const run = ci.runs[0];
+      if (run) remember([{ path: `CI ${run.workflow} ${run.conclusion ?? run.status}`, url: run.url, excerpt: run.sha.slice(0, 7) }]);
+      return { content: formatCiStatus(ci) };
     });
     if (board.searchTasks) add({ name: 'search_tasks', description: `Search ${board.name} tasks by words, status and owner (all optional; none lists the latest).${board.queryLanguage === 'jql' ? ' For what those cannot say, jql takes a Jira condition (the project filter is added for you).' : ''}`,
       input_schema: { type: 'object', properties: { ...taskFilterSchema(board), limit: { type: 'integer' } } } },

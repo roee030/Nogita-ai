@@ -197,6 +197,33 @@ export interface CodePort {
   repoActivity?(query: { since: string; until?: string; branch?: string }): Promise<RepoActivity>;
   /** One commit or pull request: files with +/- counts and trimmed patches. Undefined when it does not exist. */
   getChange?(ref: { sha?: string; pr?: number }): Promise<CodeChange | undefined>;
+  /** Latest CI runs for a branch, commit or pull request, and the commit that is deployed. Undefined when the commit or PR does not exist. */
+  ciStatus?(target: { branch?: string; sha?: string; pr?: number }): Promise<CiStatus | undefined>;
+}
+export interface CiRun {
+  workflow: string;
+  /** queued, in_progress or completed. */
+  status: string;
+  /** success, failure, cancelled, ... once completed. */
+  conclusion?: string;
+  sha: string;
+  branch?: string;
+  event?: string;
+  url: string;
+  startedAt?: string;
+  /** Jobs that did not pass, with the first step that failed. Read for the newest failed runs only. */
+  failedJobs?: Array<{ name: string; url: string; step?: string }>;
+}
+export interface CiStatus {
+  repository: string;
+  /** What was asked for; a PR is resolved to its head branch and commit. */
+  target: { branch?: string; sha?: string; pr?: number };
+  /** Newest first. */
+  runs: CiRun[];
+  /** The commit running in the newest successful deployment, or the newest deployment and its state when none succeeded. */
+  deployment?: { sha: string; environment: string; state: string; createdAt: string; url?: string;
+    /** Commits on the target branch that are not deployed yet. Set only for a branch target that contains the deployed commit. */
+    notDeployed?: number };
 }
 export interface RepoActivity {
   repository: string;
