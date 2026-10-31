@@ -15,7 +15,7 @@ test('"stop" as people say it while she talks over them (first live Meet test)',
 });
 
 test('her name as recognition heard it in the live Meet still addresses her', () => {
-  for (const text of ['Uh, no guitar. I want to know what is open.', 'No, Gita. Verify 429480.', 'Now, git, are you here?']) {
+  for (const text of ['Uh, no guitar. I want to know what is open.', 'Nogita explained in four short sentences what a cache is for.','No, Gita. Verify 429480.', 'Now, git, are you here?']) {
     assert.equal(directlyAddressesNogita(normalizeWakeWord(text)), true, text);
   }
   assert.equal(directlyAddressesNogita(normalizeWakeWord('I play no guitar at all.')), false);

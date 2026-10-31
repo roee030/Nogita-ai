@@ -139,6 +139,16 @@ export function isStopCommand(text: string): boolean {
   return /\b(?:stop|be quiet|shut up|enough|hold on|hang on|wait)\b/.test(t) &&
     !/\b(?:don't|do not|not|never) stop\b|\bstop (?:the|a|an|this|that|my|our|your)\b|\bwait (?:for|until|till|and)\b|\bcan't wait\b/.test(t);
 }
+/** "Yes, please and send the link here", "Sure, go ahead": a yes to what she just offered. */
+export function acceptsOffer(text: string): boolean {
+  return /^(?:(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please|go ahead|do it|do that|absolutely|definitely|right)\b[\s,.!]*)+/i
+    .test(text.trim()) && !/\b(?:no|not|don't|wait)\b/i.test(text);
+}
+/** The action in her offer ("Do you want me to open a task for each one?" → "open a task for each one"). */
+export function offeredAction(question: string): string | undefined {
+  const match = question.match(/\b(?:(?:do you |would you |should I|shall I|want me to|like me to)\s*(?:want me to |like me to )?)((?:open|create|add|file|log|make|post|send|move|mark|assign|close)\b[^?.!]*)\?/i);
+  return match?.[1]?.trim();
+}
 /** A barge-in may contain both the control and what to do next: "stop. Just tell me ...". */
 function splitLeadingStop(text: string): { stop: string; remainder: string } | undefined {
   const match = text.trim().match(/^((?:(?:ok(?:ay)?|no|sorry|please)[,.]?\s+)?(?:stop|wait|hold on|hang on|enough|that's enough)(?:\s+(?:please|now|talking|a sec(?:ond)?|for a sec(?:ond)?|there))?)[.!,:;-]+\s*(.+)$/i);
@@ -821,7 +831,10 @@ export class NogitaEngine {
     const floor = q ? s.floor : undefined;
     const speaker = utterance.actor.displayName;
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
-    const writeScope = pending ? `${pending.request}\n${request}` : request;
+    // "Do you want me to open a Jira task for each one?" "Yes, please.": the yes makes her offer the request (live Meet
+    // 2026-10-31: the write check saw only "Yes, please" and refused, so no task was opened).
+    const offer = pending?.question && acceptsOffer(request) ? offeredAction(pending.question) : undefined;
+    const writeScope = pending ? [pending.request, offer, request].filter(Boolean).join('\n') : request;
     let userText = pending?.question ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
     // A quick in-memory search runs alongside the repository map, so most code questions need one lookup round fewer.
     const [repository, prefetched] = authorized
