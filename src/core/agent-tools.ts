@@ -49,6 +49,8 @@ export interface ToolboxContext {
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
+  /** Offers create_tasks and update_tasks (up to 10 items each, one chat receipt). Off unless the team turned it on. */
+  batchTasks?: boolean;
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -69,6 +71,7 @@ export interface ToolboxReport {
 }
 
 const MAX_WRITES_PER_TURN = 5;
+const MAX_BATCH_ITEMS = 10;
 
 /** A question about existing things ("what are the open issues?") is not a command, unless it is a polite request. */
 function isInformationQuestion(t: string): boolean {
@@ -356,16 +359,8 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   }
 
   if (mayWrite) {
-    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.`,
-      input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
-        ...(board.boards ? { board: { type: 'string', enum: board.boards.map(item => item.id),
-          description: `Only if they named one: ${board.boards.map(item => item.name).join(', ')}. The first is the default.` } } : {}) },
-        required: ['title', 'description'] } },
-    async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
-        return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
-      }
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+    /** One task: resolves its owner and writes it under an index-based key. Permission and the write cap are the caller's. */
+    const createOne = async (input: Record<string, unknown>): Promise<ItemOutcome> => {
       const title = str(input.title, 200);
       const description = str(input.description, 4000) ?? '';
       if (!title) return { content: 'title is required (at most 200 characters)', isError: true };
@@ -390,19 +385,107 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         if (resolved && !('problem' in resolved)) { assigneeId = resolved.id; assigneeName = resolved.displayName; volunteered = true; }
       }
       const fullDescription = withMeetingQuotes(description, lines);
-      writes++;
       // Index-based so a retried event maps its n-th task to the same Jira issue even if wording changes.
       const requestId = `${context.sessionId}:${context.eventId}:task:${++taskIndex}`;
       let receipt = context.completed.get(requestId);
+      const fresh = !receipt;
       if (!receipt) {
         receipt = await board.createTask({ title, description: fullDescription, assigneeId, requestId, ...(target ? { board: target } : {}) });
         context.completed.set(requestId, receipt);
         context.recordAction?.('create_task');
         report.receipts.push(receipt);
         report.wroteSomething = true;
-        await context.onReceipt(receipt).catch(() => undefined);
       }
-      return { content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}${volunteered ? ', who said they would take it' : ''}` : ', unassigned'}${unassignedBecause ? ` (${unassignedBecause} Tell them it is unassigned.)` : ''}: ${receipt.url}. The link is already in the chat.` };
+      return { receipt, fresh, content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}${volunteered ? ', who said they would take it' : ''}` : ', unassigned'}${unassignedBecause ? ` (${unassignedBecause} Tell them it is unassigned.)` : ''}: ${receipt.url}` };
+    };
+    /** Which of status, owner and comment the updates would change although the request did not ask for it. */
+    const unaskedChanges = (updates: ReadonlyArray<Record<string, unknown>>): string[] => {
+      if (context.writesApproved) return [];
+      const asked = requestedTaskChanges(context.request);
+      const has = (field: string, max: number) => updates.some(update => str(update[field], max) !== undefined);
+      return [has('status', 60) && !asked.status && 'a status change', has('assignee', 100) && !asked.assignee && 'a new owner',
+        has('comment', 3000) && !asked.comment && 'a comment'].filter((item): item is string => Boolean(item));
+    };
+    /** One change to an existing task, keyed by its content. Permission and the write cap are the caller's. */
+    const updateOne = async (input: Record<string, unknown>): Promise<ItemOutcome> => {
+      const key = str(input.key, 40)?.toUpperCase();
+      if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
+      const status = str(input.status, 60);
+      const comment = str(input.comment, 3000);
+      const wanted = str(input.assignee, 100);
+      if (!status && !comment && !wanted) return { content: `Nothing to change on ${key}: give a status, an assignee or a comment.`, isError: true };
+      let assigneeId: string | undefined;
+      let assigneeName: string | undefined;
+      if (wanted) {
+        const resolved = await resolveAssignee(wanted, context);
+        if ('problem' in resolved) return { content: `Not changed: ${resolved.problem}`, isError: true };
+        assigneeId = resolved.id;
+        assigneeName = resolved.displayName;
+      }
+      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${comment ?? ''}`;
+      let receipt = context.completed.get(requestId);
+      const fresh = !receipt;
+      if (!receipt) {
+        receipt = await board.updateTask!({ key, status, assigneeId, comment, requestId });
+        context.completed.set(requestId, receipt);
+        context.recordAction?.('update_task');
+        report.receipts.push(receipt);
+        report.wroteSomething = true;
+      }
+      const done = [status && `moved to ${status}`, assigneeName && `assigned to ${assigneeName}`, comment && 'commented'].filter(Boolean).join(', ');
+      return { receipt, fresh, content: `${receipt.label} ${done}: ${receipt.url}` };
+    };
+    /** Writes the items one after another; a failed item never stops the rest. One chat receipt for all that was written. */
+    const runBatch = async (list: ReadonlyArray<Record<string, unknown>>, one: (item: Record<string, unknown>) => Promise<ItemOutcome>,
+      verb: string): Promise<ToolOutcome> => {
+      const outcomes: ItemOutcome[] = [];
+      for (const item of list) {
+        outcomes.push(await one(item).catch(error => ({ content: `Not ${verb}: ${error instanceof Error ? error.message : String(error)}`, isError: true })));
+      }
+      const fresh = outcomes.flatMap(outcome => outcome.fresh && outcome.receipt ? [outcome.receipt] : []);
+      if (fresh.length) await context.onReceipt(combineReceipts(fresh)).catch(() => undefined);
+      const succeeded = outcomes.filter(outcome => !outcome.isError).length;
+      const summary = `${succeeded} of ${list.length} ${verb}.${succeeded ? ' The links are already in the chat.' : ''}` +
+        (succeeded < list.length ? ' Say which ones were not, and why.' : '');
+      return { content: [...outcomes.map((outcome, index) => `${index + 1}. ${outcome.content}`), summary].join('\n'),
+        ...(succeeded ? {} : { isError: true }) };
+    };
+    const batchItems = (value: unknown): Array<Record<string, unknown>> | string => {
+      if (!Array.isArray(value) || !value.length) return 'give at least one item';
+      if (value.length > MAX_BATCH_ITEMS) return `at most ${MAX_BATCH_ITEMS} items in one call; nothing was written`;
+      if (value.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return 'each item must be an object';
+      return value as Array<Record<string, unknown>>;
+    };
+    const boardProperty = board.boards ? { board: { type: 'string', enum: board.boards.map(item => item.id),
+      description: `Only if they named one: ${board.boards.map(item => item.name).join(', ')}. The first is the default.` } } : {};
+
+    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.`,
+      input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
+        ...boardProperty }, required: ['title', 'description'] } },
+    async input => {
+      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
+        return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
+      }
+      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      const outcome = await createOne(input);
+      if (outcome.isError) return { content: outcome.content, isError: true };
+      writes++;
+      if (outcome.fresh) await context.onReceipt(outcome.receipt!).catch(() => undefined);
+      return { content: `${outcome.content}. The link is already in the chat.` };
+    }, true);
+    if (context.batchTasks) add({ name: 'create_tasks', description: `Create several ${board.name} tasks in one call (up to ${MAX_BATCH_ITEMS}), one item per task the person asked for; use it whenever they asked for more than one. Only when they explicitly asked to create/open/log tasks. Each item: a clear title, a description of what was discussed, and an assignee only if they named an owner for that task (a name, or "me"); never guess an owner.`,
+      input_schema: { type: 'object', properties: { tasks: { type: 'array', maxItems: MAX_BATCH_ITEMS, items: { type: 'object',
+        properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' }, ...boardProperty },
+        required: ['title', 'description'] } } }, required: ['tasks'] } },
+    async input => {
+      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
+        return { content: 'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.', isError: true };
+      }
+      const list = batchItems(input.tasks);
+      if (typeof list === 'string') return { content: `tasks: ${list}`, isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      writes++;
+      return runBatch(list, createOne, 'created');
     }, true);
     if (board.updateTask) add({ name: 'update_task', description: `Change an existing ${board.name} task: move it to a status, assign it to someone, and/or add a comment. Only the changes the person explicitly asked for in this request. Use the key they named or the task just discussed; if unclear which task, ask.`,
       input_schema: { type: 'object', properties: { key: { type: 'string', description: 'Task key such as KAN-12.' },
@@ -412,37 +495,29 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     async input => {
       const key = str(input.key, 40)?.toUpperCase();
       if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
-      const status = str(input.status, 60);
-      const comment = str(input.comment, 3000);
-      const wanted = str(input.assignee, 100);
-      if (!status && !comment && !wanted) return { content: 'Nothing to change: give a status, an assignee or a comment.', isError: true };
-      if (!context.writesApproved) {
-        const asked = requestedTaskChanges(context.request);
-        const extra = [status && !asked.status && 'a status change', wanted && !asked.assignee && 'a new owner', comment && !asked.comment && 'a comment'].filter(Boolean);
-        if (extra.length) return { content: `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
-      }
+      if (!str(input.status, 60) && !str(input.comment, 3000) && !str(input.assignee, 100)) return { content: 'Nothing to change: give a status, an assignee or a comment.', isError: true };
+      const extra = unaskedChanges([input]);
+      if (extra.length) return { content: `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
-      let assigneeId: string | undefined;
-      let assigneeName: string | undefined;
-      if (wanted) {
-        const resolved = await resolveAssignee(wanted, context);
-        if ('problem' in resolved) return { content: `Not changed: ${resolved.problem}`, isError: true };
-        assigneeId = resolved.id;
-        assigneeName = resolved.displayName;
-      }
+      const outcome = await updateOne(input);
+      if (outcome.isError) return { content: outcome.content, isError: true };
       writes++;
-      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${comment ?? ''}`;
-      let receipt = context.completed.get(requestId);
-      if (!receipt) {
-        receipt = await board.updateTask!({ key, status, assigneeId, comment, requestId });
-        context.completed.set(requestId, receipt);
-        context.recordAction?.('update_task');
-        report.receipts.push(receipt);
-        report.wroteSomething = true;
-        await context.onReceipt(receipt).catch(() => undefined);
-      }
-      const done = [status && `moved to ${status}`, assigneeName && `assigned to ${assigneeName}`, comment && 'commented'].filter(Boolean).join(', ');
-      return { content: `${receipt.label} ${done}: ${receipt.url}. The link is already in the chat.` };
+      if (outcome.fresh) await context.onReceipt(outcome.receipt!).catch(() => undefined);
+      return { content: `${outcome.content}. The link is already in the chat.` };
+    }, true);
+    if (board.updateTask && context.batchTasks) add({ name: 'update_tasks', description: `Change several existing ${board.name} tasks in one call (up to ${MAX_BATCH_ITEMS}): per item a key and only the changes the person explicitly asked for (status, assignee, comment). Use it whenever they asked to change more than one task.`,
+      input_schema: { type: 'object', properties: { updates: { type: 'array', maxItems: MAX_BATCH_ITEMS, items: { type: 'object',
+        properties: { key: { type: 'string', description: 'Task key such as KAN-12.' }, status: { type: 'string' },
+          assignee: { type: 'string', description: 'A name, or "me" for the speaker.' }, comment: { type: 'string' } },
+        required: ['key'] } } }, required: ['updates'] } },
+    async input => {
+      const list = batchItems(input.updates);
+      if (typeof list === 'string') return { content: `updates: ${list}`, isError: true };
+      const extra = unaskedChanges(list);
+      if (extra.length) return { content: `Nothing changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
+      writes++;
+      return runBatch(list, updateOne, 'changed');
     }, true);
     if (chat) add({ name: 'post_message', description: `Post a message to a ${chat.name} channel. Only when the person explicitly asked you to post/send/share something there. Write the message itself, ready to send.`,
       input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] } },
@@ -574,6 +649,17 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       },
     },
   };
+}
+
+/** One item of a write: the text for the agent, and the receipt when it was written (fresh unless a retry found it). */
+type ItemOutcome = ToolOutcome & { receipt?: ActionReceipt; fresh?: boolean };
+
+/** One chat line for several writes: "MEM-1, MEM-2 and MEM-3" with every link. */
+export function combineReceipts(receipts: readonly ActionReceipt[]): ActionReceipt {
+  if (receipts.length === 1) return receipts[0]!;
+  const labels = receipts.map(receipt => receipt.label);
+  return { provider: receipts[0]!.provider, kind: receipts[0]!.kind,
+    label: `${labels.slice(0, -1).join(', ')} and ${labels.at(-1)}`, url: receipts.map(receipt => receipt.url).join(' ') };
 }
 
 /** The search filters the agent may use; jql only where the board understands it, board only with several boards. */
