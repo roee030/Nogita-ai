@@ -78,6 +78,15 @@ any noise suppression the platform applies, are not included.
 | `parallel-lookups` | Two people ask for lookups (the board, the commits) before either answer is ready; both answered, each naming its topic |
 | `rapid-questions` | One person asks three questions 1.4 s apart, talking over her answers; none may be dropped |
 | `interrupt-resume` | Someone talks over her answer about something else; she finishes the answer afterwards |
+| `meeting-room` | Three people around one laptop mic (the meeting sees one participant) plus one remote; side talk on the shared mic, a question asked while someone else is still talking into it |
+| `cut-off` | A speaker cut off mid-word and someone jumps in; a speaker restarting their own sentence; a request cut off before the owner |
+| `room-crosstalk` | Two people on the same meeting-room mic talking at the same moment, one of them to Nogita |
+| `long-pauses` | Two- and three-second thinking pauses inside a question and a task request |
+
+**Meeting rooms and cut-offs in scenarios.** A participant with `sharesMicWith: '<id>'` talks into that
+participant's microphone: the meeting sees one participant, and two people on it at once are mixed into one stream.
+A turn with `cutAt: 0.55` keeps only the first 55% of its audio, so the speaker stops mid-word; pair it with
+`afterPreviousMs` on the next turn for someone jumping in.
 | `cancel-stop` | "Actually, never mind" drops an open lookup; "Nogita, stop" ends an answer for good |
 | `asked-twice` | The same question repeated while she is still looking: one lookup, one answer |
 | `talk-over` | Two people keep talking while her answer is ready; she waits for an opening |

@@ -11,7 +11,7 @@ import { FRAME_SAMPLES, SAMPLE_RATE, floatToPcm, msToSamples, pcmToFloat, rms, t
 import { playScenario, record as recordEvents, synthesizeTurn, type TurnRecord } from '../tools/voice-lab/conversation.ts';
 import { SPEECH_RMS, createNoise, createPerturbation } from '../tools/voice-lab/noise.ts';
 import { VoiceRig, expectedProviderClose, parseWarmupMode } from '../tools/voice-lab/rig.ts';
-import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
+import { SCENARIOS, micOf, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
 import { conversationFailures, machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
 import { markdown, summarize, transcriptLines, transcriptMarkdown, writeReport, type ScenarioResult } from '../tools/voice-lab/report.ts';
 import { conversationStats, questionLedger } from '../tools/voice-lab/conversation-metrics.ts';
@@ -135,6 +135,40 @@ test('multi-speaker scenarios cover queued questions, other people talking, and 
   assert.match(String(correction.turns[1]?.say), /no,? (?:sorry,? )?i meant/i);
   assert.ok(correction.turns[1]?.afterPreviousMs !== undefined);
   assert.ok(correction.turns[1]?.expect.forbid?.includes('engine.ts'));
+});
+
+test('meeting-room scenarios share one mic, cut people off mid-word, and overlap speakers on the same mic', () => {
+  for (const scenario of SCENARIOS) {
+    for (const p of scenario.participants.filter(p => p.sharesMicWith)) {
+      const owner = scenario.participants.find(candidate => candidate.id === p.sharesMicWith);
+      assert.ok(owner && !owner.sharesMicWith, `${scenario.name}: ${p.id} shares a mic that has no owner`);
+    }
+    for (const turn of scenario.turns) assert.ok(turn.cutAt === undefined || (turn.cutAt > 0 && turn.cutAt < 1), scenario.name);
+  }
+  const room = SCENARIOS.find(candidate => candidate.name === 'meeting-room')!;
+  assert.equal(micOf(room, 'dana'), 'roee');
+  assert.equal(micOf(room, 'noa'), 'noa');
+  const sameMicOverlap = (scenario: Scenario) => scenario.turns.some((turn, i) => turn.overlapPreviousMs !== undefined && i > 0 &&
+    micOf(scenario, turn.speaker) === micOf(scenario, scenario.turns[i - 1]!.speaker));
+  assert.ok(sameMicOverlap(room));
+  assert.ok(sameMicOverlap(SCENARIOS.find(candidate => candidate.name === 'room-crosstalk')!));
+
+  const cutOff = SCENARIOS.find(candidate => candidate.name === 'cut-off')!;
+  const cutIndex = cutOff.turns.findIndex(turn => turn.cutAt !== undefined);
+  assert.ok(cutOff.turns[cutIndex + 1]?.afterPreviousMs !== undefined, 'someone jumps in right where the speaker was cut off');
+  assert.ok(cutOff.turns.some(turn => Array.isArray(turn.say) && (turn.pauseMs ?? 800) < 500), 'a speaker restarts their own sentence');
+  const pauses = SCENARIOS.find(candidate => candidate.name === 'long-pauses')!;
+  assert.ok(pauses.turns.every(turn => (turn.pauseMs ?? 0) >= 1_800));
+});
+
+test('a cut-off turn keeps only the start of the line and fades out', async () => {
+  const tone = new Float32Array(msToSamples(1_000)).fill(0.5);
+  const full = await synthesizeTurn({ speaker: 'roee', say: 'x', expect: { respond: 'any' } }, 'v', async () => tone);
+  const cut = await synthesizeTurn({ speaker: 'roee', say: 'x', cutAt: 0.4, expect: { respond: 'any' } }, 'v', async () => tone);
+  assert.equal(full.length, tone.length);
+  assert.equal(cut.length, Math.round(tone.length * 0.4));
+  assert.equal(cut[0], 0.5);
+  assert.ok(Math.abs(cut.at(-1)!) < 0.01, 'no click at the cut');
 });
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
@@ -330,6 +364,21 @@ test('cold voice-lab mode does not pre-open a TTS connection', async () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(opened.some(url => url.includes('/v1/speak')), false, JSON.stringify(opened));
     assert.equal(opened.some(url => !url.includes('/v1/speak')), true, JSON.stringify(opened));
+  } finally { await rig.stop(); }
+});
+
+test('two lines started on the same mic are mixed and each reports its own end', async () => {
+  const rig = new VoiceRig({ deepgramApiKey: 'test-key', dependencies: createDependencies({}), warmup: 'cold',
+    createWebSocket: url => new FakeDeepgram(url.includes('/v1/speak') ? 'tts' : 'stt', []) as never });
+  await rig.start([{ id: 'roee', name: 'Roee', mic: 'open', actor: { id: 'roee', displayName: 'Roee', verified: true },
+    noise: createNoise({ kind: 'quiet', snrDb: 60 }, 1) }]);
+  try {
+    const first = rig.say('roee', new Float32Array(msToSamples(400)).fill(0.2));
+    const second = rig.say('roee', new Float32Array(msToSamples(200)).fill(0.3));
+    const [firstEnd, secondEnd] = await Promise.all([first.ended, second.ended]);
+    assert.ok(secondEnd < firstEnd, 'the shorter line ends first');
+    const peak = rig.room.samples().reduce((max, sample) => Math.max(max, sample), 0);
+    assert.ok(peak > 0.45, `both voices are heard at once (peak ${peak})`);
   } finally { await rig.stop(); }
 });
 
