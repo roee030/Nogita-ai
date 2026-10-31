@@ -19,7 +19,8 @@
     "control": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/control/main.ts",
     "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts",
     "board": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/board.ts",
-    "eval": "node --disable-warning=ExperimentalWarning --experimental-transform-types tests/eval/run.ts"
+    "eval": "node --disable-warning=ExperimentalWarning --experimental-transform-types tests/eval/run.ts",
+    "research-bench": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/research-bench/run.ts"
   },
   "devDependencies": {
     "@cartesia/cartesia-js": "^4.2.0",
