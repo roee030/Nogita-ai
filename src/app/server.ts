@@ -35,6 +35,7 @@ import { directlyAddressesNogita, normalizeWakeWord } from '../core/policy.ts';
 import { readFileSync } from 'node:fs';
 import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
 import { FileMeetingMemory } from './meeting-memory.ts';
+import { FileActionReceipts } from './action-receipts.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -92,7 +93,10 @@ const presence = new PresenceHub({ boardName: dependencies.board.name, chatName:
  * Delegated missions: durable (NOGITA_STATE_DIR/missions), independent of any meeting, resumed after a restart.
  * Reads run on their own with the owner's access; every write waits for the owner's approval.
  */
-const missionCompleted = new Map<string, ActionReceipt>();
+/** Opt-in: receipts of writes kept in NOGITA_STATE_DIR, so a retry after a restart does not write them again. */
+const actionReceipts: Map<string, ActionReceipt> = env.NOGITA_DURABLE_RECEIPTS === 'true'
+  ? new FileActionReceipts(stateDirectory) : new Map();
+const missionCompleted = actionReceipts;
 const missionRunner = dependencies.agent ? new MissionRunner({ model: dependencies.agent, store: new FileMissionStore(stateDirectory),
   toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
     request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
@@ -138,6 +142,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
     floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
+    receipts: actionReceipts,
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
       turnLog.record(sessionId, { type: 'question', id: event.id, status: event.status, speaker: turnLog.person(event.speaker),
