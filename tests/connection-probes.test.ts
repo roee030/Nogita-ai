@@ -16,7 +16,8 @@ test('connection probes verify all configured services with bounded read-only re
   const report = await probeConnections({ GITHUB_OWNER: 'owner', GITHUB_REPO: 'repo',
     JIRA_BASE_URL: 'https://test.atlassian.net', JIRA_EMAIL: 'test@example.com', JIRA_API_TOKEN: 'secret',
     JIRA_PROJECT_KEY: 'KAN', ATTENDEE_API_KEY: 'secret', SLACK_BOT_TOKEN: 'xoxb-secret',
-    ANTHROPIC_API_KEY: 'anthropic-secret', ANTHROPIC_MODEL: 'claude-haiku-5-5' }, async (url, options) => {
+    ANTHROPIC_API_KEY: 'anthropic-secret', ANTHROPIC_MODEL: 'claude-haiku-5-5',
+    DEEPGRAM_API_KEY: 'deepgram-secret' }, async (url, options) => {
     paths.push(new URL(String(url)).pathname);
     assert.equal(options?.redirect, 'error');
     assert.ok(options?.signal);
@@ -29,11 +30,48 @@ test('connection probes verify all configured services with bounded read-only re
       assert.equal(new Headers(options?.headers).get('x-api-key'), 'anthropic-secret');
       return new Response('{"data":[{"id":"claude-haiku-5-5"}]}');
     }
+    if (String(url).includes('deepgram.com')) {
+      assert.equal(new Headers(options?.headers).get('Authorization'), 'Token deepgram-secret');
+      return new Response('{"projects":[]}');
+    }
     return new Response('{}');
   });
   assert.equal(report.ok, true);
-  assert.deepEqual(paths.sort(), ['/api/v1/bots', '/api/auth.test', '/v1/models', '/repos/owner/repo/git/trees/main', '/rest/api/3/project/KAN'].sort());
+  assert.deepEqual(paths.sort(), ['/api/v1/bots', '/api/auth.test', '/v1/auth/token', '/v1/models',
+    '/repos/owner/repo/git/trees/main', '/rest/api/3/project/KAN'].sort());
+  assert.deepEqual(report.checks.map(check => check.provider),
+    ['github', 'jira', 'slack', 'anthropic', 'deepgram', 'attendee']);
+  assert.ok(report.checks.every(check => typeof check.durationMs === 'number' && check.durationMs >= 0));
   assert.equal(report.checks.find(check => check.provider === 'slack')?.status, 'connected');
+});
+
+test('Deepgram probe confirms the key with a lightweight authenticated read', async () => {
+  const report = await probeConnections({ DEEPGRAM_API_KEY: 'deepgram-secret' }, async (url, options) => {
+    assert.equal(String(url), 'https://api.deepgram.com/v1/auth/token');
+    assert.equal(options?.method, 'GET');
+    assert.equal(new Headers(options?.headers).get('Authorization'), 'Token deepgram-secret');
+    return new Response('{"projects":[]}');
+  });
+
+  assert.equal(report.checks.find(check => check.provider === 'deepgram')?.status, 'connected');
+  assert.doesNotMatch(JSON.stringify(report), /deepgram-secret/);
+});
+
+test('Deepgram is clearly not required when realtime audio is disabled', async () => {
+  const env = {
+    GITHUB_OWNER: 'owner', GITHUB_REPO: 'repo',
+    JIRA_BASE_URL: 'https://test.atlassian.net', JIRA_EMAIL: 'test@example.com', JIRA_API_TOKEN: 'secret',
+    JIRA_PROJECT_KEY: 'KAN', ATTENDEE_API_KEY: 'secret', SLACK_BOT_TOKEN: 'xoxb-secret',
+    ANTHROPIC_API_KEY: 'anthropic-secret', ANTHROPIC_MODEL: 'claude-haiku-5-5',
+  };
+  const report = await probeConnections(env, async url => String(url).includes('slack.com')
+    ? new Response('{"ok":true}')
+    : String(url).includes('anthropic.com')
+      ? new Response('{"data":[{"id":"claude-haiku-5-5"}]}')
+      : new Response('{}'));
+
+  assert.equal(report.checks.find(check => check.provider === 'deepgram')?.status, 'not_required');
+  assert.equal(report.ok, true);
 });
 
 test('invalid Jira URLs are reported as configuration errors without aborting other probes', async () => {
