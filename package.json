@@ -17,7 +17,8 @@
     "tts-benchmark": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/benchmark-tts.ts",
     "turn-report": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/turn-report.ts",
     "control": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/control/main.ts",
-    "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts"
+    "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts",
+    "board": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/board.ts"
   },
   "devDependencies": {
     "@cartesia/cartesia-js": "^4.2.0",
