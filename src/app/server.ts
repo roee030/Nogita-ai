@@ -43,6 +43,11 @@ if (!validAdminToken(token)) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
 let providerConfigValid = true;
+const turnTakingV2 = env.NOGITA_TURN_TAKING_V2 === 'true';
+if (env.NOGITA_TURN_TAKING_V2 !== undefined && !['true', 'false'].includes(env.NOGITA_TURN_TAKING_V2)) {
+  providerConfigValid = false;
+  console.error('turn_taking_v2_configuration_invalid');
+}
 let dependencies: ReturnType<typeof createDependencies>;
 try {
   dependencies = createDependencies(env);
@@ -131,6 +136,7 @@ const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
   ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
+    floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
@@ -268,7 +274,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       deepgramApiKey: env.DEEPGRAM_API_KEY,
       deepgramMipOptOut: env.DEEPGRAM_MIP_OPT_OUT !== 'false',
       sttMode: stt.mode, languages: meetingLanguages,
-      ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true,
+      ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true, turnTakingV2,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
       ...(env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
         ? { fluxEagerEndOfTurnThreshold: Number(env.DEEPGRAM_EAGER_EOT_THRESHOLD || DEFAULT_EAGER_EOT_THRESHOLD) } : {}),

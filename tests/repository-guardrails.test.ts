@@ -53,6 +53,16 @@ test('production container is non-root, health-checked, secret-safe, and built i
     assert.ok(dockerignore.split(/\r?\n/).includes(entry), `missing ${entry} from .dockerignore`);
   }
   assert.match(workflow, /docker build --pull=false --tag nogita-ci:\$\{\{ github\.sha \}\} \./);
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies?: Record<string, string>; devDependencies?: Record<string, string>;
+  };
+  assert.equal(packageJson.dependencies?.['@cartesia/cartesia-js'], undefined);
+  assert.ok(packageJson.devDependencies?.['@cartesia/cartesia-js']);
+});
+
+test('turn-taking v2 rollout is documented and disabled by default', () => {
+  const example = readFileSync('.env.example', 'utf8');
+  assert.match(example, /^NOGITA_TURN_TAKING_V2=false$/m);
 });
 
 test('deployment documentation distinguishes encrypted queueing from persistent storage', () => {

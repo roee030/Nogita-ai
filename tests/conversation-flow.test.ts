@@ -17,6 +17,21 @@ async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void>
   }
 }
 
+test('speech-floor default keeps the legacy one-second talking lease', async () => {
+  let now = 0;
+  let scheduled: (() => void) | undefined;
+  const said: string[] = [];
+  const floor = new SpeechFloor({ now: () => now, schedule: work => { scheduled = work; return 1; },
+    cancel: () => undefined, speak: async (text): Promise<SpeakOutcome> => { said.push(text); return 'spoken'; } });
+  floor.noteTalking('dana');
+  void floor.say(1, 'Waiting.');
+  now = 1_000;
+  scheduled?.();
+  await sleep(1);
+  assert.deepEqual(said, ['Waiting.']);
+  floor.close();
+});
+
 type Step = { text?: string; tools?: Array<{ name: string; input: Record<string, unknown> }>; delayMs?: number };
 /** Answers by question: each route's steps follow the tool rounds of that conversation; topic requests get `topic`. */
 class RoutedModel implements ChatModel {

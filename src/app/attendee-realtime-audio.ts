@@ -13,11 +13,9 @@ const MAX_PENDING_SPEAKER_BYTES = 5 * AUDIO_SAMPLE_RATE * 2;
 const MAX_PARTICIPANTS_PER_SESSION = 16;
 const MAX_TTS_TURN_BYTES = 5 * 1024 * 1024;
 const DEEPGRAM_IDLE_MS = 10_000;
-/** Output is already paused at the acoustic gate; abandon it only if continuous speech outlives STT's backchannel window. */
+/** In v2, output is paused at the acoustic gate; abandon it if continuous speech outlives STT's backchannel window. */
 const BARGE_IN_CANCEL_MS = 1_500;
 const BACKCHANNEL_PAUSE_MAX_MS = 1_500;
-/** Four 20 ms frames reject clicks while leaving transport headroom inside the 300 ms participant target. */
-const OWN_VOICE_GATE_MS = 80;
 /** Preserve onset through short unvoiced phonemes, but not across separate utterances. */
 const VOICE_RUN_GRACE_MS = 180;
 /** Flux early end-of-turn confidence for speculative starts (DEEPGRAM_EAGER_EOT_THRESHOLD; "off" disables them). */
@@ -144,6 +142,8 @@ export interface RealtimeAudioOptions {
   fluxEagerEndOfTurnThreshold?: number;
   /** Keep a speech connection open for the whole meeting: a cold one cost 0.7-1.4 s before the first word. */
   warmSpeech?: boolean;
+  /** Measured pause-and-classify interruption profile. Disabled unless rollout explicitly enables it. */
+  turnTakingV2?: boolean;
   /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
   keyterms?: readonly string[];
   /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
@@ -182,6 +182,19 @@ export interface RealtimeAudioOptions {
   onError?: (code: string) => void;
   now?: () => number;
   createWebSocket?: (url: string, options: { headers: Record<string, string>; perMessageDeflate: false }) => WebSocket;
+}
+
+export interface TurnTakingProfile {
+  ownVoiceGateMs: number;
+  ownVoicePeakRatio: number;
+  pauseAndClassify: boolean;
+}
+
+/** One switch selects the complete measured profile, so rollback cannot leave half of it active. */
+export function turnTakingProfile(enabled: boolean): TurnTakingProfile {
+  return enabled
+    ? { ownVoiceGateMs: 80, ownVoicePeakRatio: 0.35, pauseAndClassify: true }
+    : { ownVoiceGateMs: 100, ownVoicePeakRatio: 0.5, pauseAndClassify: false };
 }
 
 interface SpeakerStream {
@@ -242,6 +255,7 @@ export class AttendeeRealtimeAudioHub {
   private readonly now: () => number;
   private readonly createWebSocket: NonNullable<RealtimeAudioOptions['createWebSocket']>;
   private readonly cleanupTimer: ReturnType<typeof setInterval>;
+  private readonly turnTaking: TurnTakingProfile;
 
   constructor(private readonly options: RealtimeAudioOptions) {
     if (!options.signingSecret.trim() || !options.deepgramApiKey.trim()) throw new Error('realtime audio credentials are required');
@@ -251,6 +265,7 @@ export class AttendeeRealtimeAudioHub {
     // Validate the origin and fixed route once at startup.
     createAttendeeAudioSocketUrl(options.baseUrl, options.signingSecret, 'configuration-check');
     this.now = options.now ?? Date.now;
+    this.turnTaking = turnTakingProfile(options.turnTakingV2 === true);
     this.createWebSocket = options.createWebSocket ?? ((url, socketOptions) =>
       new WebSocket(url, { ...socketOptions, handshakeTimeout: 10_000, maxPayload: 100_000 }));
     this.cleanupTimer = setInterval(() => this.closeIdleSpeakers(), 5_000);
@@ -589,12 +604,12 @@ export class AttendeeRealtimeAudioHub {
     // The speaker's own level fades over minutes (about 10% a minute), not seconds: with a fast fade, nearby
     // talk ten seconds after they stopped became "their" voice and cut Nogita off.
     speaker.speechPeak = Math.max(level, speaker.speechPeak * 0.999998 ** frameMs);
-    // Own speech: at least 100 ms within about 9 dB of the speaker's prior peak. Six dB made a quieter second
-    // utterance invisible after a loud first one. Single nearby syllables still cannot pass the 100 ms run gate.
+    // Own speech uses the selected rollout profile. V2 accepts a quieter second utterance after a loud first one
+    // (about 9 dB / 80 ms); legacy rollback keeps the prior 6 dB / 100 ms gate.
     // Before someone has spoken, background talk on their microphone is the loudest thing it hears and sets their
     // level; the room's loudest speaker keeps that talk from counting (it must also be within 12 dB of them).
     session.voicePeak = Math.max(speaker.speechPeak, session.voicePeak * 0.999998 ** frameMs);
-    const own = level >= speaker.speechPeak * 0.35 && level >= session.voicePeak * 0.25;
+    const own = level >= speaker.speechPeak * this.turnTaking.ownVoicePeakRatio && level >= session.voicePeak * 0.25;
     if (own && speaker.lastOwnVoiceAt !== undefined && this.now() - speaker.lastOwnVoiceAt > VOICE_RUN_GRACE_MS) {
       speaker.loudRunMs = 0;
       if (session.voiceOnsetParticipant === participantUuid) {
@@ -613,17 +628,18 @@ export class AttendeeRealtimeAudioHub {
       session.voiceOnsetAt = undefined;
       session.voiceOnsetParticipant = undefined;
     }
-    if (speaker.loudRunMs >= OWN_VOICE_GATE_MS) {
+    if (speaker.loudRunMs >= this.turnTaking.ownVoiceGateMs) {
       // Recognition results trail the audio, so speech vouches for the next 1.5 s of results.
       speaker.loudUntil = this.now() + 1_500;
       if (own && this.now() - speaker.lastVoiceSignalAt >= 200) {
         speaker.lastVoiceSignalAt = this.now();
         this.options.onVoice?.(session.sessionId, participantUuid);
       }
-      if (own) this.pauseSpeech(session);
+      if (own && this.turnTaking.pauseAndClassify) this.pauseSpeech(session);
       // The output has already stopped within the 300 ms acceptance budget. Keep its queue recoverable long
       // enough for interim STT to distinguish an acknowledgement; abandon it if recognition never arrives.
-      if (own && session.voiceOnsetAt !== undefined && this.now() - session.voiceOnsetAt >= BARGE_IN_CANCEL_MS) {
+      if (own && this.turnTaking.pauseAndClassify && session.voiceOnsetAt !== undefined &&
+          this.now() - session.voiceOnsetAt >= BARGE_IN_CANCEL_MS) {
         this.interruptSpeech(session.sessionId, 'voice');
       }
     }
@@ -675,7 +691,7 @@ export class AttendeeRealtimeAudioHub {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
     }), pendingAudio: [], finalSegments: [], confidences: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0, lastVoiceSignalAt: 0 };
     const deliverTurn = (turn: string) => {
-      if (isBackchannel(turn)) this.resumeSpeech(session);
+      if (this.turnTaking.pauseAndClassify && isBackchannel(turn)) this.resumeSpeech(session);
       else if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId, 'voice');
       speaker.lastTurnText = turn;
       speaker.lastTurnAt = this.now();
@@ -705,11 +721,14 @@ export class AttendeeRealtimeAudioHub {
         const interim = liveTranscript(message);
         if (interim) this.options.onInterim?.(sessionId, participantUuid, interim);
         if (ownVoice) {
-          // Flux first emits a wordless StartOfTurn. That confirms voice but says nothing about intent: output is
-          // already paused, so only a real non-backchannel hypothesis may discard it. An acknowledgement resumes
-          // immediately instead of waiting for the final endpoint.
-          if (interim && isBackchannel(interim)) this.resumeSpeech(session);
-          else if (interim) this.interruptSpeech(sessionId, 'voice');
+          // Flux first emits a wordless StartOfTurn. V2 has already paused output and waits for a hypothesis so a
+          // backchannel can resume; the legacy profile keeps transcript-driven immediate interruption.
+          if (this.turnTaking.pauseAndClassify) {
+            if (interim && isBackchannel(interim)) this.resumeSpeech(session);
+            else if (interim) this.interruptSpeech(sessionId, 'voice');
+          } else {
+            this.interruptSpeech(sessionId, 'voice');
+          }
           this.options.onSpeechActivity?.(sessionId, participantUuid);
         }
       }
