@@ -13,6 +13,10 @@ const deliberation = [
   "I'll stay out of this one.",
   'This question is about the retry logic, so I should check the worker first.',
   "The config has a project key field, so I need to see where it's set.",
+  // Live Meet 2026-10-31.
+  "All the is garbled, and I can't tell what tasks he wants.",
+  'Ask him once briefly,',
+  "My last answer about four merges today wasn't backed by a lookup I actually ran, so I can't open tasks.",
 ];
 
 const answers = [
@@ -29,6 +33,8 @@ const answers = [
   "Quiet hours start at ten, so I'll post it tomorrow morning.",
   'The token expires hourly, so you need to refresh it.',
   'I need to see the logs first; can you paste them?',
+  "I can't tell what the retry limit is from the config.",
+  'Ask the payments team; they own that queue.',
 ];
 
 test('deliberation said aloud is recognized', () => {

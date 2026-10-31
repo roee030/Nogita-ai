@@ -75,6 +75,9 @@ test('spoken verification digits bind only the speaker who said the challenge', 
     'Nogeta verify 482731.',
     'Novita verify four, eight, two, seven, three, one.',
     'No nogita verify 482731.',
+    // Live Meet 2026-10-31: the speaker restarted mid-code and recognition kept both attempts.
+    'Nogita verify 48-482731.',
+    'Nogita verified 482731.',
   ].entries()) {
     const f = fixture(); f.router.beginSession('s', owner);
     f.router.accept(f.request('speaker-a', spoken, `verify-${index}`));

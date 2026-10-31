@@ -126,6 +126,23 @@ test('voice: lead-in and answer are spoken as they stream, chat gets the answer 
   assert.match(model.requests[0]!.messages[0]!.content as string, /Lead says to you now:\nhow do sessions work\?/);
 });
 
+test('what a lookup showed stays with the answer, so the next turn can act on it (live Meet 2026-10-31)', async () => {
+  const model = new ScriptedModel([
+    { text: 'Let me check.', tools: [{ name: 'recent_commits', input: { branch: 'main' } }] },
+    { text: 'Four merges today: six through nine.' },
+    { text: 'Opening them now.' },
+  ]);
+  const f = fixture(model, { code: Object.assign(new DemoCode(), {
+    recentCommits: async () => [{ path: 'commit 023ccfb', url: 'https://example.invalid/c', excerpt: 'Merge pull request #9 from early-commit' }],
+  }) });
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what did we merge to main today?', '1');
+  await f.utter('Nogita, open a task for each one and mark them done.', '2');
+  const transcript = JSON.stringify(model.requests[2]!.messages);
+  assert.match(transcript, /Four merges today/);
+  assert.match(transcript, /recent_commits[^]*Merge pull request #9/);
+});
+
 test('task for a named person is assigned through the identity map and its link posted', async () => {
   const model = new ScriptedModel([
     { tools: [{ name: 'create_task', input: { title: 'Add retry limit', description: 'From the planning discussion.', assignee: 'Dana' } }] },

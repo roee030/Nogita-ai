@@ -20,6 +20,13 @@ const DELIBERATION: readonly RegExp[] = [
   /\bso I (?:need|have|want) to (?:see|check|look|find out|confirm|verify|figure out)\b/i,
   // Classifying the request out loud.
   /^(?:this|that)\s+(?:is\s+(?:a|an)\s+)?(?:follow-up|message|question|request|utterance)\b(?=.*\b(?:me|so I)\b)/i,
+  // Talking about the speaker instead of to them (live Meet: "All the is garbled, and I can't tell what tasks he
+  // wants. Ask him once briefly,").
+  /\bcan't tell what\b.*\b(?:he|she)\s+(?:wants|means|is asking|meant|said)\b/i,
+  /\b(?:is|was|sounds) garbled\b/i,
+  /^ask (?:him|her) (?:once|briefly|again|what|which|to)\b/i,
+  // Auditing her own earlier answer aloud ("My last answer wasn't backed by a lookup I actually ran").
+  /\bbacked by (?:a|any|the) (?:lookup|tool)\b/i,
   // Reasoning over tool output instead of answering from it.
   /\b(?:search hits|tool results?)\b/i,
   /\bbefore (?:naming|answering|I answer|giving (?:an|the) answer|replying)\b/i,

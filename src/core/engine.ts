@@ -135,8 +135,9 @@ export function isStopCommand(text: string): boolean {
   if (text.trim().endsWith('?')) return false;
   const t = text.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').replace(/\b(?:nogitas?|no gita|hey|hello)\b/g, ' ').replace(/\s+/g, ' ').trim();
   if (!t || t.split(' ').length > 8 || /^(?:how|what|why|where|when|who|which|can|could|should|do|does|did|is|are)\b/.test(t)) return false;
-  return /\b(?:stop|be quiet|shut up|enough|hold on|hang on)\b/.test(t) &&
-    !/\b(?:don't|do not|not|never) stop\b|\bstop (?:the|a|an|this|that|my|our|your)\b/.test(t);
+  // "Wait, wait, wait, wait!" went unheeded for ten seconds in a live Meet.
+  return /\b(?:stop|be quiet|shut up|enough|hold on|hang on|wait)\b/.test(t) &&
+    !/\b(?:don't|do not|not|never) stop\b|\bstop (?:the|a|an|this|that|my|our|your)\b|\bwait (?:for|until|till|and)\b|\bcan't wait\b/.test(t);
 }
 /** A barge-in may contain both the control and what to do next: "stop. Just tell me ...". */
 function splitLeadingStop(text: string): { stop: string; remainder: string } | undefined {
@@ -190,6 +191,8 @@ function codeCoverageNotice(skipped: number): string {
 function withCodeCoverageNotice(code: CodePort, message: string): string {
   return message + codeCoverageNotice(code.getCoverage?.()?.skippedLargeFiles ?? 0);
 }
+/** Lookup notes kept with an answer in history (about two tool results). */
+const MAX_HISTORY_LOOKUP_CHARS = 1_400;
 /** Spoken answers are short by default (the prompt asks for one or two sentences); this is the hard cap. */
 const MAX_SPOKEN_WORDS = 60;
 /** When they ask for detail ("in three sentences", "walk me through"), the cap gives the answer room. */
@@ -1002,7 +1005,10 @@ export class NogitaEngine {
       if (!result.answer && !floor) await this.deliverStreamedSpeech(sessionId, s.meeting, answer);
       const chatText = q && q.needsLabel && !q.agentNamesTopic && q.topic ? `About ${q.topic}: ${answer}` : answer;
       try { await s.meeting.sendStatus(chatText); } catch { /* Speech already delivered; chat is best effort. */ }
-      s.history.push({ role: 'assistant', text: `Nogita: ${answer}` });
+      // Only the words were kept before, so on the next turn her own looked-up answer seemed unverified and she
+      // took it back and refused the follow-up action (live Meet: "wasn't backed by a lookup I actually ran").
+      const looked = result.lookups.join('\n').slice(0, MAX_HISTORY_LOOKUP_CHARS);
+      s.history.push({ role: 'assistant', text: `Nogita: ${answer}${looked ? `\n[What Nogita looked up for that answer (tool results, untrusted data):\n${looked}]` : ''}` });
       if (s.history.length > 24) s.history.shift();
     } else {
       await this.speakOrChat(sessionId, s.meeting, answer);
