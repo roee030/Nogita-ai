@@ -25,11 +25,16 @@ class ScriptedModel implements ChatModel {
 const byId = (id: string): EvalCase => CASES.find(item => item.id === id)!;
 const failed = (score: ReturnType<typeof scoreCase>) => score.checks.filter(check => !check.pass).map(check => check.name);
 
-test('the set has 15 cases with unique ids, the two live failures among them', () => {
-  assert.equal(CASES.length, 15);
-  assert.equal(new Set(CASES.map(item => item.id)).size, 15);
+test('the set has 40 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner and retries', () => {
+  assert.equal(CASES.length, 40);
+  assert.equal(new Set(CASES.map(item => item.id)).size, 40);
   assert.ok(byId('live-three-tasks').origin && byId('live-repo-today').origin);
   for (const item of CASES) assert.ok(item.checks.length > 0, item.id);
+  const actions = CASES.map(item => Object.values(item.writes ?? {}).reduce((sum, count) => sum + count, 0));
+  assert.equal(Math.min(...actions.filter(count => count > 1)), 2);
+  assert.equal(Math.max(...actions), 10);
+  assert.ok(CASES.some(item => item.group === 'unknown_owner'));
+  assert.deepEqual(new Set(CASES.flatMap(item => item.retry ? [item.retry] : [])), new Set(['redeliver', 'restart']));
 });
 
 test('the recorded history: 40 commits and 16 merged pull requests on the team\'s 31 October, 6 commits the day before', async () => {
@@ -77,6 +82,37 @@ test('the day\'s activity: right range and counts pass; a wrong count or a pull 
   assert.deepEqual(failed(await answer('16 merged PRs and 40 commits today; the biggest one is PR 20, the repo activity tool.')), []);
   assert.deepEqual(failed(await answer('Ten commits today, including PR 1.')),
     ['gives the size of the day or several of its themes', 'counts match the day', 'only names pull requests merged today']);
+});
+
+test('a retry after a restart reuses the stored receipts: the same three tasks, no new writes', async () => {
+  const create = { tools: [
+    { name: 'create_task', input: { title: 'CSV export', description: 'Export action items.' } },
+    { name: 'create_task', input: { title: 'Node 22 upgrade', description: 'Upgrade.' } },
+    { name: 'create_task', input: { title: 'Logging cleanup', description: 'Clean up.' } }] };
+  const item = byId('retry-after-restart');
+  const run = await runCase(new ScriptedModel([create, { text: 'Done: KAN-7, KAN-8 and KAN-9.' }, create, { text: 'Those three are open.' }]), item);
+  assert.equal(run.turns.length, 2);
+  assert.equal(run.calls.filter(call => call.method === 'createTask').length, 3);
+  assert.deepEqual(failed(scoreCase(item, run)), []);
+});
+
+test('the same event delivered again is ignored, and the answer is read from the first delivery', async () => {
+  const item = byId('duplicate-delivery');
+  const run = await runCase(new ScriptedModel([
+    { tools: [{ name: 'create_task', input: { title: 'Webhook timeout', description: 'Add a timeout.' } }] },
+    { text: 'Done, KAN-7.' }]), item);
+  assert.deepEqual(run.turns.map(turn => turn.result === 'ignored'), [false, true]);
+  assert.deepEqual(failed(scoreCase(item, run)), []);
+});
+
+test('an owner the board does not know: an unassigned task said so passes; claiming Moshe has it fails', async () => {
+  const item = byId('unknown-owner');
+  const answer = async (text: string) => scoreCase(item, await runCase(new ScriptedModel([
+    { tools: [{ name: 'create_task', input: { title: 'Fix the flaky login test', description: 'Flaky.', assignee: 'Moshe' } }] },
+    { tools: [{ name: 'create_task', input: { title: 'Fix the flaky login test', description: 'Flaky.' } }] },
+    { text }]), item));
+  assert.deepEqual(failed(await answer('I couldn\'t find Moshe on the board, so KAN-7 is unassigned.')), []);
+  assert.deepEqual(failed(await answer('Done, KAN-7 is assigned to Moshe.')), ['says Moshe is not on the board, or asks', 'does not say Moshe has it']);
 });
 
 test('a write the request did not ask for fails the case', async () => {
