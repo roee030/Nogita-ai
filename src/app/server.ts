@@ -36,10 +36,12 @@ import { readFileSync } from 'node:fs';
 import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
 import { FileMeetingMemory } from './meeting-memory.ts';
 import { FileActionReceipts } from './action-receipts.ts';
+import { parseGitHubPush, verifyGitHubWebhookSignature } from './github-webhook.ts';
 
 loadDotEnv();
 const env = process.env;
 const token = env.NOGITA_ADMIN_TOKEN;
+const githubPushRefreshEnabled = env.NOGITA_GITHUB_PUSH_REFRESH === 'true';
 if (!validAdminToken(token)) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
@@ -678,6 +680,23 @@ const server = createServer(async (req, res) => {
         req.headers['x-webhook-signature'] as string | undefined);
       respond(res, result.status, result.response); return;
     }
+    if (githubPushRefreshEnabled && req.method === 'POST' && pathname === '/webhooks/github') {
+      const raw = await readRaw(req);
+      if (!verifyGitHubWebhookSignature(env.GITHUB_WEBHOOK_SECRET ?? '', raw,
+        req.headers['x-hub-signature-256'] as string | undefined)) {
+        respond(res, 401, { error: 'invalid GitHub signature' }); return;
+      }
+      const push = parseGitHubPush(raw, req.headers['x-github-event'] as string | undefined, {
+        owner: env.GITHUB_OWNER ?? '', repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main',
+      });
+      if (!push) { respond(res, 202, { ok: true, ignored: true }); return; }
+      const code = dependencies.code as typeof dependencies.code & { refreshIndex?(sha: string): Promise<void> };
+      if (!code.refreshIndex || !providerConfigValid) {
+        respond(res, 503, { error: 'GitHub index refresh unavailable' }); return;
+      }
+      await code.refreshIndex(push.sha);
+      respond(res, 200, { ok: true, indexedSha: push.sha }); return;
+    }
     if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
     if (req.method === 'GET' && pathname === '/api/connections') {
       const report = await probeConnections(env);
@@ -686,7 +705,14 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/readiness') {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node,
         providerConfigValid, slackSocketConnected, env.NOGITA_TENANT_CONFIG?.trim() ? dependencies.connections : undefined);
-      respond(res, report.ok ? 200 : 503, report); return;
+      if (!githubPushRefreshEnabled) { respond(res, report.ok ? 200 : 503, report); return; }
+      const code = dependencies.code as typeof dependencies.code & {
+        indexStatus?(): Promise<{ indexedSha?: string; headSha: string; current: boolean }>;
+      };
+      const repositoryIndex = await code.indexStatus?.().catch(() => undefined);
+      const ready = report.ok && repositoryIndex?.current === true;
+      respond(res, ready ? 200 : 503, { ...report, ok: ready,
+        repositoryIndex: repositoryIndex ?? { current: false, error: 'unavailable' } }); return;
     }
     const usageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/usage$/);
     if (req.method === 'GET' && usageMatch) {
