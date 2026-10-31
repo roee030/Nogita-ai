@@ -8,8 +8,8 @@ import { AttendeeCommandRouter } from '../src/app/attendee-command-router.ts';
 import { createDependencies } from '../src/app/config.ts';
 import { directlyAddressesNogita, normalizeWakeWord } from '../src/core/policy.ts';
 import { FRAME_SAMPLES, SAMPLE_RATE, floatToPcm, msToSamples, pcmToFloat, rms, trimSilence, wav } from '../tools/voice-lab/audio.ts';
-import { playScenario, record as recordEvents, type TurnRecord } from '../tools/voice-lab/conversation.ts';
-import { SPEECH_RMS, createNoise } from '../tools/voice-lab/noise.ts';
+import { playScenario, record as recordEvents, synthesizeTurn, type TurnRecord } from '../tools/voice-lab/conversation.ts';
+import { SPEECH_RMS, createNoise, createPerturbation } from '../tools/voice-lab/noise.ts';
 import { VoiceRig, expectedProviderClose, parseWarmupMode } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
 import { machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
@@ -85,12 +85,35 @@ test('noise beds sit at the requested SNR below the reference speech level', () 
   assert.deepEqual(createNoise({ kind: 'pink', snrDb: 5 }, 1).next(64), createNoise({ kind: 'pink', snrDb: 5 }, 1).next(64));
 });
 
+test('cough, typing and laughter are deterministic acoustic clips that bypass participant TTS', async () => {
+  for (const kind of ['cough', 'typing', 'laughter'] as const) {
+    const clip = createPerturbation(kind);
+    assert.ok(clip.length >= msToSamples(500), `${kind} duration`);
+    assert.ok(rms(clip) > 0.03, `${kind} RMS ${rms(clip)}`);
+    assert.ok(Buffer.from(createPerturbation(kind, 17).buffer)
+      .equals(Buffer.from(createPerturbation(kind, 17).buffer)), `${kind} deterministic`);
+    let ttsCalls = 0;
+    const turn: Turn = { speaker: 'roee', say: `[${kind}]`, perturbation: { kind, afterAudioMs: 500 },
+      expect: { respond: 'any' } };
+    const synthesized = await synthesizeTurn(turn, 'unused', async () => { ttsCalls++; return new Float32Array(); });
+    assert.ok(Buffer.from(synthesized.buffer).equals(Buffer.from(clip.buffer)), `${kind} PCM`);
+    assert.equal(ttsCalls, 0);
+  }
+});
+
 test('every built-in scenario names its own participants and a known noise kind', () => {
   for (const scenario of SCENARIOS) {
     const ids = new Set(scenario.participants.map(p => p.id));
     for (const turn of scenario.turns) assert.ok(ids.has(turn.speaker), `${scenario.name}: ${turn.speaker}`);
     assert.ok(scenario.participants.every(p => p.voice !== 'aura-2-thalia-en'), 'participants never use Nogita\'s voice');
   }
+});
+
+test('the false-pause scenario injects every required sound during active playback', () => {
+  const scenario = SCENARIOS.find(candidate => candidate.name === 'false-pause');
+  assert.ok(scenario);
+  assert.deepEqual(scenario.turns.flatMap(turn => turn.perturbation?.kind ?? []), ['cough', 'typing', 'laughter']);
+  assert.ok(scenario.turns.filter(turn => turn.perturbation).every(turn => (turn.perturbation?.afterAudioMs ?? 0) > 0));
 });
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
@@ -166,6 +189,23 @@ test('run latency excludes playback carried through a backchannel turn', () => {
   assert.deepEqual(summary.responseGap, { count: 1, mean: 1_000, p50: 1_000, p90: 1_000, min: 1_000, max: 1_000 });
   assert.equal(summary.bargeInStop.count, 0);
   assert.deepEqual(summary.backchannels, { kept: 1, total: 1, falseStops: 0, falseStopRate: 0, upper95: 0.7935 });
+});
+
+test('summary reports acoustic false pauses with confidence and pause duration', () => {
+  const perturbation: Turn = { speaker: 'roee', say: '[cough]', perturbation: { kind: 'cough', afterAudioMs: 500 },
+    expect: { respond: 'any' } };
+  const perturbationRecord = record(perturbation, { timing: { speechStart: 1_000, speechEnd: 1_700 }, events: [
+    { t: 1_120, type: 'playback_pause', questionId: 1, playbackId: 4 },
+    { t: 1_420, type: 'playback_resume', questionId: 1, playbackId: 4, ms: 300, outcome: 'timeout' },
+  ] });
+  const scenario: Scenario = { name: 'false-pause', title: 'false pause', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [{ id: 'roee', name: 'Roee', voice: 'unused', authorized: true, mic: 'open' }], turns: [perturbation] };
+  const summary = summarize([{ scenario, turns: [{ record: perturbationRecord, score: scoreTurn(perturbationRecord) }],
+    room: new Float32Array(), nogita: new Float32Array(), errors: [], events: perturbationRecord.events }], {}, 'now');
+  assert.deepEqual(summary.falsePauses, { clean: 0, total: 1, pauses: 1, rate: 1, upper95: 1,
+    duration: { count: 1, mean: 300, p50: 300, p90: 300, min: 300, max: 300 } });
+  assert.equal(scoreTurn(perturbationRecord).passed, true);
+  assert.equal(summary.total, 0);
 });
 
 test('the lab suppresses an abnormal TTS close only when it immediately follows an intentional interruption', () => {

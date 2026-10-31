@@ -5,6 +5,7 @@
 import { FRAME_SAMPLES, SAMPLE_RATE, noiseGainForSnr, rms } from './audio.ts';
 
 export type NoiseKind = 'quiet' | 'white' | 'pink' | 'brown' | 'hum' | 'keyboard' | 'office' | 'cafe' | 'street';
+export type PerturbationKind = 'cough' | 'typing' | 'laughter';
 export interface NoiseSpec { kind: NoiseKind; snrDb: number }
 export interface NoiseSource { next(samples: number): Float32Array }
 
@@ -20,6 +21,44 @@ export function rng(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/** Deterministic non-speech clips injected through a real participant microphone while Nogita is speaking. */
+export function createPerturbation(kind: PerturbationKind, seed = 1): Float32Array {
+  const random = rng(seed);
+  const durationMs = kind === 'cough' ? 700 : kind === 'typing' ? 900 : 1_100;
+  const out = new Float32Array(Math.round(SAMPLE_RATE * durationMs / 1_000));
+  if (kind === 'typing') {
+    for (let hit = 40; hit < durationMs - 30; hit += 65 + Math.floor(random() * 95)) {
+      const start = Math.round(hit * SAMPLE_RATE / 1_000);
+      const decay = 5 + random() * 7;
+      for (let i = 0; i < Math.round(SAMPLE_RATE * 0.035) && start + i < out.length; i++) {
+        const envelope = Math.exp(-i / (SAMPLE_RATE * decay / 1_000));
+        out[start + i] += (random() * 2 - 1) * envelope;
+      }
+    }
+  } else if (kind === 'cough') {
+    let filtered = 0;
+    for (let i = 0; i < out.length; i++) {
+      const t = i / SAMPLE_RATE;
+      const burst = Math.exp(-(((t - 0.20) / 0.075) ** 2)) +
+        0.75 * Math.exp(-(((t - 0.43) / 0.105) ** 2));
+      filtered = filtered * 0.72 + (random() * 2 - 1) * 0.28;
+      out[i] = burst * (0.72 * filtered + 0.28 * Math.sin(2 * Math.PI * 115 * t));
+    }
+  } else {
+    for (let i = 0; i < out.length; i++) {
+      const t = i / SAMPLE_RATE;
+      const pulse = Math.max(0, Math.sin(2 * Math.PI * 4.2 * t - 0.7));
+      const fade = Math.min(1, t / 0.08, (durationMs / 1_000 - t) / 0.12);
+      const voiced = Math.sin(2 * Math.PI * 185 * t) + 0.35 * Math.sin(2 * Math.PI * 370 * t);
+      out[i] = Math.max(0, fade) * (0.75 * pulse * voiced + 0.15 * (random() * 2 - 1));
+    }
+  }
+  const level = rms(out) || 1;
+  const target = kind === 'typing' ? 0.07 : 0.09;
+  for (let i = 0; i < out.length; i++) out[i] = Math.max(-0.95, Math.min(0.95, out[i]! * target / level));
+  return out;
 }
 
 type Generator = () => number;

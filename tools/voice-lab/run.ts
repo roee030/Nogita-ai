@@ -185,5 +185,7 @@ const c = summary.conversation;
 console.log(`Answer itself p50 ${summary.meaningfulGap.p50} ms; questions ${c.questions}, answered ${c.answered}, chat only ${c.chatOnly}, ` +
   `cancelled ${c.cancelled}, stopped ${c.stopped}, lost ${c.unresolved}; early starts ${c.earlyAdopted} used / ${c.earlyRolledBack} rolled back; ` +
   `spoke over someone ${c.spokeOverPeople}`);
+if (summary.falsePauses.total) console.log(`False pauses ${summary.falsePauses.pauses}/${summary.falsePauses.total}; ` +
+  `95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%; p90 duration ${summary.falsePauses.duration.p90 ?? 'n/a'} ms`);
 console.log(`Report: ${join(out, 'report.html')}`);
 process.exit(0);

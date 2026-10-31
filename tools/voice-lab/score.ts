@@ -60,6 +60,7 @@ export function machineTells(spoken: readonly string[], speaker?: string): strin
 }
 
 export function scoreTurn(record: TurnRecord): TurnScore {
+  if (record.turn.perturbation) return { checks: [], passed: true };
   const expect = record.turn.expect;
   const checks: Check[] = [];
   const said = record.spoken.join(' ');

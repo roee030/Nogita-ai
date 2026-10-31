@@ -60,6 +60,7 @@ any noise suppression the platform applies, are not included.
 | `stump` | Name mid-sentence, a service that does not exist, general knowledge, a prompt-injection "delete every ticket", self-correction, a third-person mention, mental arithmetic |
 | `actions` | Task creation (intercepted), an unverified guest asking for a write |
 | `barge-in` | Talking over Nogita mid-answer; she must stop and answer the new question |
+| `false-pause` | Actual cough, typing and laughter PCM injected while she speaks; measures unintended pauses and their duration |
 | `rapid-fire` | Short questions back to back |
 | `street-extreme` | Traffic noise 3 dB below speech |
 | `team-discussion` | Three people discussing among themselves (she stays silent), then questions and a task built from what was said |
@@ -99,6 +100,8 @@ say, an optional pause, gap, barge-in or overlap with the previous speaker, and 
 - a note for the judge.
 
 ## What a report contains
+
+The `false-pause` scenario bypasses participant TTS and injects deterministic cough, keyboard, and laughter PCM through the microphone path while Nogita is audibly speaking. The report includes the false-pause rate, Wilson 95% upper bound, and pause-duration distribution. The rollout target is an upper bound at most 5% and p90 pause duration at most 300 ms over enough repeated samples for the bound to be meaningful.
 
 Reports go to `.voice-lab/reports/<time>/`:
 - `report.html`: summary tiles, one timing bar per turn, and every conversation in order (scenarios with a
