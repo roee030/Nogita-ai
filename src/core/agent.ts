@@ -8,6 +8,7 @@
  */
 
 import { checkCompletion, type CompletionReport, type GateCall } from './completion-gate.ts';
+import { CITE_SOURCES_PROMPT, EvidenceLedger, linkSources, tagSources, type EvidenceSource } from './evidence.ts';
 import { digestResult, MORE_OF_RESULT, MORE_OF_RESULT_SPEC, resultPage } from './result-digest.ts';
 
 export type AgentContent =
@@ -80,6 +81,10 @@ export interface AgentTurn {
    *  and the model reads the rest with `more_of_result`, instead of the result being cut at 14,000 characters.
    *  Off by default. */
   digestResults?: boolean;
+  /** Every tool result is recorded as its sources (commits, files and lines, CI runs, issues, messages) and the ledger
+   *  is returned with the result. In a chat turn (no `onSpeech`) the model cites them as [S1] and the answer ends with
+   *  numbered links; a voice turn is not told to cite, so nothing is read aloud. Off by default. */
+  evidenceLedger?: boolean;
 }
 export interface AgentResult {
   /** Text of the final model step: the answer itself. */
@@ -97,6 +102,13 @@ export interface AgentResult {
   completion: CompletionReport;
   /** Why the turn stopped before the model finished: out of time, or a tool call still cut off after the retry. */
   interrupted?: 'deadline' | 'cut_off';
+  /** With `evidenceLedger`: every source the tool results rested on, in the order found. */
+  evidence?: AgentEvidence;
+}
+export interface AgentEvidence {
+  sources: EvidenceSource[];
+  /** Ids of the sources the chat answer cites, in order; empty in a voice turn. */
+  cited: string[];
 }
 export interface AgentStepStop {
   step: number;
@@ -203,8 +215,10 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const gateCalls: GateCall[] = [];
   const stored = new Map<string, string>();
   const toolbox = turn.digestResults ? withResultPaging(turn.toolbox, stored) : turn.toolbox;
-  const resultContent = (name: string, outcome: ToolOutcome): string => {
-    const content = outcome.content || '(empty)';
+  const ledger = turn.evidenceLedger ? new EvidenceLedger() : undefined;
+  const citeSources = ledger !== undefined && !turn.onSpeech;
+  const resultContent = (name: string, outcome: ToolOutcome, sources: readonly EvidenceSource[]): string => {
+    const content = citeSources && sources.length ? tagSources(outcome.content || '(empty)', sources) : outcome.content || '(empty)';
     if (!turn.digestResults || outcome.isError || name === MORE_OF_RESULT || content.length <= MAX_TOOL_RESULT_CHARS) {
       return truncate(content);
     }
@@ -217,12 +231,18 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const result = (stoppedEarly: boolean): AgentResult =>
     ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops,
       completion: checkCompletion(turn.request, gateCalls) });
+  const withEvidence = (done: AgentResult): AgentResult => {
+    if (!ledger) return done;
+    if (!citeSources || !done.answer) return { ...done, evidence: { sources: ledger.list(), cited: [] } };
+    const linked = linkSources(done.answer, ledger);
+    return { ...done, answer: linked.text, evidence: { sources: ledger.list(), cited: linked.cited } };
+  };
   const cutShort = (interrupted: 'deadline' | 'cut_off', step: number): AgentResult => {
     const done = result(true);
-    if (!turn.honestShortfall) return { ...done, interrupted };
+    if (!turn.honestShortfall) return withEvidence({ ...done, interrupted });
     const line = shortfallLine(done.completion, gateCalls, interrupted);
     turn.onSpeech?.(line, step);
-    return { ...done, answer: answer ? `${answer} ${line}` : line, interrupted };
+    return withEvidence({ ...done, answer: answer ? `${answer} ${line}` : line, interrupted });
   };
   for (; steps < maxSteps; steps++) {
     turn.signal?.throwIfAborted();
@@ -237,10 +257,10 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       const requestStarted = now();
       const response = await model.streamChat({
         stableSystem: turn.stableSystem,
-        turnSystem: lastStep
+        turnSystem: (lastStep
           ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.` +
             (turn.honestShortfall ? ' If something they asked for is not done, say what, and offer to finish it.' : '')
-          : turn.turnSystem,
+          : turn.turnSystem) + (citeSources && ledger!.size ? `\n${CITE_SOURCES_PROMPT}` : ''),
         messages, tools: lastStep ? [] : toolbox.specs, maxTokens,
         usageContext: turn.usageContext, timeoutMs: Math.min(30_000, deadline - (now() - started)), signal: turn.signal,
       }, delta => {
@@ -276,7 +296,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       answer = text;
       steps++;
       // A tool call that was still cut off after the retry did not run: the turn did not finish.
-      return dropped !== undefined ? cutShort('cut_off', step) : result(false);
+      return dropped !== undefined ? cutShort('cut_off', step) : withEvidence(result(false));
     }
     if (text) prefaces.push(text);
     turn.onToolUse?.(uses.map(use => use.name), step, uses.map(use => ({ name: use.name, input: use.input ?? {} })));
@@ -293,8 +313,13 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       results.set(use.id, await safeRun(toolbox, use));
     }
     toolCalls.push(...uses.map(use => use.name));
+    const sources = new Map<string, EvidenceSource[]>();
     for (const use of uses) {
       const outcome = results.get(use.id)!;
+      // A page of a large result is not a new source: its sources were recorded when the result came in.
+      if (ledger && !outcome.isError && use.name !== MORE_OF_RESULT) {
+        sources.set(use.id, ledger.record(use.name, use.input ?? {}, outcome.content || '', step));
+      }
       gateCalls.push({ name: use.name, input: use.input ?? {}, outcome, write: toolbox.isWrite(use.name) });
       const content = (outcome.content || '(empty)').replace(/\s+/g, ' ');
       lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
@@ -304,7 +329,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     messages.push({ role: 'user', content: [
       ...uses.map(use => {
         const outcome = results.get(use.id)!;
-        return { type: 'tool_result' as const, tool_use_id: use.id, content: resultContent(use.name, outcome),
+        return { type: 'tool_result' as const, tool_use_id: use.id, content: resultContent(use.name, outcome, sources.get(use.id) ?? []),
           ...(outcome.isError ? { is_error: true } : {}) };
       }),
       ...(dropped ? [{ type: 'text' as const, text: `Your ${dropped.name} call was cut off by the output limit and did not run. ` +
@@ -314,7 +339,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
         'what was not and why, and offer to finish it. Never say all of it is done.' }] : []),
     ] });
   }
-  return result(false);
+  return withEvidence(result(false));
 }
 
 type ToolUse = Extract<AgentContent, { type: 'tool_use' }>;
