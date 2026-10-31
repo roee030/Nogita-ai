@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runAgent, type AgentToolbox, type ChatModel } from '../../src/core/agent.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from '../../src/core/agent-prompt.ts';
+import type { RepoActivity } from '../../src/core/contracts.ts';
 import { teamPeriod, UTC_TEAM, type TeamTime } from '../../src/core/team-time.ts';
 
 const execFileAsync = promisify(execFile);
@@ -68,6 +69,20 @@ export function assertRepositoryMatches(remoteUrl: string, repository: string, e
   }
 }
 
+export function assertActivityMatchesTruth(activity: RepoActivity, truth: ResearchGroundTruth): void {
+  if (activity.truncated) throw new Error('Live GitHub activity is truncated; the research gate cannot establish complete ground truth');
+  const localCommits = new Set(truth.commits.map(commit => commit.sha.toLowerCase()));
+  const liveCommits = new Set(activity.commits.map(commit => commit.sha.toLowerCase()));
+  if (localCommits.size !== liveCommits.size || [...localCommits].some(sha => !liveCommits.has(sha))) {
+    throw new Error('Live GitHub activity differs from local git ground truth for commits');
+  }
+  const localPulls = new Set(truth.pullRequests);
+  const livePulls = new Set(activity.mergedPullRequests.map(pull => pull.number));
+  if (localPulls.size !== livePulls.size || [...localPulls].some(number => !livePulls.has(number))) {
+    throw new Error('Live GitHub activity differs from local git ground truth for PRs');
+  }
+}
+
 export function scoreCoverage(answer: string, truth: ResearchGroundTruth): ResearchCoverage {
   const foundCommits = truth.commits.map(commit => commit.sha.slice(0, 7)).filter(sha => answer.toLowerCase().includes(sha.toLowerCase()));
   const missingCommits = truth.commits.map(commit => commit.sha.slice(0, 7)).filter(sha => !foundCommits.includes(sha));
@@ -88,6 +103,7 @@ export async function readGitGroundTruth(period: ResearchPeriod, options: {
   const args = ['log', options.branch, `--since=${range.since}`, `--until=${range.until}`, '--format=%H%x1f%s', '--no-decorate'];
   const git = options.git ?? (async command => (await execFileAsync('git', command, { encoding: 'utf8' })).stdout);
   const remoteUrl = (await git(['remote', 'get-url', 'origin'])).trim();
+  await git(['fetch', '--quiet', 'origin', gitRefToBranch(options.branch)]);
   const output = await git(args);
   return { ...parseGitLog(output, { branch: options.branch, since: range.since, until: range.until }), remoteUrl };
 }

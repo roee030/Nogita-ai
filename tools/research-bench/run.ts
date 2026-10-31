@@ -9,7 +9,7 @@ import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadDotEnv, createDependencies } from '../../src/app/config.ts';
 import { buildToolbox } from '../../src/core/agent-tools.ts';
-import { assertRepositoryMatches, formatResearchReport, gitRefToBranch, readGitGroundTruth, runResearchScenario,
+import { assertActivityMatchesTruth, assertRepositoryMatches, formatResearchReport, gitRefToBranch, readGitGroundTruth, runResearchScenario,
   type ResearchPeriod } from './index.ts';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -42,6 +42,7 @@ for (const period of periods) {
   const truth = await readGitGroundTruth(period, { branch: values.branch!, team, now: benchmarkNow });
   const liveActivity = await dependencies.code.repoActivity({ since: truth.since, until: truth.until, branch: liveBranch });
   assertRepositoryMatches(truth.remoteUrl, liveActivity.repository, liveBranch, liveActivity.branch);
+  assertActivityMatchesTruth(liveActivity, truth);
   const request = `Nogita, what landed in the repository on branch ${liveBranch} ${period === 'today' ? 'today' : 'this week'}? ` +
     'Include every commit with its short SHA and every merged pull request with its PR number.';
   const { toolbox } = buildToolbox({ actor, request, sessionId: 'research-bench', eventId: `research-${period}`,

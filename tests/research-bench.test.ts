@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRepositoryMatches, formatResearchReport, gitRefToBranch, parseGitLog, readGitGroundTruth, scoreCoverage, runResearchScenario,
+import { assertActivityMatchesTruth, assertRepositoryMatches, formatResearchReport, gitRefToBranch, parseGitLog,
+  readGitGroundTruth, scoreCoverage, runResearchScenario,
   type ResearchGroundTruth, type ResearchScenarioResult } from '../tools/research-bench/index.ts';
 import type { AgentToolbox, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
 
@@ -57,6 +58,17 @@ test('local git refs map to the live GitHub branch and repository mismatches sto
   assert.throws(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'release', 'main'), /different branch/);
 });
 
+test('live GitHub activity must contain exactly the commits and PRs used as git ground truth', () => {
+  const activity = { repository: 'acme/app', branch: 'main', since: truth.since, until: truth.until,
+    commits: truth.commits.map(commit => ({ ...commit, url: '', author: '', date: '' })),
+    mergedPullRequests: truth.pullRequests.map(number => ({ number, url: '', title: '', body: '', author: '', mergedAt: '' })),
+    truncated: false };
+  assert.doesNotThrow(() => assertActivityMatchesTruth(activity, truth));
+  assert.throws(() => assertActivityMatchesTruth({ ...activity, commits: activity.commits.slice(1) }, truth), /activity differs.*commit/i);
+  assert.throws(() => assertActivityMatchesTruth({ ...activity, mergedPullRequests: [] }, truth), /activity differs.*PR/i);
+  assert.throws(() => assertActivityMatchesTruth({ ...activity, truncated: true }, truth), /truncated/i);
+});
+
 test('coverage requires every short commit SHA and every PR number in the complete answer', () => {
   const complete = scoreCoverage('Landed: 1234567 in #34, then abcdef0 in PR #35.', truth);
   assert.equal(complete.passed, true);
@@ -110,7 +122,7 @@ test('ground truth reads the requested live branch with team-calendar period bou
     },
   });
 
-  assert.deepEqual(calls, [['remote', 'get-url', 'origin'], [
+  assert.deepEqual(calls, [['remote', 'get-url', 'origin'], ['fetch', '--quiet', 'origin', 'main'], [
     'log', 'origin/main', '--since=2026-10-30T22:00:00.000Z', '--until=2026-10-31T15:00:00.000Z',
     '--format=%H%x1f%s', '--no-decorate',
   ]]);
