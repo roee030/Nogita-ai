@@ -72,6 +72,9 @@ export interface AgentTurn {
   now?: () => number;
   /** The person's words this turn: the completion gate counts the actions they asked for in them. */
   request?: string;
+  /** Say honestly what is missing: the model is told after a write step what is still not done, and a turn cut short
+   *  (deadline, a tool call cut off) ends with a line saying so and offering to continue. Off by default. */
+  honestShortfall?: boolean;
 }
 export interface AgentResult {
   /** Text of the final model step: the answer itself. */
@@ -87,6 +90,8 @@ export interface AgentResult {
   stops: AgentStepStop[];
   /** Asked-for actions compared with what the tools did; `complete: false` means the turn is not a success. */
   completion: CompletionReport;
+  /** Why the turn stopped before the model finished: out of time, or a tool call still cut off after the retry. */
+  interrupted?: 'deadline' | 'cut_off';
 }
 export interface AgentStepStop {
   step: number;
@@ -179,9 +184,16 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const result = (stoppedEarly: boolean): AgentResult =>
     ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops,
       completion: checkCompletion(turn.request, gateCalls) });
+  const cutShort = (interrupted: 'deadline' | 'cut_off', step: number): AgentResult => {
+    const done = result(true);
+    if (!turn.honestShortfall) return { ...done, interrupted };
+    const line = shortfallLine(done.completion, gateCalls, interrupted);
+    turn.onSpeech?.(line, step);
+    return { ...done, answer: answer ? `${answer} ${line}` : line, interrupted };
+  };
   for (; steps < maxSteps; steps++) {
     turn.signal?.throwIfAborted();
-    if (deadline - (now() - started) < 1_500) return result(true);
+    if (deadline - (now() - started) < 1_500) return cutShort('deadline', steps);
     const step = steps;
     const lastStep = steps === maxSteps - 1;
     let firstText = false;
@@ -193,7 +205,8 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       const response = await model.streamChat({
         stableSystem: turn.stableSystem,
         turnSystem: lastStep
-          ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.`
+          ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.` +
+            (turn.honestShortfall ? ' If something they asked for is not done, say what, and offer to finish it.' : '')
           : turn.turnSystem,
         messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens,
         usageContext: turn.usageContext, timeoutMs: Math.min(30_000, deadline - (now() - started)), signal: turn.signal,
@@ -230,7 +243,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       answer = text;
       steps++;
       // A tool call that was still cut off after the retry did not run: the turn did not finish.
-      return result(dropped !== undefined);
+      return dropped !== undefined ? cutShort('cut_off', step) : result(false);
     }
     if (text) prefaces.push(text);
     turn.onToolUse?.(uses.map(use => use.name), step, uses.map(use => ({ name: use.name, input: use.input ?? {} })));
@@ -254,6 +267,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
         (content.length > MAX_LOOKUP_NOTE_CHARS ? `${content.slice(0, MAX_LOOKUP_NOTE_CHARS)}...` : content));
     }
+    const stillMissing = turn.honestShortfall && writes.length ? checkCompletion(turn.request, gateCalls).missing : [];
     messages.push({ role: 'user', content: [
       ...uses.map(use => {
         const outcome = results.get(use.id)!;
@@ -262,12 +276,28 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       }),
       ...(dropped ? [{ type: 'text' as const, text: `Your ${dropped.name} call was cut off by the output limit and did not run. ` +
         'Call it again if it is still needed.' }] : []),
+      ...(stillMissing.length ? [{ type: 'text' as const, text: `Not done yet: ${stillMissing.join('; ')}. ` +
+        'Do not redo what already succeeded. Fix and retry what failed if you can; otherwise say plainly what was done, ' +
+        'what was not and why, and offer to finish it. Never say all of it is done.' }] : []),
     ] });
   }
   return result(false);
 }
 
 type ToolUse = Extract<AgentContent, { type: 'tool_use' }>;
+
+/** The closing line of a turn cut short: what got done, that the rest did not, and an offer to continue. */
+export function shortfallLine(completion: CompletionReport, calls: readonly GateCall[], why: 'deadline' | 'cut_off'): string {
+  const stopped = why === 'deadline' ? 'ran out of time' : 'got cut off';
+  const { requestedTasks, createdTasks } = completion;
+  if (requestedTasks !== undefined && createdTasks > 0 && createdTasks < requestedTasks) {
+    return `I opened ${createdTasks} of the ${requestedTasks} tasks, then ${stopped} before the rest. Want me to finish them?`;
+  }
+  if (calls.some(call => call.write && !call.outcome.isError)) {
+    return `I got part of it done, then ${stopped} before the rest. Want me to keep going?`;
+  }
+  return `Sorry, I ${stopped} before I could finish that. Want me to keep going?`;
+}
 
 /**
  * The tool calls that were written out whole. Output cut off by `max_tokens` ends inside its last block, so a tool
