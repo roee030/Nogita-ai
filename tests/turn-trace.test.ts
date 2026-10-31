@@ -14,7 +14,7 @@ test('turn trace keeps operational metadata but no transcript text', async () =>
     ms: 321,
     result: {
       answer: 'secret final answer', preface: 'secret lead-in', lookups: ['secret tool output'],
-      toolCalls: ['search_code'], steps: 2, stoppedEarly: true,
+      toolCalls: ['search_code'], steps: 2, stoppedEarly: true, completion: { complete: true, createdTasks: 0, missing: [] },
       stops: [
         { step: 0, stopReason: 'max_tokens', maxTokens: 2_000, droppedToolCall: 'read_file' },
         { step: 1, stopReason: 'end_turn', maxTokens: 600 },
