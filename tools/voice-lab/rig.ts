@@ -160,7 +160,7 @@ export class VoiceRig {
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
       deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel,
-      warmSpeech: warmup === 'production', fluxEndOfTurnThreshold: this.options.eotThreshold,
+      warmSpeech: warmup === 'production', turnTakingV2: true, fluxEndOfTurnThreshold: this.options.eotThreshold,
       fluxEagerEndOfTurnThreshold: this.options.eagerThreshold,
       createWebSocket: this.options.createWebSocket ?? ((url, options) => {
         // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
@@ -250,6 +250,8 @@ export class VoiceRig {
     });
     this.engine = new NogitaEngine(this.options.dependencies, { ...this.options.engineOptions,
       agentCacheWarmup: warmup === 'production',
+      floor: { ...this.options.engineOptions?.floor,
+        talkingMs: this.options.engineOptions?.floor?.talkingMs ?? 3_000 },
       onActivity: (sessionId, activity) => {
         this.options.engineOptions?.onActivity?.(sessionId, activity);
         if (activity.kind === 'model_first_text') this.log('model_first_text', {

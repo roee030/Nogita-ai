@@ -242,7 +242,7 @@ test('a cut-off answer stays paused through a mid-turn silence until the speaker
   };
   const said: string[] = [];
   let interrupt!: (result: SpeakResult) => void;
-  const floor = new SpeechFloor({ now: () => now, schedule,
+  const floor = new SpeechFloor({ now: () => now, schedule, talkingMs: 3_000,
     cancel: handle => { (handle as { cancelled: boolean }).cancelled = true; }, resumeAfterMs: 0,
     speak: async text => {
       said.push(text);

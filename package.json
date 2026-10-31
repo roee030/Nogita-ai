@@ -20,11 +20,11 @@
     "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts"
   },
   "devDependencies": {
+    "@cartesia/cartesia-js": "^4.2.0",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@cartesia/cartesia-js": "^4.2.0",
     "@slack/socket-mode": "^2.0.4",
     "ws": "^8.22.0"
   }

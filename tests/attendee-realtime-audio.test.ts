@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasFluxSpeechActivity, hasNova3SpeechActivity, parseAttendeeAudioFrame,
-  verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub, isBackchannel } from '../src/app/attendee-realtime-audio.ts';
+  verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub, isBackchannel, turnTakingProfile } from '../src/app/attendee-realtime-audio.ts';
 
 /** A speaking-level tone; silence would be rejected by the own-voice gate. */
 function voiceChunk(amplitude = 0.2, durationMs = 100): string {
@@ -15,6 +15,11 @@ function voiceChunk(amplitude = 0.2, durationMs = 100): string {
   for (let i = 0; i < samples; i++) pcm.writeInt16LE(Math.round(amplitude * 32767 * Math.sin(2 * Math.PI * 220 * i / 16000)), i * 2);
   return pcm.toString('base64');
 }
+
+test('turn-taking v2 is an explicit coherent profile, not the realtime-audio default', () => {
+  assert.deepEqual(turnTakingProfile(false), { ownVoiceGateMs: 100, ownVoicePeakRatio: 0.5, pauseAndClassify: false });
+  assert.deepEqual(turnTakingProfile(true), { ownVoiceGateMs: 80, ownVoicePeakRatio: 0.35, pauseAndClassify: true });
+});
 
 test('audio socket URL is WSS-only and signed for one meeting session', () => {
   const url = createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'meeting-1');
@@ -472,7 +477,7 @@ test('a short recognized backchannel does not interrupt an in-progress answer', 
   let tts!: FakeProviderSocket;
   const frames: unknown[] = [];
   const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
-    signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode: 'flux-english', onTranscript: () => {},
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode: 'flux-english', turnTakingV2: true, onTranscript: () => {},
     createWebSocket: url => {
       const socket = new FakeProviderSocket();
       if (url.includes('/listen')) stt = socket;
@@ -531,7 +536,7 @@ test('own voice pauses output within 300 ms, then sustained speech cancels if re
   const interrupts: Array<{ latencyMs?: number }> = [];
   const pauses: Array<{ latencyMs: number; remainingMs: number }> = [];
   const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
-    signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', turnTakingV2: true, onTranscript: () => {},
     now: () => clock, onInterrupt: (_sessionId, event) => interrupts.push(event),
     onSpeechPause: (_sessionId, event) => pauses.push(event),
     createWebSocket: url => {
