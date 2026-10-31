@@ -376,4 +376,7 @@ test('machine tells: what gives her away as a bot in what she said aloud', () =>
   assert.deepEqual(machineTells(['Follow-up questions without my name don\'t activate me.'], 'Roee'), ['explains her own mechanics']);
   assert.deepEqual(machineTells(["I'll look at the attendee lifecycle and command router to walk you through it accurately."], 'Roee'), ['narrates her plan']);
   assert.deepEqual(machineTells(['The usual fix is to back off and reduce request volume or'], 'Roee'), ['stops mid-sentence']);
+  // Seen in the 2026-10-31 baselines while "sounded human" still read 12/12.
+  assert.deepEqual(machineTells(["Avi is addressing Roy, not me, so I'll stay quiet on this one."], 'Dana'), ['reasons aloud']);
+  assert.deepEqual(machineTells(['Nogita speaks only when someone addresses it by name.'], 'Roee'), ['calls herself Nogita']);
 });

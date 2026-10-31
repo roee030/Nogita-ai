@@ -7,8 +7,9 @@ import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { PhrasePicker, toSpoken } from './spoken.ts';
+import { stripReasoningAloud } from './speech-guard.ts';
 import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
-  isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, removeAddress } from './policy.ts';
+  isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
 interface Session {
   meeting: MeetingPort;
@@ -218,15 +219,41 @@ function isCourtesyClose(text: string): boolean {
 }
 /** "Dana, ...", "... right, Dana?", "Guys, ...": the words are for someone else, not for her. */
 export function addressesSomeoneElse(text: string, names: Iterable<string>): boolean {
+  const known = [...names].filter(name => name.length > 1 && name.toLowerCase() !== 'nogita');
   const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
-  const vocatives = ['guys', 'everyone', 'everybody', 'team', 'folks', 'you all', "y'all"];
-  for (const name of names) {
-    const n = name.toLowerCase();
-    if (n.length > 1 && n !== 'nogita') vocatives.push(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  }
+  const vocatives = ['guys', 'everyone', 'everybody', 'team', 'folks', 'you all', "y'all",
+    ...known.map(name => name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))];
   const who = `(?:${vocatives.join('|')})`;
-  return new RegExp(`^(?:(?:hey|so|okay|ok|and|um|uh|well)[,\\s]+)?${who}[,:!?]`).test(t) ||
-    new RegExp(`,\\s*${who}[.?!]*$`).test(t);
+  if (new RegExp(`^(?:(?:hey|so|okay|ok|and|um|uh|well)[,\\s]+)?${who}[,:!?]`).test(t) ||
+    new RegExp(`,\\s*${who}[.?!]*$`).test(t)) return true;
+  if (/^nogita\b/i.test(normalizeWakeWord(text.trim()))) return false;
+  const trimmed = text.trim();
+  const vocative = /^(?:(?:hey|so|okay|ok|and|um|uh|well)[,\s]+)?([\p{L}'-]+)[,:!?]\s/iu.exec(trimmed)?.[1]
+    ?? /,\s*([\p{L}'-]+)[.?!]*$/u.exec(trimmed)?.[1];
+  if (!vocative || NOT_A_NAME.has(vocative.toLowerCase()) || /ly$/i.test(vocative)) return false;
+  // Recognition spells names its own way ("Roy" for Roee, "Donna" for Dana): a vocative that sounds like a teammate.
+  if (known.some(name => soundsLike(vocative, name))) return true;
+  // "Yossi, did you push it?": a capitalized name opening a question to "you" is for that person, known or not.
+  return /^\p{Lu}/u.test(vocative) && trimmed.startsWith(vocative) && /\b(?:you|your|you're|you've|you'll)\b/i.test(trimmed);
+}
+/** Words that open a sentence with a comma without naming anyone. */
+const NOT_A_NAME = new Set(['sorry', 'thanks', 'thank', 'okay', 'ok', 'alright', 'so', 'well', 'yeah', 'yes', 'yep', 'no', 'nope',
+  'hey', 'hi', 'hello', 'also', 'actually', 'wait', 'hmm', 'um', 'uh', 'right', 'cool', 'great', 'nice', 'perfect', 'good', 'fine',
+  'sure', 'true', 'exactly', 'agreed', 'anyway', 'listen', 'look', 'oh', 'ah', 'please', 'then', 'now', 'first', 'second', 'next',
+  'however', 'meanwhile', 'plus', 'again', 'besides', 'btw', 'awesome', 'interesting', 'wow', 'yesterday', 'today', 'tomorrow',
+  'tonight', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'and', 'but', 'or', 'because', 'if',
+  'what', 'why', 'how', 'when', 'where', 'who', 'which', 'ready', 'done', 'quick', 'question', 'guys', 'team', 'folks', 'everyone']);
+/** A rough phonetic match for short first names: same first sound, same consonant skeleton, similar length. */
+function soundsLike(a: string, b: string): boolean {
+  const key = (word: string) => {
+    const w = word.toLowerCase().replace(/[^a-z]/g, '');
+    const groups: Array<[RegExp, string]> = [[/[bfpv]/g, '1'], [/[cgjkqsxz]/g, '2'], [/[dt]/g, '3'], [/l/g, '4'], [/[mn]/g, '5'], [/r/g, '6']];
+    let rest = w.slice(1);
+    for (const [pattern, code] of groups) rest = rest.replace(pattern, code);
+    return { first: /^[aeiouy]/.test(w) ? 'a' : w[0] ?? '', skeleton: rest.replace(/[^1-6]/g, '').replace(/(\d)\1+/g, '$1'), length: w.length };
+  };
+  const x = key(a), y = key(b);
+  return !!x.first && x.first === y.first && x.skeleton === y.skeleton && Math.abs(x.length - y.length) <= 2;
 }
 /** "No, I meant the mobile app", "Actually, I'm asking about staging": a correction of the speaker's own question. */
 export function looksLikeCorrection(text: string): boolean {
@@ -844,7 +871,10 @@ export class NogitaEngine {
         if (!await this.deliverStreamedSpeech(sessionId, s.meeting, text)) interrupted = true;
       });
     };
-    const onSpeech = (raw: string, step: number) => {
+    const onSpeech = (chunk: string, step: number) => {
+      // Deliberation is not speech: dropped before it counts as having spoken.
+      const raw = stripReasoningAloud(chunk);
+      if (!raw) return;
       if (!spoke) {
         spoke = true;
         this.clearProgressTimer(s);
@@ -936,7 +966,8 @@ export class NogitaEngine {
     // A speculative answer waits here until the turn is confirmed (or rolled back).
     if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
     if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
-    let answer = result.answer;
+    // Only deliberation ("not addressed to me, so I'll stay quiet") is no reply: nothing goes to chat or history.
+    let answer = stripReasoningAloud(result.answer);
     if (!answer && result.stoppedEarly) answer = 'This is taking me too long. Can you narrow it down a bit?';
     if (floor && q && answer && !result.answer) queueSpeech(answer, result.steps);
     await speech;

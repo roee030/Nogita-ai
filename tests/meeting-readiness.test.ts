@@ -76,6 +76,24 @@ test('words addressed to someone else by name, or to the group, are recognised',
     assert.equal(addressesSomeoneElse(text, names), false, text);
 });
 
+test('a teammate is recognised however speech recognition spells the name', () => {
+  // Voice lab, crosstalk: "Roee, did you see..." was heard as "Roy, ..." and opened a question for her.
+  const names = ['Roee', 'Dana'];
+  for (const text of ['Roy, did you see the build failure on main this morning?', 'Donna, can you take this one?', 'Is that done, Roy?'])
+    assert.equal(addressesSomeoneElse(text, names), true, text);
+  for (const text of ['Right, and which one is older?', 'So, what about staging?', 'Really, how long does it take?', 'Ready to ship it?'])
+    assert.equal(addressesSomeoneElse(text, names), false, text);
+});
+
+test('a name she never heard, followed by a question to "you", is for that person', () => {
+  for (const text of ['Yossi, did you push the fix?', 'Michal, are you taking the on-call?'])
+    assert.equal(addressesSomeoneElse(text, []), true, text);
+  // Interjections, adverbs and her own name stay hers.
+  for (const text of ['Sorry, can you repeat that?', 'Actually, could you check staging?', 'Honestly, do you think it scales?',
+    'Thanks, can you post it?', 'Nogita, can you check?', 'Nokita, do you see it?', 'Monday, can you remind us?', 'Okay, what do you think?'])
+    assert.equal(addressesSomeoneElse(text, []), false, text);
+});
+
 test('corrections are told apart from new questions', () => {
   for (const text of ['No, I meant the mobile app.', 'Actually, I mean staging.', "Sorry, I'm asking about the iOS build", 'No, the other one.'])
     assert.equal(looksLikeCorrection(text), true, text);
@@ -98,6 +116,23 @@ test('group meeting: the follow-up window closes once someone else spoke', async
   assert.equal(await f.engine.onUtterance('s', { text: 'Which one is older?', eventId: '3', actor: roee }), 'ignored');
   assert.equal(model.calls(), calls);
   assert.deepEqual(f.meeting.spoken, ['Two tasks are open.']);
+});
+
+test('a reply that only reasons about who was addressed is silence: nothing spoken, nothing in chat', async () => {
+  const model = new ScriptedModel([
+    { match: /open tasks/, text: 'Two tasks are open.' },
+    { match: /deploy/, text: "Dana is addressing the team, not me, so I'll stay quiet on this one." },
+    { match: /cache/, text: "This message is addressed to me by name, so I'll answer it. The cache lives in the GitHub adapter." },
+  ]);
+  const f = fixture(model, 5);
+  await f.engine.startSession('s', f.meeting);
+  await f.engine.onUtterance('s', { text: 'Nogita, what are the open tasks?', eventId: '1', actor: roee });
+  await f.engine.onUtterance('s', { text: 'Should we deploy today?', eventId: '2', actor: roee });
+  await f.engine.onUtterance('s', { text: 'Nogita, where is the cache?', eventId: '3', actor: roee });
+  await until(() => f.meeting.spoken.length >= 2);
+  assert.deepEqual(f.meeting.spoken, ['Two tasks are open.', 'The cache lives in the GitHub adapter.']);
+  const chat = f.meeting.events.filter(event => event.type === 'chat').map(event => event.text ?? '');
+  assert.ok(!chat.some(text => /addressing|addressed to me|stay quiet/.test(text)), chat.join(' | '));
 });
 
 test('group meeting: within the window, words to another person by name and a "yeah" do not reach her', async () => {
