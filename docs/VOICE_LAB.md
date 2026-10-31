@@ -13,6 +13,7 @@ npm run voice-lab -- --stt flux-english            # compare speech recognition 
 npm run voice-lab -- --eot 0.8                     # Flux end-of-turn threshold (default 0.8)
 npm run voice-lab -- --stt flux-english --eager 0.5  # start answering at Flux's early end-of-turn (production default)
 npm run voice-lab -- --scenario stalled-speaker --incomplete-hold-ms 2500  # experimental incomplete-prefix hold
+npm run voice-lab -- --scenario false-pause,backchannels,barge-in --turn-taking legacy  # rollback profile (default v2)
 npm run voice-lab -- --scenario actions --live-writes   # really create the Jira tasks it asks for
 npm run voice-lab -- --scenario=solo-quick --warmup=production  # production prompt + TTS warmup
 npm run voice-lab -- --scenario=solo-quick --warmup=cold        # no proactive prompt/TTS warmup

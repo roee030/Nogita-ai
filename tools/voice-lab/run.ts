@@ -29,7 +29,7 @@ const { values } = parseArgs({ options: {
   stt: { type: 'string' }, noise: { type: 'string' }, snr: { type: 'string' },
   'router-quiet-ms': { type: 'string' }, 'frame-ms': { type: 'string' }, out: { type: 'string' },
   'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' }, eager: { type: 'string' },
-  'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, warmup: { type: 'string' },
+  'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
 } });
 
 if (values.list) {
@@ -68,6 +68,8 @@ const routerQuietMs = values['router-quiet-ms'] ? Number(values['router-quiet-ms
 const frameMs = values['frame-ms'] ? Number(values['frame-ms']) : 20;
 const incompleteTurnHoldMs = Number(values['incomplete-hold-ms'] ?? env.NOGITA_INCOMPLETE_TURN_HOLD_MS ?? 0);
 const earlyCommitMs = Number(values['early-commit-ms'] ?? env.NOGITA_EARLY_COMMIT_MS ?? 0);
+const turnTaking = values['turn-taking'] ?? 'v2';
+if (turnTaking !== 'v2' && turnTaking !== 'legacy') throw new Error('--turn-taking must be v2 or legacy');
 const warmup = parseWarmupMode(values.warmup);
 
 // Writes are logged on the running rig. By default they never leave the lab and get a placeholder receipt;
@@ -129,7 +131,7 @@ if (dependencies.code.prepare) await dependencies.code.prepare();
 const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
   routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
-  eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs), earlyCommitMs: String(earlyCommitMs),
+  eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs), earlyCommitMs: String(earlyCommitMs), turnTaking,
   warmup,
   thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
@@ -139,7 +141,7 @@ for (const scenario of scenarios) {
   const audio: Float32Array[] = [];
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
-    dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, earlyCommitMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+    dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, earlyCommitMs, turnTakingV2: turnTaking === 'v2', frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
     warmup,
     eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
