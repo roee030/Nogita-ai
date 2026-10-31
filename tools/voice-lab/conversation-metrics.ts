@@ -102,7 +102,9 @@ export function conversationStats(logs: ReadonlyArray<readonly LabEvent[]>): Con
     }
     // Starting to speak while someone is mid-sentence (they started more than a moment before her).
     const intervals = speechIntervals(events);
-    stats.spokeOverPeople += events.filter(event => event.type === 'audio_start' &&
+    const tracedStarts = events.filter(event => event.type === 'playback_received');
+    const starts = tracedStarts.length ? tracedStarts : events.filter(event => event.type === 'audio_start');
+    stats.spokeOverPeople += starts.filter(event =>
       intervals.some(([start, end]) => event.t > start + 300 && event.t < end)).length;
     const writes = events.filter(event => event.type === 'write').map(event => event.text ?? '');
     stats.duplicateWrites += writes.length - new Set(writes).size;

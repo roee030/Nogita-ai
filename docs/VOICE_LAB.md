@@ -12,7 +12,11 @@ npm run voice-lab -- --noise cafe --snr 0          # same questions, louder room
 npm run voice-lab -- --stt flux-english            # compare speech recognition modes
 npm run voice-lab -- --eot 0.8                     # Flux end-of-turn threshold (default 0.8)
 npm run voice-lab -- --stt flux-english --eager 0.5  # start answering at Flux's early end-of-turn (production default)
+npm run voice-lab -- --scenario stalled-speaker --incomplete-hold-ms 2500  # experimental incomplete-prefix hold
 npm run voice-lab -- --scenario actions --live-writes   # really create the Jira tasks it asks for
+npm run voice-lab -- --scenario=solo-quick --warmup=production  # production prompt + TTS warmup
+npm run voice-lab -- --scenario=solo-quick --warmup=cold        # no proactive prompt/TTS warmup
+npm run tts-benchmark -- --limit=20                  # blind Deepgram/Cartesia comparison
 ```
 
 **Requirements in `.env`:** `NOGITA_MODE=live`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY` and
@@ -24,6 +28,14 @@ and description and answered with a placeholder link, so a run never changes you
 every lookup (`search_tasks`, `search_code`, `read_file`, `recent_commits`...) is logged with its query.
 
 ## What is real and what is simulated
+
+The lab event JSON also includes `model_first_text` (question ID, model step and request-to-first-text
+milliseconds) and `eot_timing` (Flux phase and milliseconds since the last own-voice-gated frame).
+The latter is a server-side estimate: soft sentence endings may not pass the level gate. Use the lab's
+labelled speech end for acceptance, not this estimate. Tool-only model steps have no first-text sample.
+Production `turn-report` labels transcript-to-forwarded-PCM separately; it does not claim to measure
+microphone-end-to-client-playback latency. Missing timing stays unknown, and unconfirmed speculative
+attempts are excluded from user-question completion counts. See `VOICE_PARITY_ACTION_PLAN.md` for rollout gates.
 
 ```
 participant voices (Deepgram Aura-2, cached) + noise ──► lab "Attendee" WebSocket client, 20 ms frames in real time
@@ -67,6 +79,7 @@ any noise suppression the platform applies, are not included.
 | `cancel-stop` | "Actually, never mind" drops an open lookup; "Nogita, stop" ends an answer for good |
 | `asked-twice` | The same question repeated while she is still looking: one lookup, one answer |
 | `talk-over` | Two people keep talking while her answer is ready; she waits for an opening |
+| `backchannels` | Short acknowledgements ("yeah", "right", "mm-hm", "okay") while she speaks; none may stop her answer |
 
 **Noise kinds:** `quiet`, `white`, `pink`, `brown`, `hum`, `keyboard`, `office`, `cafe`, `street`. The office and
 cafe profiles mix real synthesized background chatter in other voices. Noise is set by SNR against a fixed speech
@@ -95,7 +108,8 @@ Reports go to `.voice-lab/reports/<time>/`:
   chat messages, a raised hand, the Jira task or Slack message with its full text, the result of each check
   and the judge's comment.
 - `report.md`: the same as a table.
-- `report.json`: every event.
+- `report.json`: the complete scenario event stream plus each turn's relative event
+  window, so aggregate overlap and interruption metrics remain auditable.
 - one stereo WAV per scenario: the room on the left and Nogita on the right, so you can listen to the conversation.
 
 **Timing per turn**, in milliseconds after the last spoken word:
@@ -113,6 +127,7 @@ Reports go to `.voice-lab/reports/<time>/`:
 The report also gives:
 - answer length;
 - the time Nogita takes to stop when interrupted;
+- backchannels kept, false stops and the Wilson 95% upper confidence bound (backchannels are excluded from response-gap and barge-in-stop samples);
 - the transcript's word error rate;
 - whether her name was recognized;
 - pass/fail per expectation;
@@ -130,6 +145,36 @@ The report also gives:
 
 Each scenario in `transcript.md` opens with a table of its questions and their paths, and every status change
 appears in the conversation as a `question` line.
+
+## Blind TTS benchmark
+
+`npm run tts-benchmark -- --limit=20` synthesizes the same fixed corpus with Deepgram Aura-2 and Cartesia
+Sonic 3.6. Every connection produces one cold and one warm sample; connection time is included only in the cold
+TTFA. The command writes under `.voice-lab/tts-benchmarks/<time>/`:
+
+- `report.json` and `report.md`: latency distributions and every failed request;
+- `clips/clip-NNN.wav`: randomized, provider-neutral filenames for blind listening;
+- `ratings.csv`: one provider-neutral row per clip for 1-5 naturalness, pronunciation, pacing and technical-clarity scores;
+- `manifest.private.json`: the provider/model/voice/text mapping. Keep it closed until listeners lock scores.
+
+Use `--providers=deepgram` or `--providers=cartesia`, `--deepgram-model=...`, `--cartesia-voice=...` and
+`--out=...` for a controlled rerun. The benchmark never writes API keys. Latency is diagnostic, not a quality
+decision: pick a provider only after several listeners score naturalness, pronunciation, pacing and interruption
+behavior without seeing the manifest. Cold means that this process opens a new provider connection; it cannot
+force a provider-side cache eviction.
+
+The default run uses Deepgram's global `api.deepgram.com` endpoint and the Cartesia SDK's default managed-cloud
+endpoint; neither is region-pinned. Record that fact with every comparison because region changes both latency
+and data-residency meaning. Pricing checked on 2026-10-31: Aura-2 pay-as-you-go is $0.030/1,000 characters;
+Cartesia Sonic is one credit per character, with effective self-serve rates depending on the plan (included
+credits and overages differ). The 2,975-character corpus costs about $0.089 per Deepgram pass; calculate Cartesia
+from the account's actual tier rather than assuming a universal per-character price. Sources:
+`https://deepgram.com/pricing`, `https://developers.deepgram.com/trust-security/your-data`, and
+`https://www.cartesia.ai/pricing`.
+
+Production Deepgram STT and TTS requests set `mip_opt_out=true` by default, including the benchmark's Deepgram
+requests. Set `DEEPGRAM_MIP_OPT_OUT=false` only as an explicit decision to participate in model improvement.
+Opt-out gives request-content zero retention; it does not provide regional residency on the global endpoint.
 
 ## Findings so far
 
@@ -213,10 +258,46 @@ latest report:
     - The chat note "I heard you. I'm checking that now." contradicted quick spoken answers; it is off for live voice.
     - A quoted example question in her answer (like "Nogita, how does auth work?") made the next remark look like
       a reply to her.
+20. **Barge-in trace and cancellation.** Playback now has explicit question/playback owners, and the lab measures
+    from scripted acoustic onset through the end of the last PCM frame already sent, rather than a later generic
+    gap or the earlier server decision. An 80 ms participant-level gate pauses output while preserving its queue.
+    A non-backchannel interim discards that queue; a backchannel interim resumes it; continuous speech with no
+    transcript stays paused and is abandoned after 1.5 s. This avoids the impossible requirement that semantic
+    STT classification arrive before output can stop.
+    The verified live run measured 229 ms acoustic onset-to-output-end. It still needs a consented Meet playback
+    measurement, because Attendee and the listener may add buffering outside the server.
+    A Deepgram TTS `1006` is treated as expected only within two seconds of an intentional interruption; unrelated
+    abnormal closes remain report errors.
+21. **Incomplete prefixes remain experimental.** `can you check?` can be a premature Flux turn before the object
+    of the request. A 1.5 s hold still spoke over the continuation; a 2.5 s hold avoided it in `stalled-speaker`.
+    `how many open?` is a complete colloquial question and no longer enters this hold. The flag stays off by
+    default until a wider false-hold sample supports enabling it.
+22. **Backchannels are now distinct from interruptions.** `yeah`, `right`, `mm-hm` and `okay` pause and then resume
+    an answer when interim STT identifies them. `no`, `wait`, `stop`, `actually`, `hold on` and sustained speech
+    still cancel it. A wordless Flux `StartOfTurn` only holds the pause; it no longer counts as semantic evidence
+    to cancel. The verified combined run kept 4/4 answers with zero false stops or spoke-over starts. The Wilson
+    95% upper bound is still 49%, so this controlled sample proves the path, not the <=2% release gate.
+23. **Production and cold startup are measured separately.** In `solo-quick`, cold mode passed 3/4 with first
+    response 3.28 s (p50 1.89 s, p90 3.28 s); production warmup passed 4/4 with first response 1.45 s (p50 1.81 s,
+    p90 2.56 s). A direct TTS probe showed 651-1313 ms cold versus 14-183 ms warm to first audio. These are local
+    process-start measurements, not provider cache eviction or Meet playback latency.
+24. **Same-text TTS benchmark.** A 20-text live run completed 40/40 samples. Cartesia Sonic 3.6 measured cold/warm
+    TTFA p50 751/183 ms and completion p50 1730/1148 ms; Deepgram Aura-2 Thalia measured 742/212 ms and
+    4806/4025 ms. The similar first-audio latency and different completion rate do not establish voice quality;
+    provider selection remains open until blind listening scores are recorded.
+25. **Interruption budgets use actual output end, not received PCM duration.** Network/scheduler jitter made a
+    220 ms audio-duration threshold stop at 304 ms wall time. An intermediate pause measurement then undercounted
+    the tail of the already-sent paced frame. The hub now tracks that frame's real end and the acceptance metric
+    includes it. With frame-RMS silence trimming and the 80 ms gate, `turn-taking-verified` measured 229 ms and
+    zero spoke-over starts. This is server-side evidence, not a substitute for a Meet listener measurement.
+26. **Broad warm/cold baseline.** The same 19 turns across six noisy/overlap scenarios measured cold at 17/19,
+    response p50/p90 2.66/4.07 s, and production warm at 16/19, 2.01/3.96 s. Both had zero lost questions;
+    warm had one spoke-over start versus two cold. Startup warmup improves median latency, not recognition
+    correctness. A live `Lukita` wake-word miss was added to the normalization regression set.
 
 **Known open issues:**
-- She can still begin a lead-in up to about 0.6 s after someone else starts talking (3 times in the full run): the
-  floor waits for a person's voice, but the first 100-300 ms of a new speaker are not detected yet.
+- The own-voice gate still needs a consented Meet measurement: the lab sees server forwarding stop, not audio
+  already buffered by Attendee or the listener. Its 80 ms level gate also needs a larger false-stop sample.
 - Same-person questions less than about 3 s apart are often merged by Flux into one turn (she answers both).
 - Spoken answers are long: p50 16.6 s. Every answer is also in chat; a shorter spoken limit is worth testing.
 - The judge scores each turn's own time window, so with overlapping questions an answer that lands in the next

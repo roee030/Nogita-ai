@@ -135,6 +135,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
       turnLog.record(sessionId, { type: 'question', id: event.id, status: event.status, speaker: turnLog.person(event.speaker),
+        inputTurnIds: event.inputTurnIds,
         ...(event.detail ? { detail: event.detail } : {}), request: event.request });
     },
     onScreen: (sessionId, card) => presence.show(sessionId, card),
@@ -142,9 +143,12 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
       if (activity.kind === 'tool') {
         presence.tool(sessionId, activity.questionId, activity.tools);
         turnLog.record(sessionId, { type: 'tool', ...(activity.questionId !== undefined ? { id: activity.questionId } : {}), tools: activity.tools });
+      } else if (activity.kind === 'model_first_text') {
+        turnLog.record(sessionId, { type: 'model_first_text',
+          ...(activity.questionId !== undefined ? { id: activity.questionId } : {}), step: activity.step, ms: activity.ms });
       } else presence.waiting(sessionId, activity.waiting);
     },
-    onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, phase: event.phase,
+    onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, playbackId: event.playbackId, phase: event.phase,
       ...(event.outcome ? { outcome: event.outcome } : {}), ...(event.heardMs !== undefined ? { heardMs: event.heardMs } : {}) }),
     ...(missionRunner ? { missions: missionRunner } : {}),
     // The model already said goodbye in its reply.
@@ -213,6 +217,7 @@ const attendeeCommands = new AttendeeCommandRouter(
     onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
     onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
     chatAck: !realtimeAudioEnabled,
+    incompleteTurnHoldMs: Number(env.NOGITA_INCOMPLETE_TURN_HOLD_MS || 0),
     ...(fluxStt && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
       ? { speculate: (sessionId: string, utterance: Utterance) => nogita.speculate(sessionId, utterance) } : {}),
     onLeave: sessionId => leaveMeeting(sessionId, { goodbye: true }) },
@@ -261,23 +266,31 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       baseUrl: env.ATTENDEE_AUDIO_WEBSOCKET_URL,
       signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
       deepgramApiKey: env.DEEPGRAM_API_KEY,
+      deepgramMipOptOut: env.DEEPGRAM_MIP_OPT_OUT !== 'false',
       sttMode: stt.mode, languages: meetingLanguages,
       ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
       ...(env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
         ? { fluxEagerEndOfTurnThreshold: Number(env.DEEPGRAM_EAGER_EOT_THRESHOLD || DEFAULT_EAGER_EOT_THRESHOLD) } : {}),
       onTranscript: async (sessionId, participantUuid, text, participant, recognition) => {
-        const request = transcriptRequest(sessionId, participantUuid, text, participant);
+        const request = transcriptRequest(sessionId, participantUuid, text, participant, recognition?.inputTurnId);
         turnLog.record(sessionId, { type: 'heard', speaker: turnLog.person(request.utterance.actor.displayName),
+          inputTurnId: recognition?.inputTurnId,
           addressed: directlyAddressesNogita(normalizeWakeWord(text)), verified: request.utterance.actor.verified,
           words: text.trim().split(/\s+/).length, ...(recognition?.confidence !== undefined ? { confidence: recognition.confidence } : {}), text });
         if (fluxStt) await attendeeCommands.acceptCompletedTurn(request);
         else await attendeeCommands.acceptFinal(request);
       },
       onSpeechActivity: (sessionId, participantUuid) => attendeeCommands.noteSpeechActivity(sessionId, participantUuid),
-      onEagerTranscript: (sessionId, participantUuid, text, participant) =>
-        attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant)),
+      onEagerTranscript: (sessionId, participantUuid, text, participant, inputTurnId) => {
+        // A wake-word transcript is strong speech evidence even when the conservative level gate misses a quiet
+        // opening word. Hold the floor between answer pieces; acoustic cancellation still uses the own-voice gate.
+        if (directlyAddressesNogita(normalizeWakeWord(text))) attendeeCommands.noteSpeechActivity(sessionId, participantUuid);
+        attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant, inputTurnId));
+      },
       onTurnResumed: (sessionId, participantUuid) => attendeeCommands.resumeTurn(sessionId, participantUuid),
+      onTurnTiming: (sessionId, participantUuid, event) => turnLog.record(sessionId,
+        { type: 'eot', speaker: turnLog.person(participantUuid), ...event }),
       onVoice: (sessionId, participantUuid) => {
         nogita.noteVoice(sessionId, participantUuid);
         presence.voice(sessionId, participantUuid);
@@ -287,13 +300,18 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       },
       onInputLevel: (sessionId, rms) => presence.inputLevel(sessionId, rms),
       onOutputAudio: (sessionId, pcm) => presence.outputAudio(sessionId, pcm),
-      onSpeechStart: sessionId => turnLog.record(sessionId, { type: 'audio', phase: 'start' }),
+      onSpeechStart: (sessionId, trace) => turnLog.record(sessionId, { type: 'audio', phase: 'start',
+        id: trace.questionId, playbackId: trace.playbackId, ttfaMs: trace.ttfaMs }),
       onSpeechEnd: (sessionId, end) => {
         presence.speechEnded(sessionId);
-        turnLog.record(sessionId, { type: 'audio', phase: 'end', outcome: end.outcome, playedMs: end.playedMs });
+        turnLog.record(sessionId, { type: 'audio', phase: 'end', outcome: end.outcome, playedMs: end.playedMs,
+          id: end.questionId, playbackId: end.playbackId });
       },
       onInterrupt: (sessionId, interrupt) => turnLog.record(sessionId, { type: 'interrupt', cause: interrupt.cause,
+        id: interrupt.questionId, playbackId: interrupt.playbackId,
         playedMs: interrupt.playedMs, ...(interrupt.latencyMs !== undefined ? { latencyMs: interrupt.latencyMs } : {}) }),
+      onSpeechPause: (sessionId, pause) => turnLog.record(sessionId, { type: 'audio_pause',
+        id: pause.questionId, playbackId: pause.playbackId, playedMs: pause.playedMs, latencyMs: pause.latencyMs }),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
@@ -311,12 +329,13 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
 }
 
 function transcriptRequest(sessionId: string, participantUuid: string, text: string,
-  participant?: { attendeeUserUuid?: string; displayName?: string }) {
+  participant?: { attendeeUserUuid?: string; displayName?: string }, inputTurnId?: string) {
   const mapped = participant?.attendeeUserUuid
     ? dependencies.identities.fromAttendee(participant.attendeeUserUuid) : undefined;
   return { sessionId, botId: attendeeBotsBySession.get(sessionId) ?? '',
     speakerUuid: participantUuid, ...(participant?.attendeeUserUuid ? { attendeeUserUuid: participant.attendeeUserUuid } : {}),
     utterance: { eventId: `realtime-${randomUUID()}`,
+      ...(inputTurnId ? { inputTurnIds: [inputTurnId] } : {}),
       actor: mapped ? { id: mapped.id, displayName: mapped.displayName, verified: true }
         : { id: `unmapped:attendee:${participant?.attendeeUserUuid ?? participantUuid}`,
           displayName: participant?.displayName ?? 'Meeting participant', verified: false },
@@ -348,7 +367,7 @@ function restoreAttendeeSession(sessionId: string, botId: string): void {
   const meeting = new AttendeeMeeting(sessionId, env.ATTENDEE_API_KEY ?? '',
     env.ATTENDEE_PRIVACY_REVIEWED === 'true', fetch, env.ATTENDEE_WEBHOOK_URL, undefined, synthesizeLocalMp3,
     (stage, durationMs) => sessionUsage.recordSpeechStage(sessionId, stage, durationMs), undefined,
-    realtimeAudio ? text => realtimeAudio.speak(sessionId, text) : undefined, undefined,
+    realtimeAudio ? (text, options) => realtimeAudio.speak(sessionId, text, options) : undefined, undefined,
     realtimeAudio ? () => realtimeAudio.interruptSpeech(sessionId) : undefined);
   meeting.attach(botId);
   nogita.restoreSession(sessionId, meeting);
@@ -681,7 +700,7 @@ const server = createServer(async (req, res) => {
               ? `To verify your identity for this meeting, please say: ${attendeeChallenge}`
               : undefined, synthesizeLocalMp3,
             (stage, durationMs) => sessionUsage.recordSpeechStage(payload.id!, stage, durationMs),
-            realtimeAudioUrl, realtimeAudio ? text => realtimeAudio.speak(payload.id!, text) : undefined,
+            realtimeAudioUrl, realtimeAudio ? (text, options) => realtimeAudio.speak(payload.id!, text, options) : undefined,
             presencePageUrl && presenceMode ? { url: presencePageUrl, mode: presenceMode } : undefined,
             realtimeAudio ? () => realtimeAudio.interruptSpeech(payload.id!) : undefined)
         : new DemoMeeting(payload.id);

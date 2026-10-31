@@ -65,6 +65,20 @@ function fixture(model: ChatModel, options: { meeting?: DemoMeeting; code?: Code
   return { engine, meeting, board, utter };
 }
 
+test('a cold baseline can disable the proactive agent prompt-cache warmup', async () => {
+  let warmups = 0;
+  const model = Object.assign(new ScriptedModel([]), { warmCache: async () => { warmups++; } });
+  const meeting = new RecordingMeeting('cold');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead'])), agent: model, people },
+  { agentCacheWarmup: false, schedule: () => 0, cancel: () => undefined });
+
+  await engine.startSession('cold', meeting);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(warmups, 0);
+  await engine.endSession('cold');
+});
+
 test('speech chunker releases the first sentence at once and batches the rest', () => {
   const out: string[] = [];
   const chunker = new SpeechChunker(text => out.push(text), 40);

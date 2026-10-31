@@ -11,7 +11,8 @@ import { WebSocket } from 'ws';
 import { AttendeeRealtimeAudioHub, type RealtimeAudioOptions } from '../../src/app/attendee-realtime-audio.ts';
 import { AttendeeCommandRouter } from '../../src/app/attendee-command-router.ts';
 import { NogitaEngine, type NogitaEngineOptions, type Speculation } from '../../src/core/engine.ts';
-import type { ActionReceipt, Actor, Capability, MeetingPort, SpeakOptions, Utterance } from '../../src/core/contracts.ts';
+import type { ActionReceipt, Actor, Capability, MeetingPort, SpeakOptions, SpeechTrace, Utterance } from '../../src/core/contracts.ts';
+import { directlyAddressesNogita, normalizeWakeWord } from '../../src/core/policy.ts';
 import { FRAME_SAMPLES, SAMPLE_RATE, Track, floatToPcm, msToSamples, pcmToFloat } from './audio.ts';
 import type { NoiseSource } from './noise.ts';
 
@@ -21,13 +22,22 @@ export type LabEventType =
   | 'speak_call' | 'speak_done' | 'speak_error' | 'chat'
   | 'audio_start' | 'audio_stop' | 'write' | 'tool' | 'error'
   /** Flux early end-of-turn (an answer may start speculatively) and the speaker going on after it. */
-  | 'stt_eager' | 'stt_resumed'
+  | 'stt_eager' | 'stt_resumed' | 'eot_timing' | 'model_first_text' | 'interrupt' | 'playback_pause' | 'playback_start' | 'playback_end' | 'voice_activity' | 'playback_received'
   /** A question's status changed in the engine (detail: "#id status: note"). */
   | 'question';
 
-export interface LabEvent { t: number; type: LabEventType; participant?: string; text?: string; detail?: string }
+export interface LabEvent { t: number; type: LabEventType; participant?: string; text?: string; detail?: string;
+  cause?: 'voice' | 'command'; latencyMs?: number; outcome?: string;
+  questionId?: number; playbackId?: number; inputTurnIds?: string[]; step?: number; ms?: number; phase?: 'eager' | 'confirmed' | 'resumed' }
 
 type EngineDependencies = ConstructorParameters<typeof NogitaEngine>[0];
+export type WarmupMode = 'production' | 'cold';
+
+export function parseWarmupMode(value: string | undefined): WarmupMode {
+  if (value === undefined || value === 'production') return 'production';
+  if (value === 'cold') return 'cold';
+  throw new Error('warmup must be production or cold');
+}
 
 export interface RigOptions {
   deepgramApiKey: string;
@@ -41,10 +51,13 @@ export interface RigOptions {
   eagerThreshold?: number;
   /** Router quiet window; production uses 1200 ms. */
   routerQuietMs?: number;
+  incompleteTurnHoldMs?: number;
   /** Microphone frame length sent to the hub. */
   frameMs?: number;
   /** For offline tests: replaces the Deepgram sockets. */
   createWebSocket?: RealtimeAudioOptions['createWebSocket'];
+  /** Production primes both the model prompt cache and TTS socket; cold primes neither. */
+  warmup?: WarmupMode;
 }
 
 export interface MicParticipant {
@@ -57,6 +70,11 @@ export interface MicParticipant {
 
 /** Gap in Nogita's received audio that ends one continuous "burst" of her speech. */
 const AUDIO_GAP_MS = 250;
+
+export function expectedProviderClose(kind: 'tts' | 'stt', code: number, reason: string, sinceInterruptMs?: number): boolean {
+  if (code === 1000 && ['speaker stream ended', 'speech interrupted', 'meeting stream ended'].includes(reason)) return true;
+  return kind === 'tts' && code === 1006 && sinceInterruptMs !== undefined && sinceInterruptMs >= 0 && sinceInterruptMs <= 2_000;
+}
 
 class LabMeeting implements MeetingPort {
   readonly capabilities: ReadonlySet<Capability> = new Set(['listen', 'speak', 'chat_receipt', 'streaming_speech']);
@@ -71,14 +89,15 @@ class LabMeeting implements MeetingPort {
   interruptSpeech(): boolean { return this.rig.hub.interruptSpeech(this.id); }
   /** Same contract as AttendeeMeeting with the realtime bridge: chat mirror unless told otherwise, audio via the hub. */
   async speak(message: string, options: SpeakOptions = {}): Promise<void> {
-    this.rig.log('speak_call', { text: message, detail: options.chatMirror === false ? 'no-mirror' : 'mirror' });
+    const trace = { questionId: options.questionId, playbackId: options.playbackId };
+    this.rig.log('speak_call', { ...trace, text: message, detail: options.chatMirror === false ? 'no-mirror' : 'mirror' });
     if (options.chatMirror !== false) void this.sendStatus(message);
     this.speaking++;
     try {
-      await this.rig.hub.speak(this.id, message);
-      this.rig.log('speak_done', { text: message });
+      await this.rig.hub.speak(this.id, message, options);
+      this.rig.log('speak_done', { ...trace, text: message });
     } catch (error) {
-      this.rig.log('speak_error', { text: message, detail: error instanceof Error ? error.message : String(error) });
+      this.rig.log('speak_error', { ...trace, text: message, detail: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally { this.speaking--; }
   }
@@ -116,6 +135,10 @@ export class VoiceRig {
   private audioPlaying = false;
   private stopped = false;
   private socketCount = 0;
+  private lastTtsInterruptAt = -Infinity;
+  /** The lab sees both ends of its socket; correlate received frames without changing the Attendee protocol. */
+  private readonly outputFrames: SpeechTrace[] = [];
+  private readonly receivedPlaybacks = new Set<number>();
 
   constructor(private readonly options: RigOptions) {
     this.frameSamples = Math.max(FRAME_SAMPLES, msToSamples(options.frameMs ?? 20));
@@ -132,17 +155,20 @@ export class VoiceRig {
   async start(participants: MicParticipant[]): Promise<void> {
     const signingSecret = randomBytes(24).toString('base64url');
     const sttMode = this.options.sttMode ?? 'nova3-multilingual';
+    const warmup = this.options.warmup ?? 'production';
     const actors = new Map<string, Actor>();
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
-      deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel, warmSpeech: true, fluxEndOfTurnThreshold: this.options.eotThreshold,
+      deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel,
+      warmSpeech: warmup === 'production', fluxEndOfTurnThreshold: this.options.eotThreshold,
       fluxEagerEndOfTurnThreshold: this.options.eagerThreshold,
       createWebSocket: this.options.createWebSocket ?? ((url, options) => {
         // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
         const socket = new WebSocket(url, { ...options, handshakeTimeout: 10_000, maxPayload: 100_000 });
         const kind = url.includes('/speak') ? 'tts' : 'stt';
         socket.on('close', (code, reason) => {
-          if (!this.stopped) this.log('error', { detail: `deepgram ${kind} closed ${code} ${reason.toString().slice(0, 120)}` });
+          const expected = expectedProviderClose(kind, code, reason.toString(), performance.now() - this.lastTtsInterruptAt);
+          if (!this.stopped && !expected) this.log('error', { detail: `deepgram ${kind} closed ${code} ${reason.toString().slice(0, 120)}` });
         });
         if (process.env.VOICE_LAB_TRACE) {
           const id = ++this.socketCount;
@@ -174,12 +200,13 @@ export class VoiceRig {
         });
         return socket;
       }),
-      onTranscript: async (sessionId, participantUuid, text) => {
+      onTranscript: async (sessionId, participantUuid, text, _identity, recognition) => {
         const actor = actors.get(participantUuid);
-        this.log('stt_final', { participant: participantUuid, text });
+        const inputTurnIds = recognition?.inputTurnId ? [recognition.inputTurnId] : undefined;
+        this.log('stt_final', { participant: participantUuid, text, inputTurnIds });
         if (!actor) return;
         const request = { sessionId, botId: this.botId, speakerUuid: participantUuid,
-          utterance: { eventId: `lab-${randomBytes(6).toString('hex')}`, actor, text, at: Date.now() } };
+          utterance: { eventId: `lab-${randomBytes(6).toString('hex')}`, actor, text, at: Date.now(), inputTurnIds } };
         if (sttMode === 'flux-english') await this.router.acceptCompletedTurn(request);
         else await this.router.acceptFinal(request);
       },
@@ -187,22 +214,49 @@ export class VoiceRig {
         this.log('stt_activity', { participant: participantUuid });
         this.router.noteSpeechActivity(sessionId, participantUuid);
       },
-      onEagerTranscript: (sessionId, participantUuid, text) => {
+      onEagerTranscript: (sessionId, participantUuid, text, _identity, inputTurnId) => {
         const actor = actors.get(participantUuid);
         this.log('stt_eager', { participant: participantUuid, text });
         if (!actor) return;
+        if (directlyAddressesNogita(normalizeWakeWord(text))) this.router.noteSpeechActivity(sessionId, participantUuid);
         this.router.acceptEagerTurn({ sessionId, botId: this.botId, speakerUuid: participantUuid,
-          utterance: { eventId: `lab-${randomBytes(6).toString('hex')}`, actor, text, at: Date.now() } });
+          utterance: { eventId: `lab-${randomBytes(6).toString('hex')}`, actor, text, at: Date.now(),
+            inputTurnIds: inputTurnId ? [inputTurnId] : undefined } });
       },
-      onVoice: (sessionId, participantUuid) => this.engine.noteVoice(sessionId, participantUuid),
+      onVoice: (sessionId, participantUuid) => {
+        this.log('voice_activity', { participant: participantUuid });
+        this.engine.noteVoice(sessionId, participantUuid);
+      },
       onTurnResumed: (sessionId, participantUuid) => {
         this.log('stt_resumed', { participant: participantUuid });
         this.router.resumeTurn(sessionId, participantUuid);
       },
+      onTurnTiming: (_sessionId, participant, event) => this.log('eot_timing', { participant,
+        inputTurnIds: [event.inputTurnId],
+        phase: event.phase, ...(event.sinceLastVoiceMs !== undefined ? { ms: event.sinceLastVoiceMs } : {}) }),
+      onInterrupt: (_sessionId, event) => {
+        this.lastTtsInterruptAt = performance.now();
+        this.log('interrupt', { questionId: event.questionId,
+          playbackId: event.playbackId, cause: event.cause, latencyMs: event.latencyMs });
+      },
+      onSpeechPause: (_sessionId, event) => this.log('playback_pause', { questionId: event.questionId,
+        playbackId: event.playbackId, latencyMs: event.latencyMs, ms: event.remainingMs }),
+      onOutputAudio: (_sessionId, _pcm, trace) => this.outputFrames.push({ ...trace }),
+      onSpeechStart: (_sessionId, event) => this.log('playback_start', { questionId: event.questionId,
+        playbackId: event.playbackId, ms: event.ttfaMs }),
+      onSpeechEnd: (_sessionId, event) => this.log('playback_end', { questionId: event.questionId,
+        playbackId: event.playbackId, outcome: event.outcome }),
       onError: code => this.log('error', { detail: code }),
     });
     this.engine = new NogitaEngine(this.options.dependencies, { ...this.options.engineOptions,
+      agentCacheWarmup: warmup === 'production',
+      onActivity: (sessionId, activity) => {
+        this.options.engineOptions?.onActivity?.(sessionId, activity);
+        if (activity.kind === 'model_first_text') this.log('model_first_text', {
+          questionId: activity.questionId, step: activity.step, ms: activity.ms });
+      },
       onQuestion: (_sessionId, event) => this.log('question', { participant: `lab_${event.speaker.toLowerCase()}`, text: event.request,
+        questionId: event.id, inputTurnIds: event.inputTurnIds,
         detail: `#${event.id} ${event.status}${event.topic ? ` [${event.topic}]` : ''}${event.detail ? `: ${event.detail}` : ''}` }) });
     this.router = new AttendeeCommandRouter(
       async (sessionId, utterance, context) => {
@@ -219,7 +273,7 @@ export class VoiceRig {
         } finally { this.pendingEngine--; }
       },
       async (_sessionId, message) => this.meeting.sendStatus(message),
-      { quietMs: this.options.routerQuietMs, onError: error => this.log('error',
+      { quietMs: this.options.routerQuietMs, incompleteTurnHoldMs: this.options.incompleteTurnHoldMs, onError: error => this.log('error',
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
       onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),
       chatAck: false,
@@ -337,6 +391,11 @@ export class VoiceRig {
     if (message.trigger !== 'realtime_audio.bot_output' || typeof message.data?.chunk !== 'string') return;
     const samples = pcmToFloat(Buffer.from(message.data.chunk, 'base64'));
     const now = performance.now();
+    const trace = this.outputFrames.shift();
+    if (trace?.playbackId !== undefined && !this.receivedPlaybacks.has(trace.playbackId)) {
+      this.receivedPlaybacks.add(trace.playbackId);
+      this.log('playback_received', trace, now);
+    }
     // The hub paces output at playback speed, so arrival time is when the room hears it.
     if (!this.audioPlaying) { this.audioPlaying = true; this.log('audio_start', {}, now); }
     const at = Math.max(0, Math.round((now - this.t0) * SAMPLE_RATE / 1000));

@@ -133,7 +133,10 @@ export class SpeechFloor {
   /** A person is talking (live recognition); `ended` when their turn reached Nogita. */
   noteTalking(speaker: string, ended = false): void {
     if (ended) this.talking.delete(speaker);
-    else this.talking.set(speaker, this.now() + (this.options.talkingMs ?? 1_000));
+    // Flux may leave more than a second between activity events inside one compound turn. Keep the floor
+    // closed for its endpointing window; a confirmed turn removes the lease immediately, so this adds no
+    // delay when STT completes normally and errs on the side of silence when it does not.
+    else this.talking.set(speaker, this.now() + (this.options.talkingMs ?? 3_000));
     if (ended && this.interruptedOwner !== undefined) this.heardSinceInterrupt = true;
     this.pump();
   }

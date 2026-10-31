@@ -4,7 +4,7 @@ import { directlyAddressesNogita, isExplicitLeaveRequest, normalizeWakeWord, rem
 import type { AttendeeTranscriptRequest } from './attendee-webhook.ts';
 
 type ScheduledWork = () => void | Promise<void>;
-interface Fragment { text: string; eventId: string; at?: number; sequence: number }
+interface Fragment { text: string; eventId: string; at?: number; sequence: number; inputTurnIds?: string[] }
 interface BufferEntry {
   actor: Actor; fragments: Fragment[]; timer: unknown; receivedAt: number;
   waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
@@ -31,6 +31,8 @@ export interface AttendeeCommandRouterOptions {
   chatAck?: boolean;
   /** How long a turn that is only her name ("Nogita.") waits for the question that follows. */
   nameOnlyMs?: number;
+  /** Opt-in hold for an incomplete request such as "Nogita, can you check?". Zero keeps current behavior. */
+  incompleteTurnHoldMs?: number;
   randomCode?: () => string;
   schedule?: (work: ScheduledWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
@@ -69,6 +71,7 @@ export class AttendeeCommandRouter {
   private readonly quietMs: number;
   private readonly questionQuietMs: number;
   private readonly nameOnlyMs: number;
+  private readonly incompleteTurnHoldMs: number;
   private readonly chatAck: boolean;
   private readonly randomCode: () => string;
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
@@ -88,6 +91,10 @@ export class AttendeeCommandRouter {
     this.quietMs = options.quietMs ?? 1200;
     this.questionQuietMs = Math.min(this.quietMs, options.questionQuietMs ?? 300);
     this.nameOnlyMs = options.nameOnlyMs ?? 2_500;
+    this.incompleteTurnHoldMs = options.incompleteTurnHoldMs ?? 0;
+    if (!Number.isFinite(this.incompleteTurnHoldMs) || this.incompleteTurnHoldMs < 0 || this.incompleteTurnHoldMs > 5_000) {
+      throw new Error('incompleteTurnHoldMs must be between 0 and 5000');
+    }
     this.chatAck = options.chatAck ?? true;
     this.randomCode = options.randomCode ?? (() => String(randomInt(100000, 1000000)));
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
@@ -118,6 +125,7 @@ export class AttendeeCommandRouter {
     const previous = state.buffers.get(request.speakerUuid);
     if (previous) this.cancel(previous.timer);
     const fragment: Fragment = { text: request.utterance.text.trim(), eventId: request.utterance.eventId,
+      inputTurnIds: request.utterance.inputTurnIds,
       sequence: this.sequence++, ...(request.utterance.at === undefined ? {} : { at: request.utterance.at }) };
     const fragments = [...(previous?.fragments ?? []), fragment].slice(-24);
     const actor = request.utterance.actor.verified ? request.utterance.actor : previous?.actor ?? request.utterance.actor;
@@ -163,6 +171,8 @@ export class AttendeeCommandRouter {
       const text = normalizeWakeWord(entry.fragments.map(fragment => fragment.text).join(' ').trim());
       if (NAME_ONLY.test(text)) {
         entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.nameOnlyMs);
+      } else if (this.incompleteTurnHoldMs && incompleteRequest(text)) {
+        entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.incompleteTurnHoldMs);
       } else void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
     }
     return completion;
@@ -181,8 +191,10 @@ export class AttendeeCommandRouter {
     const actor = state.bindings.get(request.speakerUuid) ??
       (request.utterance.actor.verified ? request.utterance.actor : previous?.actor);
     this.resumeTurn(request.sessionId, request.speakerUuid);
+    if (this.incompleteTurnHoldMs && incompleteRequest(text)) return;
     if (!actor?.verified || !directlyAddressesNogita(text)) return;
     const handle = this.speculate(request.sessionId, { eventId: `${request.utterance.eventId}-early`, actor, text,
+      inputTurnIds: [...new Set([...(previous?.fragments ?? []).flatMap(f => f.inputTurnIds ?? []), ...(request.utterance.inputTurnIds ?? [])])],
       ...(request.utterance.at === undefined ? {} : { at: request.utterance.at }) });
     if (handle) state.speculations.set(request.speakerUuid, { text, handle });
   }
@@ -203,7 +215,9 @@ export class AttendeeCommandRouter {
     const entry = this.sessions.get(sessionId)?.buffers.get(speakerUuid);
     if (!entry) return;
     this.cancel(entry.timer);
-    entry.timer = this.schedule(() => this.flush(sessionId, speakerUuid).catch(this.onError), this.quietMs);
+    const text = normalizeWakeWord(entry.fragments.map(fragment => fragment.text).join(' '));
+    const delay = this.incompleteTurnHoldMs && incompleteRequest(text) ? this.incompleteTurnHoldMs : this.quietMs;
+    entry.timer = this.schedule(() => this.flush(sessionId, speakerUuid).catch(this.onError), delay);
   }
 
   private async notifyOnce(state: SessionState, sessionId: string, eventIds: readonly string[],
@@ -257,7 +271,9 @@ export class AttendeeCommandRouter {
             .then(() => this.onChatAck?.(sessionId, performance.now() - entry.receivedAt), error => this.onError(error));
         }
         handedOver = true;
-        await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }) },
+        const inputTurnIds = [...new Set(ordered.flatMap(f => f.inputTurnIds ?? []))];
+        await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }),
+          ...(inputTurnIds.length ? { inputTurnIds } : {}) },
           { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}) });
       }
       for (const waiter of entry.waiters) waiter.resolve();
@@ -296,6 +312,13 @@ export class AttendeeCommandRouter {
 }
 
 const NAME_ONLY = /^(?:(?:hey|hi|hello|okay|ok|um|uh|so|and),?\s+)?nogita[\s,.:!?-]*$/i;
+
+/** Narrow incomplete prefixes observed in the lab; complete questions still take the fast path. */
+function incompleteRequest(text: string): boolean {
+  if (!directlyAddressesNogita(text)) return false;
+  const request = removeAddress(text).toLowerCase().replace(/[.,?!]/g, '').replace(/\b(?:um|uh)\b/g, '').trim().replace(/\s+/g, ' ');
+  return /^(?:can|could|would) you (?:please )?(?:check|look|tell me)$/.test(request);
+}
 
 function sameWords(a: string, b: string): boolean {
   const words = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();

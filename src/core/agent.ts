@@ -50,6 +50,8 @@ export interface AgentTurn {
   onSpeech?: (text: string, step: number) => void;
   /** Called before tools run; text already spoken in this step was a lead-in. */
   onToolUse?: (names: string[], step: number) => void;
+  /** Time from each model request to its first nonempty text delta (not tool/thinking tokens). */
+  onFirstText?: (step: number, ms: number) => void;
   /** Awaited before any write tool runs (a speculative start may not change anything until it is confirmed). */
   beforeWrite?: () => Promise<void>;
   signal?: AbortSignal;
@@ -147,6 +149,8 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     const step = steps;
     const chunker = turn.stream && turn.onSpeech ? new SpeechChunker(text => turn.onSpeech!(text, step)) : undefined;
     const lastStep = steps === maxSteps - 1;
+    const requestStarted = now();
+    let firstText = false;
     const response = await model.streamChat({
       stableSystem: turn.stableSystem,
       turnSystem: lastStep
@@ -154,7 +158,14 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
         : turn.turnSystem,
       messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens: turn.maxTokens ?? 900,
       usageContext: turn.usageContext, timeoutMs: Math.min(30_000, remaining), signal: turn.signal,
-    }, delta => chunker?.push(delta));
+    }, delta => {
+      if (turn.signal?.aborted) return;
+      if (delta.length && !firstText) {
+        firstText = true;
+        turn.onFirstText?.(step, Math.max(0, now() - requestStarted));
+      }
+      chunker?.push(delta);
+    });
     chunker?.flush();
     const text = response.content.filter(block => block.type === 'text')
       .map(block => (block as { text: string }).text).join('').trim();
@@ -174,9 +185,12 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     const reads = uses.filter(use => !turn.toolbox.isWrite(use.name));
     const writes = uses.filter(use => turn.toolbox.isWrite(use.name));
     await Promise.all(reads.map(async use => { results.set(use.id, await safeRun(turn.toolbox, use)); }));
-    if (writes.length && turn.beforeWrite) await turn.beforeWrite();
+    if (writes.length && turn.beforeWrite) await waitForGate(turn.beforeWrite(), turn.signal);
     turn.signal?.throwIfAborted();
-    for (const use of writes) results.set(use.id, await safeRun(turn.toolbox, use));
+    for (const use of writes) {
+      turn.signal?.throwIfAborted();
+      results.set(use.id, await safeRun(turn.toolbox, use));
+    }
     toolCalls.push(...uses.map(use => use.name));
     messages.push({ role: 'user', content: uses.map(use => {
       const outcome = results.get(use.id)!;
@@ -185,6 +199,19 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     }) });
   }
   return { answer, preface: prefaces.join(' '), toolCalls, steps, stoppedEarly: false };
+}
+
+/** A rolled-back speculative attempt must not remain suspended behind an unopened write gate. */
+async function waitForGate(gate: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return gate;
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try { await Promise.race([gate, aborted]); }
+  finally { signal.removeEventListener('abort', onAbort); }
 }
 
 async function safeRun(toolbox: AgentToolbox, use: { name: string; input: Record<string, unknown> }): Promise<ToolOutcome> {

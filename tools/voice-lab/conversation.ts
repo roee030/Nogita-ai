@@ -126,7 +126,7 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
   return scenario.turns.map((turn, index) => record(rig.events, turn, index, marks[index]!, marks[index + 1]?.start));
 }
 
-function record(events: LabEvent[], turn: Turn, index: number, mark: { start: number; end: number }, nextStart?: number): TurnRecord {
+export function record(events: LabEvent[], turn: Turn, index: number, mark: { start: number; end: number }, nextStart?: number): TurnRecord {
   const window = events.filter(event => event.t >= mark.start && (nextStart === undefined || event.t < nextStart));
   const participantUuid = `lab_${turn.speaker}`;
   const after = (type: LabEvent['type'], from: number, predicate: (event: LabEvent) => boolean = () => true) =>
@@ -164,8 +164,17 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
     firstContentAudio: rel(contentAudio), meaningfulAudio: rel(meaningfulAudio), answerEnd: rel(stops.at(-1)),
   };
   if (turn.bargeIn) {
-    const stop = events.find(event => event.type === 'audio_stop' && event.t >= mark.start);
-    timing.bargeInStop = stop ? Math.round(stop.t - mark.start) : undefined;
+    const pause = events.find(event => event.type === 'playback_pause' && event.t >= mark.start && event.t <= mark.end);
+    const voiceInterrupt = events.find(event => event.type === 'interrupt' && event.cause === 'voice' &&
+      event.latencyMs !== undefined && event.t - event.latencyMs >= mark.start && event.t - event.latencyMs <= mark.end);
+    // The lab knows when the scripted participant audio began. Acceptance is from that acoustic onset to the
+    // server stop, not from the later moment the level gate finally recognized it. `latencyMs` remains diagnostic.
+    if (pause) timing.bargeInStop = Math.round(pause.t - mark.start + (pause.ms ?? 0));
+    else if (voiceInterrupt) timing.bargeInStop = Math.round(voiceInterrupt.t - mark.start);
+    else {
+      const stop = events.find(event => event.type === 'audio_stop' && event.t >= mark.start);
+      timing.bargeInStop = stop ? Math.round(stop.t - mark.start) : undefined;
+    }
   }
   const spoken = window.filter(event => event.type === 'speak_call' && event.t >= mark.end).map(event => event.text ?? '');
   return {
@@ -181,7 +190,8 @@ function record(events: LabEvent[], turn: Turn, index: number, mark: { start: nu
     spokeAfterUtterance: utterance ? window.filter(event => event.type === 'audio_start' && event.t > utterance.t).length : 0,
     // An interruption nobody scripted: the hub heard "speech" (noise, a cough) and cut her off.
     handRaisedBefore: events.some(event => event.type === 'chat' && event.t < mark.start && /has something to add/i.test(event.text ?? '')),
-    interruptedByNoise: window.some(event => event.type === 'speak_error' && /interrupt/i.test(event.detail ?? '') && event.t > mark.end),
+    interruptedByNoise: window.some(event => event.type === 'interrupt' && event.cause === 'voice' &&
+      event.t - (event.latencyMs ?? 0) > mark.end),
     events: window,
   };
 }

@@ -1,16 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AttendeeCommandRouter } from '../src/app/attendee-command-router.ts';
 import { createDependencies } from '../src/app/config.ts';
 import { directlyAddressesNogita, normalizeWakeWord } from '../src/core/policy.ts';
-import { FRAME_SAMPLES, SAMPLE_RATE, floatToPcm, msToSamples, pcmToFloat, rms, wav } from '../tools/voice-lab/audio.ts';
-import { playScenario, type TurnRecord } from '../tools/voice-lab/conversation.ts';
+import { FRAME_SAMPLES, SAMPLE_RATE, floatToPcm, msToSamples, pcmToFloat, rms, trimSilence, wav } from '../tools/voice-lab/audio.ts';
+import { playScenario, record as recordEvents, type TurnRecord } from '../tools/voice-lab/conversation.ts';
 import { SPEECH_RMS, createNoise } from '../tools/voice-lab/noise.ts';
-import { VoiceRig } from '../tools/voice-lab/rig.ts';
+import { VoiceRig, expectedProviderClose, parseWarmupMode } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
 import { machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
-import { transcriptLines, transcriptMarkdown } from '../tools/voice-lab/report.ts';
+import { summarize, transcriptLines, transcriptMarkdown, writeReport, type ScenarioResult } from '../tools/voice-lab/report.ts';
 import { conversationStats, questionLedger } from '../tools/voice-lab/conversation-metrics.ts';
 
 test('speech recognition variants of the wake word are restored only where someone addresses Nogita', () => {
@@ -20,6 +23,7 @@ test('speech recognition variants of the wake word are restored only where someo
     ['So for the retry. Notita, what happens when Jira is down?', 'So for the retry. Nogita, what happens when Jira is down?'],
     ['Hey, Nikita, can you check?', 'Hey, Nogita, can you check?'],
     ['Lokita, what are the open tasks?', 'Nogita, what are the open tasks?'],
+    ['Lukita, what does HTTP status 503 mean?', 'Nogita, what does HTTP status 503 mean?'],
   ]) {
     assert.equal(normalizeWakeWord(heard!), expected);
     assert.equal(directlyAddressesNogita(normalizeWakeWord(heard!)), true, heard);
@@ -59,6 +63,16 @@ test('audio helpers keep PCM, levels and WAV layout exact', () => {
   assert.equal(file.readUInt16LE(22), 2);
 });
 
+test('silence trimming ignores low-level synthesis noise around the spoken frames', () => {
+  const prefix = new Float32Array(msToSamples(300)).map((_, i) => 0.006 * Math.sin(2 * Math.PI * 90 * i / SAMPLE_RATE));
+  const speech = new Float32Array(msToSamples(500)).map((_, i) => 0.1 * Math.sin(2 * Math.PI * 220 * i / SAMPLE_RATE));
+  const samples = new Float32Array(prefix.length + speech.length + prefix.length);
+  samples.set(prefix); samples.set(speech, prefix.length); samples.set(prefix, prefix.length + speech.length);
+  const trimmed = trimSilence(samples);
+  assert.ok(trimmed.length >= msToSamples(540), `kept ${trimmed.length * 1000 / SAMPLE_RATE} ms`);
+  assert.ok(trimmed.length <= msToSamples(600), `kept ${trimmed.length * 1000 / SAMPLE_RATE} ms`);
+});
+
 test('noise beds sit at the requested SNR below the reference speech level', () => {
   for (const kind of ['white', 'pink', 'brown', 'hum', 'keyboard', 'street'] as const) {
     const noise = createNoise({ kind, snrDb: 10 }, 7).next(SAMPLE_RATE * 10);
@@ -93,7 +107,11 @@ test('scoring checks hearing, silence, required phrases, writes and interruption
   assert.equal(good.passed, true);
   assert.equal(good.addressHeard, true);
   const misheard = scoreTurn(record(ask, { heard: 'Nokita what is the capital of Australia', spoken: [] }));
-  assert.deepEqual(misheard.checks.filter(c => !c.ok).map(c => c.name), ['name heard', 'answered aloud', 'mentions canberra']);
+  assert.equal(misheard.addressHeard, true);
+  assert.deepEqual(misheard.checks.filter(c => !c.ok).map(c => c.name), ['answered aloud', 'mentions canberra']);
+  const noisy = scoreTurn(record(ask, { heard: 'Background words. From Nogita, what is the capital of Australia?',
+    spoken: ['Canberra.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 900 } }));
+  assert.equal(noisy.addressHeard, true);
   const quiet: Turn = { speaker: 'dana', say: 'Let us move on.', expect: { respond: 'silent' } };
   assert.equal(scoreTurn(record(quiet, { chat: ['I heard you.'] })).passed, false);
   assert.equal(scoreTurn(record(quiet, {})).passed, true);
@@ -101,6 +119,67 @@ test('scoring checks hearing, silence, required phrases, writes and interruption
     timing: { speechStart: 0, speechEnd: 0, firstAudio: 1 } }));
   assert.deepEqual(wrote.checks.filter(c => !c.ok).map(c => c.name), ['no write', 'not cut off']);
   assert.deepEqual(stats([3, 1, undefined, 2]), { count: 3, mean: 2, p50: 2, p90: 3, min: 1, max: 3 });
+});
+
+test('barge-in acceptance starts at scripted acoustic onset and uses the first output pause', () => {
+  const turn: Turn = { speaker: 'roee', say: 'Nogita, stop.', bargeIn: { afterAudioMs: 500 },
+    expect: { respond: 'silent', bargeInWithinMs: 300 } };
+  const events = [
+    { t: 1_000, type: 'speech_start' as const, participant: 'roee' },
+    { t: 1_201, type: 'playback_pause' as const, latencyMs: 101, ms: 80, questionId: 2, playbackId: 3 },
+    { t: 1_350, type: 'interrupt' as const, cause: 'voice' as const, latencyMs: 250, questionId: 2, playbackId: 3 },
+    // This is deliberately later: gap detection is not the cancellation latency reported by the audio hub.
+    { t: 1_798, type: 'audio_stop' as const },
+    { t: 5_000, type: 'speech_end' as const, participant: 'roee' },
+  ];
+  const result = recordEvents(events, turn, 0, { start: 1_000, end: 5_000 });
+  assert.equal(result.timing.bargeInStop, 281);
+});
+
+test('scoring distinguishes a harmless backchannel from a barge-in that must stop playback', () => {
+  const backchannel: Turn = { speaker: 'roee', say: 'Yeah.', bargeIn: { afterAudioMs: 500, kind: 'backchannel' },
+    expect: { respond: 'any' } };
+  assert.equal(scoreTurn(record(backchannel, { events: [] })).passed, true);
+  const cut = scoreTurn(record(backchannel, { events: [
+    { t: 100, type: 'interrupt', cause: 'voice', latencyMs: 100, questionId: 1, playbackId: 1 },
+  ] }));
+  assert.deepEqual(cut.checks.filter(check => !check.ok).map(check => check.name), ['keeps talking through backchannel']);
+
+  const interruption: Turn = { speaker: 'roee', say: 'Wait.', bargeIn: { afterAudioMs: 500, kind: 'interrupt' },
+    expect: { respond: 'any', bargeInWithinMs: 300 } };
+  assert.equal(scoreTurn(record(interruption, { timing: { speechStart: 0, speechEnd: 0, bargeInStop: 250 } })).passed, true);
+});
+
+test('run latency excludes playback carried through a backchannel turn', () => {
+  const question: Turn = { speaker: 'roee', say: 'Nogita, explain queues.', expect: { respond: 'speak' } };
+  const acknowledgement: Turn = { speaker: 'dana', say: 'Yeah.', bargeIn: { afterAudioMs: 500, kind: 'backchannel' },
+    expect: { respond: 'any' } };
+  const questionRecord = record(question, { spoken: ['Queues decouple work.'], timing: { speechStart: 0, speechEnd: 100, firstAudio: 1_000 } });
+  const acknowledgementRecord = record(acknowledgement,
+    { timing: { speechStart: 2_000, speechEnd: 2_200, firstAudio: 24_000, bargeInStop: 24_000 } });
+  const scenario: Scenario = { name: 'latency', title: 'latency', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [{ id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', authorized: true, mic: 'open' },
+      { id: 'dana', name: 'Dana', voice: 'aura-2-luna-en', authorized: true, mic: 'open' }], turns: [question, acknowledgement] };
+  const summary = summarize([{ scenario, turns: [{ record: questionRecord, score: scoreTurn(questionRecord) },
+    { record: acknowledgementRecord, score: scoreTurn(acknowledgementRecord) }], room: new Float32Array(),
+    nogita: new Float32Array(), errors: [], events: [] }], {}, '2026-10-31T00:00:00.000Z');
+  assert.deepEqual(summary.responseGap, { count: 1, mean: 1_000, p50: 1_000, p90: 1_000, min: 1_000, max: 1_000 });
+  assert.equal(summary.bargeInStop.count, 0);
+  assert.deepEqual(summary.backchannels, { kept: 1, total: 1, falseStops: 0, falseStopRate: 0, upper95: 0.7935 });
+});
+
+test('the lab suppresses an abnormal TTS close only when it immediately follows an intentional interruption', () => {
+  assert.equal(expectedProviderClose('tts', 1006, '', 150), true);
+  assert.equal(expectedProviderClose('tts', 1006, '', 2_500), false);
+  assert.equal(expectedProviderClose('stt', 1006, '', 150), false);
+  assert.equal(expectedProviderClose('tts', 1000, 'speech interrupted'), true);
+});
+
+test('voice-lab warmup mode defaults to production and rejects ambiguous baselines', () => {
+  assert.equal(parseWarmupMode(undefined), 'production');
+  assert.equal(parseWarmupMode('production'), 'production');
+  assert.equal(parseWarmupMode('cold'), 'cold');
+  assert.throws(() => parseWarmupMode('off'), /warmup must be production or cold/);
 });
 
 /** Deepgram stand-ins: STT finalizes a turn after 300 ms of quiet; TTS returns 300 ms of tone per request. */
@@ -135,6 +214,22 @@ class FakeDeepgram extends EventEmitter {
   }
   close(): void { this.readyState = 3; setImmediate(() => this.emit('close')); }
 }
+
+test('cold voice-lab mode does not pre-open a TTS connection', async () => {
+  const opened: string[] = [];
+  const rig = new VoiceRig({ deepgramApiKey: 'test-key', dependencies: createDependencies({}), warmup: 'cold',
+    createWebSocket: url => {
+      opened.push(url);
+      return new FakeDeepgram(url.includes('/v1/speak') ? 'tts' : 'stt', []) as never;
+    } });
+  await rig.start([{ id: 'roee', name: 'Roee', mic: 'open', actor: { id: 'roee', displayName: 'Roee', verified: true },
+    noise: createNoise({ kind: 'quiet', snrDb: 60 }, 1) }]);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(opened.some(url => url.includes('/v1/speak')), false, JSON.stringify(opened));
+    assert.equal(opened.some(url => !url.includes('/v1/speak')), true, JSON.stringify(opened));
+  } finally { await rig.stop(); }
+});
 
 test('the lab drives the real voice path end to end and times each stage', async () => {
   const transcripts = ['Nokita, how does login work?'];
@@ -189,6 +284,24 @@ test('scoring checks lookups and response time, and the transcript shows every s
     /Jira task:\* Fix retries — from the meeting \[intercepted\]/);
 });
 
+test('report JSON keeps the scenario event stream needed to audit overlap metrics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nogita-voice-report-'));
+  const turn: Turn = { speaker: 'roee', say: 'Nogita, stop.', expect: { respond: 'silent' } };
+  const events = [
+    { t: 10_000, type: 'speech_start' as const, participant: 'roee' },
+    { t: 10_500, type: 'playback_received' as const, questionId: 1, playbackId: 2 },
+    { t: 11_000, type: 'speech_end' as const, participant: 'roee' },
+  ];
+  const result: ScenarioResult = { scenario: { name: 'audit', title: 'audit', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [{ id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', authorized: true, mic: 'open' }], turns: [turn] },
+    turns: [], room: new Float32Array(), nogita: new Float32Array(), errors: [], events };
+  try {
+    await writeReport(directory, summarize([result], {}, '2026-10-30T00:00:00.000Z'), [result]);
+    const json = JSON.parse(await readFile(join(directory, 'report.json'), 'utf8')) as { scenarios: Array<{ events?: unknown[] }> };
+    assert.deepEqual(json.scenarios[0]?.events, events);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('conversation stats: what became of every question, early starts, speaking over people, duplicate writes', () => {
   const q = (t: number, detail: string, participant = 'lab_roee', text = 'what is in progress') =>
     ({ t, type: 'question' as const, participant, text, detail });
@@ -199,7 +312,9 @@ test('conversation stats: what became of every question, early starts, speaking 
     q(1_500, '#3 working', 'lab_dana', 'what changed'), q(1_600, '#3 working [recent commits]: asked again; one lookup is already running', 'lab_dana'),
     q(6_000, '#3 cancelled: asked to drop it', 'lab_dana'),
     q(7_000, '#4 working', 'lab_dana', 'who owns it'),
-    { t: 8_000, type: 'speech_start' as const, participant: 'avi' }, { t: 8_900, type: 'audio_start' as const },
+    { t: 8_000, type: 'speech_start' as const, participant: 'avi' },
+    { t: 8_880, type: 'playback_received' as const, questionId: 4, playbackId: 9 },
+    { t: 8_900, type: 'audio_start' as const }, { t: 8_950, type: 'audio_start' as const },
     { t: 9_000, type: 'speech_end' as const, participant: 'avi' },
     { t: 9_100, type: 'write' as const, text: 'task: Fix retries' }, { t: 9_200, type: 'write' as const, text: 'task: Fix retries' },
   ];

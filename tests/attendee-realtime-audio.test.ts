@@ -6,12 +6,13 @@ import { once } from 'node:events';
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { assembleNova3Turn, createAttendeeAudioSocketUrl, hasFluxSpeechActivity, hasNova3SpeechActivity, parseAttendeeAudioFrame,
-  verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub } from '../src/app/attendee-realtime-audio.ts';
+  verifyAttendeeAudioSignature, AttendeeRealtimeAudioHub, isBackchannel } from '../src/app/attendee-realtime-audio.ts';
 
-/** 100 ms of a speaking-level tone; silence would be rejected by the own-voice gate. */
-function voiceChunk(amplitude = 0.2): string {
-  const pcm = Buffer.alloc(3200);
-  for (let i = 0; i < 1600; i++) pcm.writeInt16LE(Math.round(amplitude * 32767 * Math.sin(2 * Math.PI * 220 * i / 16000)), i * 2);
+/** A speaking-level tone; silence would be rejected by the own-voice gate. */
+function voiceChunk(amplitude = 0.2, durationMs = 100): string {
+  const samples = Math.round(16_000 * durationMs / 1000);
+  const pcm = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) pcm.writeInt16LE(Math.round(amplitude * 32767 * Math.sin(2 * Math.PI * 220 * i / 16000)), i * 2);
   return pcm.toString('base64');
 }
 
@@ -70,6 +71,15 @@ test('Flux resets the turn guard when speech starts or resumes', () => {
   assert.equal(hasFluxSpeechActivity({ type: 'TurnInfo', event: 'EndOfTurn', transcript: 'done' }), false);
 });
 
+test('backchannel classification keeps acknowledgements but never swallows interruption words', () => {
+  for (const text of ['yeah', 'Right.', 'mm-hm', 'mhm', 'uh-huh', 'okay', 'got it', 'I see']) {
+    assert.equal(isBackchannel(text), true, text);
+  }
+  for (const text of ['no', 'wait', 'stop', 'actually', 'hold on', 'I disagree', 'can I add something']) {
+    assert.equal(isBackchannel(text), false, text);
+  }
+});
+
 test('English Flux socket waits for EndOfTurn and keeps multilingual Nova-3 as the default', async () => {
   for (const sttMode of [undefined, 'flux-english'] as const) {
     class FakeStt extends EventEmitter {
@@ -106,6 +116,7 @@ test('English Flux socket waits for EndOfTurn and keeps multilingual Nova-3 as t
       } }));
       const { url, socket } = await sttCreated;
       assert.match(url, sttMode === 'flux-english' ? /\/v2\/listen\?model=flux-general-en/ : /\/v1\/listen\?model=nova-3/);
+      assert.equal(new URL(url).searchParams.get('mip_opt_out'), 'true');
       const interim = sttMode === 'flux-english'
         ? { type: 'TurnInfo', event: 'Update', transcript: 'Nogita, wait' }
         : { type: 'Results', is_final: false, speech_final: false,
@@ -295,6 +306,7 @@ test('interrupting speech clears pending Deepgram audio and releases the spoken 
   try {
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.match(ttsUrl, /\/v1\/speak\?model=aura-2-luna-en/);
+    assert.equal(new URL(ttsUrl).searchParams.get('mip_opt_out'), 'true');
     assert.equal(tts.sent.some(message => message.includes('Speak')), true);
     assert.equal(hub.interruptSpeech('interrupt-test'), true);
     await assert.rejects(speaking, /interrupted/);
@@ -449,7 +461,7 @@ test('completed synthesis is not timed out while its paced audio is still playin
   }
 });
 
-test('default multilingual speech activity interrupts an in-progress spoken answer', async () => {
+test('a short recognized backchannel does not interrupt an in-progress answer', async () => {
   class FakeProviderSocket extends EventEmitter {
     readyState: number = WebSocket.CONNECTING;
     send(): void { /* Accept audio and speech requests. */ }
@@ -457,8 +469,71 @@ test('default multilingual speech activity interrupts an in-progress spoken answ
   }
   const server = createServer();
   let stt!: FakeProviderSocket;
+  let tts!: FakeProviderSocket;
+  const frames: unknown[] = [];
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode: 'flux-english', onTranscript: () => {},
+    createWebSocket: url => {
+      const socket = new FakeProviderSocket();
+      if (url.includes('/listen')) stt = socket;
+      if (url.includes('/speak')) tts = socket;
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('nova-backchannel');
+  hub.bindBot('nova-backchannel', 'bot_backchannel');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio',
+    'test-secret', 'nova-backchannel'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  client.on('message', raw => frames.push(JSON.parse(raw.toString())));
+  await once(client, 'open');
+  try {
+    client.send(JSON.stringify({ bot_id: 'bot_backchannel', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0),
+    } }));
+    while (!stt) await new Promise<void>(resolve => setImmediate(resolve));
+    const speaking = hub.speak('nova-backchannel', 'A long answer.');
+    void speaking.catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    tts.emit('message', Buffer.alloc(6_400, 1), true);
+    tts.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await wait(20);
+    assert.equal(frames.length, 1, 'first paced frame is playing');
+    client.send(JSON.stringify({ bot_id: 'bot_backchannel', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    // Flux emits a wordless StartOfTurn before its first hypothesis. It is evidence to hold the pause, not
+    // evidence that the utterance is an interruption. The first backchannel hypothesis resumes queued audio.
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'StartOfTurn', transcript: '' })), false);
+    stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', transcript: 'yeah' })), false);
+    await speaking;
+    assert.equal(frames.length, 2, 'queued answer resumed after the backchannel hypothesis');
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test('own voice pauses output within 300 ms, then sustained speech cancels if recognition never arrives', async () => {
+  class FakeProviderSocket extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Accept audio and speech requests. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  let stt!: FakeProviderSocket;
+  let clock = 800;
+  const interrupts: Array<{ latencyMs?: number }> = [];
+  const pauses: Array<{ latencyMs: number; remainingMs: number }> = [];
   const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
     signingSecret: 'test-secret', deepgramApiKey: 'test-key', onTranscript: () => {},
+    now: () => clock, onInterrupt: (_sessionId, event) => interrupts.push(event),
+    onSpeechPause: (_sessionId, event) => pauses.push(event),
     createWebSocket: url => {
       const socket = new FakeProviderSocket();
       if (url.includes('/listen')) stt = socket;
@@ -476,16 +551,61 @@ test('default multilingual speech activity interrupts an in-progress spoken answ
   const client = new WebSocket(signed);
   await once(client, 'open');
   try {
+    // Open the participant stream without qualifying as own voice yet.
     client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
-      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(),
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0),
     } }));
     while (!stt) await new Promise<void>(resolve => setImmediate(resolve));
+    // A prior louder utterance must not make the next, quieter one invisible to the own-voice gate.
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0.4),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    clock = 900;
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
     const speaking = hub.speak('nova-barge-in', 'A long answer.');
     void speaking.catch(() => undefined);
     await new Promise<void>(resolve => setImmediate(resolve));
-    stt.emit('message', Buffer.from(JSON.stringify({ type: 'Results', is_final: false, speech_final: false,
-      channel: { alternatives: [{ transcript: 'Nogita, stop' }] } })), false);
-    await assert.rejects(speaking, /interrupted/);
+    clock = 1_100;
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0.15),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    // A short phonetic valley inside a word must not restart the acoustic-onset clock.
+    clock = 1_170;
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    // The next contiguous 100 ms frame arrived 150 ms later. Output must pause within the acoustic budget,
+    // even though permanent cancellation waits long enough for a short acknowledgement to be recognized.
+    clock = 1_250;
+    client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0.15),
+    } }));
+    const pausedOutcome = await Promise.race([
+      speaking.then(() => 'resolved', error => error instanceof Error && /interrupted/.test(error.message) ? 'interrupted' : 'failed'),
+      wait(20).then(() => 'still-speaking'),
+    ]);
+    assert.equal(pausedOutcome, 'still-speaking');
+    assert.ok((pauses[0]?.latencyMs ?? Infinity) <= 300, JSON.stringify(pauses));
+
+    // No recognition ever arrives. Continuous speech keeps the output paused and eventually abandons the old answer.
+    for (clock = 1_400; clock <= 2_600; clock += 100) {
+      client.send(JSON.stringify({ bot_id: 'bot_nova', trigger: 'realtime_audio.per_participant', data: {
+        participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0.15),
+      } }));
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const outcome = await Promise.race([
+      speaking.then(() => 'resolved', error => error instanceof Error && /interrupted/.test(error.message) ? 'interrupted' : 'failed'),
+      wait(100).then(() => 'timeout'),
+    ]);
+    assert.equal(outcome, 'interrupted');
+    assert.ok((interrupts[0]?.latencyMs ?? Infinity) <= 1_600, JSON.stringify(interrupts));
   } finally {
     client.terminate(); hub.close();
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -35,6 +35,8 @@ export interface RunSummary {
   breakdown: { endpointing: Stats; router: Stats; thinking: Stats; voice: Stats };
   answerLength: Stats;
   bargeInStop: Stats;
+  /** Scripted listener acknowledgements that did not incorrectly stop playback, with a Wilson 95% upper bound. */
+  backchannels: { kept: number; total: number; falseStops: number; falseStopRate?: number; upper95?: number };
   passed: number;
   total: number;
   addressHeard: { heard: number; total: number };
@@ -45,14 +47,29 @@ export interface RunSummary {
 }
 
 const diff = (a?: number, b?: number) => a !== undefined && b !== undefined ? a - b : undefined;
+const roundedRate = (value: number) => Math.round(value * 10_000) / 10_000;
+
+function wilsonUpper95(failures: number, total: number): number | undefined {
+  if (!total) return undefined;
+  const z = 1.96;
+  const z2 = z * z;
+  const p = failures / total;
+  const denominator = 1 + z2 / total;
+  const center = (p + z2 / (2 * total)) / denominator;
+  const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total) / denominator;
+  return roundedRate(Math.min(1, center + margin));
+}
 
 export function summarize(results: ScenarioResult[], settings: Record<string, string>, startedAt: string): RunSummary {
   const turns = results.flatMap(result => result.turns);
-  const answered = turns.filter(({ record }) => record.timing.firstAudio !== undefined);
+  // Audio after a listener acknowledgement is the previous answer continuing, not a response to the backchannel.
+  const answered = turns.filter(({ record }) => record.timing.firstAudio !== undefined && record.turn.bargeIn?.kind !== 'backchannel');
   const t = answered.map(({ record }) => record.timing);
   const address = turns.filter(({ score }) => score.addressHeard !== undefined);
   const wers = turns.map(({ score }) => score.wer).filter((wer): wer is number => wer !== undefined);
   const judged = turns.map(({ score }) => score.judgement).filter(j => !!j);
+  const backchannels = turns.filter(({ record }) => record.turn.bargeIn?.kind === 'backchannel');
+  const falseStops = backchannels.filter(({ score }) => score.checks.some(check => check.name === 'keeps talking through backchannel' && !check.ok)).length;
   const mean = (values: number[]) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length * 100) / 100 : undefined;
   return {
     startedAt, settings,
@@ -71,7 +88,11 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
       voice: stats(t.map(timing => diff(timing.firstAudio, timing.firstSpeakCall))),
     },
     answerLength: stats(t.map(timing => diff(timing.answerEnd, timing.firstAudio))),
-    bargeInStop: stats(turns.map(({ record }) => record.timing.bargeInStop)),
+    bargeInStop: stats(turns.filter(({ record }) => record.turn.bargeIn?.kind !== 'backchannel')
+      .map(({ record }) => record.timing.bargeInStop)),
+    backchannels: { kept: backchannels.length - falseStops, total: backchannels.length, falseStops,
+      ...(backchannels.length ? { falseStopRate: roundedRate(falseStops / backchannels.length),
+        upper95: wilsonUpper95(falseStops, backchannels.length) } : {}) },
     passed: turns.filter(({ score }) => score.passed).length, total: turns.length,
     addressHeard: { heard: address.filter(({ score }) => score.addressHeard).length, total: address.length },
     soundsHuman: (() => {
@@ -108,6 +129,7 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     `- Mean word error rate of the transcript: ${summary.meanWer ?? '–'}`,
     ...(summary.judge ? [`- Judge (1-5): correct ${summary.judge.correct} · natural ${summary.judge.natural} · concise ${summary.judge.concise}`] : []),
     `- Lookups as expected: ${summary.toolChecks.ok}/${summary.toolChecks.total}`,
+    ...(summary.backchannels.total ? [`- Backchannels kept playback: **${summary.backchannels.kept}/${summary.backchannels.total}**; false-stop rate ${Math.round((summary.backchannels.falseStopRate ?? 0) * 1000) / 10}% (95% upper bound ${Math.round((summary.backchannels.upper95 ?? 0) * 1000) / 10}%)`] : []),
     '', '## Conversation management', '', ...conversationLines(summary.conversation), '',
   ];
   for (const result of results) {
@@ -280,6 +302,7 @@ summary{cursor:pointer}.pass{color:var(--voice);font-weight:600}.failc{color:var
 ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recognized', `${summary.addressHeard.heard}/${summary.addressHeard.total}`)}
 ${tile('Answer itself p50', ms(summary.meaningfulGap.p50))}${tile('Question completion', summary.conversation.completion === undefined ? '–' : `${Math.round(summary.conversation.completion * 100)}%`)}
 ${tile('Lost answers', String(summary.conversation.unresolved))}${tile('Spoke over someone', String(summary.conversation.spokeOverPeople))}
+${summary.backchannels.total ? tile('Backchannels kept', `${summary.backchannels.kept}/${summary.backchannels.total}`) : ''}
 ${tile('Early starts used / rolled back', `${summary.conversation.earlyAdopted} / ${summary.conversation.earlyRolledBack}`)}
 ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? tile('Judge correct/natural', `${summary.judge.correct} / ${summary.judge.natural}`) : ''}</div>
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>
@@ -297,6 +320,9 @@ export async function writeReport(dir: string, summary: RunSummary, results: Sce
   await writeFile(join(dir, 'transcript.md'), transcriptMarkdown(results));
   await writeFile(join(dir, 'report.json'), JSON.stringify({ summary, scenarios: results.map(result => ({
     name: result.scenario.name, errors: result.errors,
+    // Keep the scenario-wide clock as well as per-turn windows so aggregate overlap/cancellation metrics can
+    // be reproduced after the run instead of trusting only the summary counters.
+    events: result.events.map(event => ({ ...event, t: Math.round(event.t) })),
     turns: result.turns.map(({ record, score }) => ({ ...record, turn: undefined, expect: record.turn.expect, score,
       events: record.events.map(event => ({ ...event, t: Math.round(event.t - record.timing.speechEnd) })),
       timing: { ...record.timing, speechStart: undefined, speechEnd: undefined,

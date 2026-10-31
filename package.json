@@ -14,6 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "slack": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/app/slack-socket.ts",
     "voice-lab": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/run.ts",
+    "tts-benchmark": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/benchmark-tts.ts",
     "turn-report": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/turn-report.ts",
     "control": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/control/main.ts",
     "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts"
@@ -23,6 +24,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@cartesia/cartesia-js": "^4.2.0",
     "@slack/socket-mode": "^2.0.4",
     "ws": "^8.22.0"
   }

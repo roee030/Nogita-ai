@@ -85,7 +85,7 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
- * Speech recognition hears the wake word as "Nokita", "Notita", "Nikita", "Lokita" or "No Gita" even with keyterm
+ * Speech recognition hears the wake word as "Nokita", "Notita", "Nikita", "Lokita", "Lukita" or "No Gita" even with keyterm
  * prompting (measured in the voice lab). Where an address can stand (start of a turn, after a greeting or a
  * sentence end), a word within two edits of "nogita" is restored, so the address rules below still apply.
  * Mid-sentence mentions are left alone.
@@ -97,7 +97,8 @@ export function normalizeWakeWord(text: string): string {
   return text.replace(
     new RegExp(String.raw`(^|[.!?;]\s+)((?:(?:${ADDRESS_LEAD}),?\s+)?)(no\s+g[a-z]{2,3}|[nlm][a-z]{4,6})(?=\s*[,.:!?-]|\s+(?:${ADDRESS_FOLLOW}))`, 'gi'),
     (match, lead: string, greeting: string, word: string) =>
-      word.toLowerCase() !== 'nogita' && editDistance(word.toLowerCase().replace(/\s+/g, ''), 'nogita') <= 2
+      word.toLowerCase() !== 'nogita' && (word.toLowerCase() === 'lukita' ||
+        editDistance(word.toLowerCase().replace(/\s+/g, ''), 'nogita') <= 2)
         ? `${lead}${greeting}Nogita` : match);
 }
 

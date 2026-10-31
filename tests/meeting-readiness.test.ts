@@ -222,6 +222,50 @@ test('a cut-off answer resumes from the first sentence that was not heard', asyn
   assert.deepEqual(said, ['The cache keeps entries. They expire after five minutes.', 'They expire after five minutes.']);
 });
 
+test('a cut-off answer stays paused through a mid-turn silence until the speaker turn ends', async () => {
+  let now = 0;
+  const timers: Array<{ at: number; work: () => void; cancelled: boolean }> = [];
+  const schedule = (work: () => void, delayMs: number) => {
+    const timer = { at: now + delayMs, work, cancelled: false };
+    timers.push(timer);
+    return timer;
+  };
+  const advance = async (ms: number) => {
+    now += ms;
+    for (;;) {
+      const timer = timers.filter(candidate => !candidate.cancelled && candidate.at <= now).sort((a, b) => a.at - b.at)[0];
+      if (!timer) break;
+      timer.cancelled = true;
+      timer.work();
+      await Promise.resolve();
+    }
+  };
+  const said: string[] = [];
+  let interrupt!: (result: SpeakResult) => void;
+  const floor = new SpeechFloor({ now: () => now, schedule,
+    cancel: handle => { (handle as { cancelled: boolean }).cancelled = true; }, resumeAfterMs: 0,
+    speak: async text => {
+      said.push(text);
+      if (said.length > 1) return 'spoken';
+      return new Promise<SpeakResult>(resolve => { interrupt = resolve; });
+    } });
+
+  const answer = floor.say(1, 'The first answer is still in progress.');
+  await Promise.resolve();
+  floor.noteTalking('roee');
+  interrupt({ outcome: 'interrupted', heardMs: 0 });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Flux can have more than a second of quiet inside one compound utterance ("stop ... just tell me").
+  await advance(1_200);
+  assert.deepEqual(said, ['The first answer is still in progress.']);
+
+  floor.noteTalking('roee', true);
+  assert.equal(await answer, 'spoken');
+  assert.equal(said.length, 2);
+});
+
 test('a cut that came after everything was heard is not repeated', async () => {
   const said: string[] = [];
   const floor = new SpeechFloor({ resumeAfterMs: 5, speak: async (text): Promise<SpeakResult> => {

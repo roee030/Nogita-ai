@@ -215,6 +215,7 @@ test('the release report measures from the logs: first sound, interruptions, mis
   assert.equal(report.unnamedActivations.length, 1);
   assert.deepEqual(report.missed.map(m => m.why), ['addressed by name but ignored', 'question never reached a final status']);
   const text = render([report]);
-  assert.match(text, /First audible response p50 .* 1\.10 s \(n=1\) \| ≤ 1\.0 s \| \*\*misses\*\*/);
+  assert.match(text, /Transcript receipt to first forwarded PCM p50 \| 1\.10 s \(n=1\)/);
+  assert.match(text, /Acoustic end to audible response \| n\/a/);
   assert.match(text, /Speech for a stopped\/cancelled question \| 1 /);
 });

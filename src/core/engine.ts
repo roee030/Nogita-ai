@@ -47,6 +47,7 @@ interface Session {
   /** Voice meetings: questions being looked up or answered, each on its own, sharing one voice. */
   questions: Question[];
   nextQuestionId: number;
+  nextPlaybackId: number;
   floor?: SpeechFloor;
 }
 
@@ -55,6 +56,7 @@ export type QuestionStatus = 'speculative' | 'working' | 'answering' | 'interrup
 /** One question to Nogita in a voice meeting, tracked from the moment it is heard until it is answered or dropped. */
 interface Question {
   id: number;
+  inputTurnIds?: string[];
   actorId: string;
   speaker: string;
   request: string;
@@ -85,6 +87,7 @@ interface Question {
 }
 export interface QuestionEvent {
   id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
+  inputTurnIds?: string[];
 }
 /** Handle for a question started before the end of the speaker's turn was confirmed. */
 export interface Speculation { readonly sessionId: string; readonly question: unknown; cancel(): void }
@@ -108,15 +111,18 @@ export interface NogitaEngineOptions {
   /** What she is doing right now, for the presence screen: a tool a question runs, or an answer waiting for a pause. */
   /** Puts a card on the meeting's presence screen (undefined clears it); enables the show_on_screen tool. */
   onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
-  onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }) => void;
+  onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }
+    | { kind: 'model_first_text'; questionId?: number; step: number; ms: number }) => void;
   /** A piece of a voice answer starts or ends playing (with how it ended), for per-turn diagnostics. */
-  onSpeech?: (sessionId: string, event: { questionId: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }) => void;
+  onSpeech?: (sessionId: string, event: { questionId: number; playbackId: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }) => void;
   /** Who can see the shared screen (participants not mapped to a team member); gates show_on_screen. */
   screenAudience?: (sessionId: string) => { unverified: number } | undefined;
   /** Delegated missions: enables delegate_mission, missions_status and decide_mission for authorized people. */
   missions?: MissionRunner;
   /** Someone asked her to leave in words the fast check missed; called once the reply is over (enables leave_meeting). */
   onLeaveRequested?: (sessionId: string) => void;
+  /** Voice meetings proactively prime the model prompt cache. False is reserved for cold-baseline measurement. */
+  agentCacheWarmup?: boolean;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
@@ -265,6 +271,7 @@ export class NogitaEngine {
   private readonly phrases: PhrasePicker;
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   private readonly actionItemRecap: boolean;
+  private readonly agentCacheWarmup: boolean;
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
@@ -298,6 +305,7 @@ export class NogitaEngine {
     this.onLeaveRequested = options.onLeaveRequested;
     this.floorOptions = options.floor ?? {};
     this.actionItemRecap = options.actionItemRecap === true;
+    this.agentCacheWarmup = options.agentCacheWarmup !== false;
   }
 
   private validateSessionId(sessionId: string): void {
@@ -310,7 +318,7 @@ export class NogitaEngine {
     this.sessions.set(sessionId, {
       meeting, history: [], items: new ActionItemTracker(), lastArrivalSequence: 0, eventIds: new Set(), raised: false, mutedUntil: 0,
       lastAssessmentAt: 0, utterancesSinceAssessment: 0, assessing: false,
-      processing: Promise.resolve(), ending: false, lastModelCallAt: 0, questions: [], nextQuestionId: 1,
+      processing: Promise.resolve(), ending: false, lastModelCallAt: 0, questions: [], nextQuestionId: 1, nextPlaybackId: 1,
     });
     const session = this.sessions.get(sessionId)!;
     if (this.dependencies.agent && meeting.capabilities.has('speak')) {
@@ -344,6 +352,7 @@ export class NogitaEngine {
    * written when the session starts and read again before its 5-minute lifetime ends while the meeting is quiet.
    */
   private keepAgentCacheWarm(sessionId: string): void {
+    if (!this.agentCacheWarmup) return;
     const session = this.sessions.get(sessionId);
     const agent = this.dependencies.agent;
     if (!session || session.ending || !agent?.warmCache || !session.meeting.capabilities.has('speak')) return;
@@ -584,10 +593,11 @@ export class NogitaEngine {
 
   /** Speech for the floor: no chat mirror (the whole answer goes to chat once) and no chat fallback. */
   private async floorSpeak(sessionId: string, s: Session, text: string, owner: number): Promise<SpeakResult> {
-    this.onSpeech?.(sessionId, { questionId: owner, phase: 'start' });
+    const playbackId = s.nextPlaybackId++;
+    this.onSpeech?.(sessionId, { questionId: owner, playbackId, phase: 'start' });
     let result: SpeakResult;
     try {
-      await s.meeting.speak(text, { chatMirror: false });
+      await s.meeting.speak(text, { chatMirror: false, questionId: owner, playbackId });
       this.dependencies.usage?.recordTts(sessionId, true);
       result = 'spoken';
     } catch (error) {
@@ -596,7 +606,7 @@ export class NogitaEngine {
         : error instanceof Error && /interrupt/i.test(error.message) ? 'interrupted' : 'failed';
     }
     const outcome = typeof result === 'string' ? result : result.outcome;
-    this.onSpeech?.(sessionId, { questionId: owner, phase: 'end', outcome,
+    this.onSpeech?.(sessionId, { questionId: owner, playbackId, phase: 'end', outcome,
       ...(typeof result !== 'string' && result.heardMs !== undefined ? { heardMs: Math.round(result.heardMs) } : {}) });
     return result;
   }
@@ -609,6 +619,7 @@ export class NogitaEngine {
   private reportQuestion(sessionId: string, q: Question, status: QuestionStatus, detail?: string): void {
     q.status = status;
     this.onQuestion?.(sessionId, { id: q.id, status, speaker: q.speaker, request: q.request,
+      inputTurnIds: q.inputTurnIds,
       ...(q.topic ? { topic: q.topic } : {}), ...(detail ? { detail } : {}) });
   }
   private static isOpen(q: Question): boolean {
@@ -659,6 +670,7 @@ export class NogitaEngine {
     let commit!: () => void;
     const gate = new Promise<void>(resolve => { commit = resolve; });
     return { id: s.nextQuestionId++, actorId: utterance.actor.id, speaker: utterance.actor.displayName, request,
+      inputTurnIds: utterance.inputTurnIds,
       key: questionKey(request), askedAt: this.now(), startedAt, status, needsLabel: false, labelled: false,
       agentNamesTopic: false, abort: new AbortController(), gate, commit, firstSpeechRecorded: false, queuedSpeech: false, interruptions: 0 };
   }
@@ -729,7 +741,7 @@ export class NogitaEngine {
     const key = questionKey(request);
     if (s.questions.some(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key)) return undefined;
     const q = this.newQuestion(s, utterance, request, 'speculative', performance.now());
-    this.onQuestion?.(sessionId, { id: q.id, status: 'speculative', speaker: q.speaker, request });
+    this.onQuestion?.(sessionId, { id: q.id, status: 'speculative', speaker: q.speaker, request, inputTurnIds: q.inputTurnIds });
     q.run = this.runAgentTurn(sessionId, s, utterance, request, undefined, q, s.history.map(turn => turn.text))
       .catch(() => undefined);
     return { sessionId, question: q, cancel: () => {
@@ -896,6 +908,8 @@ export class NogitaEngine {
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, maxSteps: voice ? 5 : 8,
         onToolUse, signal: q?.abort.signal, beforeWrite: q ? () => q.gate : undefined,
+        onFirstText: (step, ms) => this.onActivity?.(sessionId, { kind: 'model_first_text',
+          ...(q ? { questionId: q.id } : {}), step, ms }),
       }));
     } catch {
       if (stillWorking !== undefined) this.cancel(stillWorking);
@@ -1192,6 +1206,7 @@ export class NogitaEngine {
       if (early && context.speculation!.sessionId === sessionId && early.status === 'speculative' && !early.abort.signal.aborted &&
           early.actorId === utterance.actor.id && early.key === key && !continuation) {
         q = early;
+        q.inputTurnIds = utterance.inputTurnIds;
         adopted = true;
         s.raisedReason = undefined;
         this.openQuestion(sessionId, s, q);

@@ -27,6 +27,11 @@ export interface SessionReport {
   lowConfidence: number;
   heard: number;
   longAnswers: number;
+  firstTextMs: number[];
+  ttsFirstAudioMs: number[];
+  staleAudio: number;
+  eotSinceVoiceMs: number[];
+  speculation: { started: number; adopted: number; rolledBack: number; unresolved: number };
 }
 
 const OPEN = new Set(['speculative', 'working', 'answering', 'interrupted']);
@@ -42,10 +47,16 @@ export function percentile(values: readonly number[], p: number): number | undef
 export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const events = [...lines].sort((a, b) => a.at - b.at);
   const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0,
-    missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0 };
+    missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
+    firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 } };
   if (events.length) report.minutes = Math.round((events.at(-1)!.at - events[0]!.at) / 600) / 100;
-  const questions = new Map<number, { opened: number; speaker: string; final?: string; firstSpeechAt?: number; firstAudio?: number }>();
+  const questions = new Map<number, { opened: number; speaker: string; final?: string; firstSpeechAt?: number; firstAudio?: number;
+    speculative?: boolean; confirmedAt?: number; inputTurnIds?: string[] }>();
+  const firstTextSteps = new Set<string>();
+  const startedPlaybacks = new Set<number>();
+  const pausedPlaybacks = new Set<number>();
   const heardBy = new Map<string, number[]>();
+  const heardInputs = new Map<string, number>();
   let speakingQuestion: number | undefined;
   let audioStartAt: number | undefined;
   let ui: { state: string; since: number } | undefined;
@@ -53,6 +64,7 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
     switch (event.type) {
       case 'heard': {
         report.heard++;
+        if (typeof event.inputTurnId === 'string') heardInputs.set(event.inputTurnId, event.at);
         if (typeof event.confidence === 'number' && event.confidence < 0.7) report.lowConfidence++;
         if (event.addressed && event.verified) {
           const list = heardBy.get(String(event.speaker)) ?? [];
@@ -65,7 +77,16 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
         const id = Number(event.id);
         let q = questions.get(id);
         if (!q) { q = { opened: event.at, speaker: String(event.speaker) }; questions.set(id, q); }
+        if (Array.isArray(event.inputTurnIds) && event.inputTurnIds.length) q.inputTurnIds = event.inputTurnIds.filter((id): id is string => typeof id === 'string');
         const status = String(event.status);
+        if (status === 'speculative' && !q.speculative) {
+          q.speculative = true;
+          report.speculation.started++;
+        }
+        if (status === 'working' && q.confirmedAt === undefined) {
+          q.confirmedAt = event.at;
+          if (q.speculative) report.speculation.adopted++;
+        }
         if (!OPEN.has(status) && !q.final) {
           q.final = status;
           if (status === 'failed' || (status === 'chat_only' && /no opening/.test(String(event.detail ?? '')))) {
@@ -87,13 +108,24 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
       }
       case 'audio': {
         if (event.phase === 'start') {
+          if (typeof event.playbackId === 'number') {
+            if (startedPlaybacks.has(event.playbackId)) break;
+            startedPlaybacks.add(event.playbackId);
+          }
           audioStartAt = event.at;
-          const q = speakingQuestion === undefined ? undefined : questions.get(speakingQuestion);
+          const owner = typeof event.id === 'number' ? event.id : speakingQuestion;
+          const q = owner === undefined ? undefined : questions.get(owner);
+          if (q?.final && WITHDRAWN.has(q.final)) report.staleAudio++;
+          if (typeof event.ttfaMs === 'number' && Number.isFinite(event.ttfaMs) && event.ttfaMs >= 0) report.ttsFirstAudioMs.push(event.ttfaMs);
           if (q && q.firstAudio === undefined) {
             q.firstAudio = event.at;
-            // From the end of the person's turn (the transcript arrived) to the first sound of her voice.
-            const asked = (heardBy.get(q.speaker) ?? []).filter(at => at <= q.opened && q.opened - at < 15_000).at(-1) ?? q.opened;
-            report.firstAudioMs.push(event.at - asked);
+            // Match against confirmation, not speculative start; never invent missing transcript timestamps.
+            const confirmed = q.confirmedAt ?? (q.speculative ? undefined : q.opened);
+            const inputs = q.inputTurnIds?.map(id => heardInputs.get(id));
+            const asked = inputs?.length ? (inputs.every((at): at is number => at !== undefined) ? Math.max(...inputs) : undefined)
+              : confirmed === undefined ? undefined : (heardBy.get(q.speaker) ?? [])
+                .filter(at => at <= confirmed && confirmed - at < 15_000).at(-1);
+            if (asked !== undefined && asked <= event.at) report.firstAudioMs.push(event.at - asked);
           }
         } else if (audioStartAt !== undefined) {
           if (event.outcome === 'done' && Number(event.playedMs ?? 0) > 15_000) report.longAnswers++;
@@ -102,8 +134,27 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
         break;
       }
       case 'interrupt':
-        if (event.cause === 'voice' && typeof event.latencyMs === 'number') report.interruptMs.push(event.latencyMs);
-        else report.commandStops++;
+        if (event.cause === 'voice') {
+          if (typeof event.latencyMs === 'number' &&
+              !(typeof event.playbackId === 'number' && pausedPlaybacks.has(event.playbackId))) report.interruptMs.push(event.latencyMs);
+        } else report.commandStops++;
+        break;
+      case 'audio_pause':
+        if (typeof event.latencyMs === 'number') report.interruptMs.push(event.latencyMs);
+        if (typeof event.playbackId === 'number') pausedPlaybacks.add(event.playbackId);
+        break;
+      case 'model_first_text': {
+        const key = `${event.id}:${event.step}`;
+        if (typeof event.id === 'number' && typeof event.step === 'number' && !firstTextSteps.has(key) &&
+            typeof event.ms === 'number' && Number.isFinite(event.ms) && event.ms >= 0) {
+          firstTextSteps.add(key);
+          report.firstTextMs.push(event.ms);
+        }
+        break;
+      }
+      case 'eot':
+        if (event.phase === 'confirmed' && typeof event.sinceLastVoiceMs === 'number' &&
+            Number.isFinite(event.sinceLastVoiceMs) && event.sinceLastVoiceMs >= 0) report.eotSinceVoiceMs.push(event.sinceLastVoiceMs);
         break;
       case 'turn':
         if (event.addressed && event.result === 'ignored' && Number(event.words) > 2) {
@@ -133,6 +184,11 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
     report.stuckScreens.push({ state: `${ui.state} at end of log`, ms: events.at(-1)!.at - ui.since });
   }
   for (const q of questions.values()) {
+    if (q.speculative && q.confirmedAt === undefined) {
+      if (q.final === 'rolled_back') report.speculation.rolledBack++;
+      else report.speculation.unresolved++;
+      continue; // An unconfirmed attempt is not a lost user question or a completion denominator.
+    }
     report.questions++;
     const final = q.final ?? 'never finished';
     report.finals[final] = (report.finals[final] ?? 0) + 1;
@@ -148,6 +204,12 @@ export function render(reports: readonly SessionReport[]): string {
   const all = (pick: (r: SessionReport) => number[]) => reports.flatMap(pick);
   const firstAudio = all(r => r.firstAudioMs);
   const interrupts = all(r => r.interruptMs);
+  const firstText = all(r => r.firstTextMs);
+  const ttsAudio = all(r => r.ttsFirstAudioMs);
+  const eot = all(r => r.eotSinceVoiceMs);
+  const speculation = reports.reduce((sum, r) => ({ started: sum.started + r.speculation.started,
+    adopted: sum.adopted + r.speculation.adopted, rolledBack: sum.rolledBack + r.speculation.rolledBack,
+    unresolved: sum.unresolved + r.speculation.unresolved }), { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 });
   const finals: Record<string, number> = {};
   for (const r of reports) for (const [k, v] of Object.entries(r.finals)) finals[k] = (finals[k] ?? 0) + v;
   const counted = Object.entries(finals).filter(([k]) => !WITHDRAWN.has(k)).reduce((sum, [, v]) => sum + v, 0);
@@ -160,9 +222,15 @@ export function render(reports: readonly SessionReport[]): string {
     '# Nogita release report (from real-meeting turn logs)', '',
     `Sessions: ${reports.length} · minutes: ${reports.reduce((s, r) => s + r.minutes, 0).toFixed(1)} · questions: ${counted + Object.entries(finals).filter(([k]) => WITHDRAWN.has(k)).reduce((s, [, v]) => s + v, 0)}`, '',
     '| Measure | Value | Target | Result |', '|---|---|---|---|',
-    `| First audible response p50 (end of turn to her first sound) | ${fmt(p50)} (n=${firstAudio.length}) | ≤ 1.0 s | ${mark(p50 === undefined ? undefined : p50 <= 1_000)} |`,
-    `| First audible response p95 | ${fmt(p95)} | ≤ 2.0 s | ${mark(p95 === undefined ? undefined : p95 <= 2_000)} |`,
-    `| Interruption to silence p95 (voice onset to stop) | ${fmt(i95)} (n=${interrupts.length}) | ≤ 0.3 s | ${mark(i95 === undefined ? undefined : i95 <= 300)} |`,
+    `| Transcript receipt to first forwarded PCM p50 | ${fmt(p50)} (n=${firstAudio.length}) | diagnostic | — |`,
+    `| Transcript receipt to first forwarded PCM p95 | ${fmt(p95)} | diagnostic | — |`,
+    '| Acoustic end to audible response | n/a (requires labelled input and client playback) | p50 ≤ 1.0 s; p95 ≤ 2.0 s | no data |',
+    `| Interruption p95 (server voice onset to local stop) | ${fmt(i95)} (n=${interrupts.length}) | ≤ 0.3 s (local proxy) | ${mark(i95 === undefined ? undefined : i95 <= 300)} |`,
+    `| Model request to first text delta p50 / p95 | ${fmt(percentile(firstText, 50))} / ${fmt(percentile(firstText, 95))} (n=${firstText.length}) | diagnostic; all steps including speculative | — |`,
+    `| Speak request to first forwarded PCM p50 / p95 | ${fmt(percentile(ttsAudio, 50))} / ${fmt(percentile(ttsAudio, 95))} (n=${ttsAudio.length}) | includes connection, synthesis and local buffering | — |`,
+    `| Audio started for a withdrawn question | ${reports.reduce((sum, r) => sum + r.staleAudio, 0)} | 0 | ${mark(reports.every(r => r.staleAudio === 0))} |`,
+    `| Last own-voice frame to confirmed Flux EOT p50 / p95 | ${fmt(percentile(eot, 50))} / ${fmt(percentile(eot, 95))} (n=${eot.length}) | server estimate | — |`,
+    `| Speculation started / adopted / rolled back / unresolved | ${speculation.started} / ${speculation.adopted} / ${speculation.rolledBack} / ${speculation.unresolved} | diagnostic | — |`,
     `| Missed or silently lost questions | ${missed.length} | 0 | ${mark(missed.length === 0)} |`,
     `| Speech for a stopped/cancelled question | ${stale} | 0 | ${mark(stale === 0)} |`,
     `| Stuck screen states | ${stuck.length} | 0 | ${mark(stuck.length === 0)} |`,

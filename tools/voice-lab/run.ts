@@ -4,7 +4,8 @@
  * she did. Jira and Slack writes are intercepted unless --live-writes is given; reads are live.
  *
  *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
- *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5] [--list]
+ *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5]
+ *                        [--warmup production|cold] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
  * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
@@ -18,7 +19,7 @@ import type { ActionReceipt, ChatPort } from '../../src/core/contracts.ts';
 import { playScenario, synthesizeTurn } from './conversation.ts';
 import { createNoise, type NoiseKind } from './noise.ts';
 import { summarize, writeReport, type ScenarioResult } from './report.ts';
-import { VoiceRig } from './rig.ts';
+import { VoiceRig, parseWarmupMode } from './rig.ts';
 import { BACKGROUND_LINES, BACKGROUND_VOICES, SCENARIOS, type Scenario } from './scenarios.ts';
 import { judge, scoreTurn } from './score.ts';
 import { deepgramSynthesizer } from './tts.ts';
@@ -28,6 +29,7 @@ const { values } = parseArgs({ options: {
   stt: { type: 'string' }, noise: { type: 'string' }, snr: { type: 'string' },
   'router-quiet-ms': { type: 'string' }, 'frame-ms': { type: 'string' }, out: { type: 'string' },
   'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' }, eager: { type: 'string' },
+  'incomplete-hold-ms': { type: 'string' }, warmup: { type: 'string' },
 } });
 
 if (values.list) {
@@ -64,6 +66,8 @@ const sttMode = chooseSttMode(values.stt ?? env.DEEPGRAM_STT_MODE, parseLanguage
 const eager = values.eager ?? (sttMode === 'flux-english' ? String(DEFAULT_EAGER_EOT_THRESHOLD) : 'off');
 const routerQuietMs = values['router-quiet-ms'] ? Number(values['router-quiet-ms']) : undefined;
 const frameMs = values['frame-ms'] ? Number(values['frame-ms']) : 20;
+const incompleteTurnHoldMs = Number(values['incomplete-hold-ms'] ?? env.NOGITA_INCOMPLETE_TURN_HOLD_MS ?? 0);
+const warmup = parseWarmupMode(values.warmup);
 
 // Writes are logged on the running rig. By default they never leave the lab and get a placeholder receipt;
 // with --live-writes they really create the task or post the message.
@@ -124,7 +128,9 @@ if (dependencies.code.prepare) await dependencies.code.prepare();
 const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
   routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
-  eot: values.eot ?? '0.8', eager, thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
+  eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs),
+  warmup,
+  thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
 for (const scenario of scenarios) {
   console.log(`\n▶ ${scenario.title}`);
@@ -132,7 +138,8 @@ for (const scenario of scenarios) {
   const audio: Float32Array[] = [];
   for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
   rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
-    dependencies: { ...dependencies, chat }, routerQuietMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+    dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+    warmup,
     eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
     engineOptions: { handRaiseFallback: 'chat' } });

@@ -24,7 +24,7 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly synthesizeSpeech?: (text: string) => Promise<Buffer>,
     private readonly recordSpeechDuration?: (stage: SpeechStage, durationMs: number) => void,
     private readonly realtimeAudioUrl?: string,
-    private readonly streamSpeech?: (text: string) => Promise<void>,
+    private readonly streamSpeech?: (text: string, options?: SpeakOptions) => Promise<void>,
     /** Nogita's presence page, shown as a screen share (or her camera) for the whole meeting. */
     private readonly presence?: { url: string; mode: 'screenshare' | 'camera' },
     /** Stops realtime speech playing now (stop, cancel, correction); false when nothing was playing. */
@@ -124,7 +124,7 @@ export class AttendeeMeeting implements MeetingPort {
       try {
         if (this.streamSpeech) {
           const submissionStarted = performance.now();
-          try { await this.streamSpeech(message); }
+          try { await this.streamSpeech(message, options); }
           finally { this.recordSpeechDuration?.('audio_submission', performance.now() - submissionStarted); }
         } else if (this.synthesizeSpeech) {
           const synthesisStarted = performance.now();

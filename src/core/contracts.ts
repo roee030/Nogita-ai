@@ -13,6 +13,8 @@ export interface Actor {
 }
 export interface Utterance {
   eventId: string;
+  /** Input audio turns combined by the router; opaque diagnostic IDs, not authorization. */
+  inputTurnIds?: string[];
   actor: Actor;
   text: string;
   at?: number;
@@ -31,7 +33,9 @@ export class SpeechFallbackSentError extends Error {
 export class SpeechInterruptedError extends Error {
   constructor(readonly playedMs?: number) { super('speech interrupted by participant'); }
 }
-export interface SpeakOptions { chatMirror?: boolean }
+/** Correlation only: allocated by orchestration, never supplied by model-generated text. */
+export interface SpeechTrace { questionId?: number; playbackId?: number }
+export interface SpeakOptions extends SpeechTrace { chatMirror?: boolean }
 export interface MeetingPort {
   readonly id: string;
   readonly capabilities: ReadonlySet<Capability>;

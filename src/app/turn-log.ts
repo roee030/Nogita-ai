@@ -14,13 +14,16 @@ export type TurnLogMode = 'off' | 'redacted' | 'full';
 
 export type TurnLogEvent =
   | { type: 'session'; phase: 'start' | 'restore' | 'end' }
-  | { type: 'heard'; speaker: string; addressed: boolean; verified: boolean; words: number; confidence?: number; text?: string }
+  | { type: 'heard'; speaker: string; addressed: boolean; verified: boolean; words: number; confidence?: number; text?: string; inputTurnId?: string }
   | { type: 'turn'; speaker: string; addressed: boolean; words: number; result: string; ms: number; text?: string }
-  | { type: 'question'; id: number; status: string; speaker: string; detail?: string; request?: string }
+  | { type: 'question'; id: number; status: string; speaker: string; detail?: string; request?: string; inputTurnIds?: string[] }
   | { type: 'tool'; id?: number; tools: string[] }
-  | { type: 'speech'; id: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }
-  | { type: 'audio'; phase: 'start' | 'end'; outcome?: string; playedMs?: number }
-  | { type: 'interrupt'; cause: string; latencyMs?: number; playedMs: number }
+  | { type: 'model_first_text'; id?: number; step: number; ms: number }
+  | { type: 'eot'; speaker: string; phase: 'eager' | 'confirmed' | 'resumed'; sinceLastVoiceMs?: number; inputTurnId?: string }
+  | { type: 'speech'; id: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }
+  | { type: 'audio'; id?: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; playedMs?: number; ttfaMs?: number }
+  | { type: 'audio_pause'; id?: number; playbackId?: number; latencyMs: number; playedMs: number }
+  | { type: 'interrupt'; cause: string; latencyMs?: number; playedMs: number; id?: number; playbackId?: number }
   | { type: 'ui'; state: string; status: string; open: number }
   | { type: 'stale_question'; id: number }
   | { type: 'mission'; id: string; status: string; activity?: string }

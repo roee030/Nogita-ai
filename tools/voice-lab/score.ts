@@ -2,7 +2,7 @@
  * Turns a played conversation into verdicts: did Nogita hear it, did she do the right thing, how long was
  * the room left in silence.
  */
-import { directlyAddressesNogita } from '../../src/core/policy.ts';
+import { directlyAddressesNogita, normalizeWakeWord } from '../../src/core/policy.ts';
 import type { TurnRecord } from './conversation.ts';
 
 export interface Check { name: string; ok: boolean; detail?: string }
@@ -14,6 +14,11 @@ export interface TurnScore {
   /** Was Nogita's name recognized when the script addressed her? */
   addressHeard?: boolean;
   judgement?: Judgement;
+}
+
+function wakeWordHeard(text: string): boolean {
+  const normalized = normalizeWakeWord(text);
+  return directlyAddressesNogita(normalized) || /\bnogita\b/i.test(normalized);
 }
 
 export function words(text: string): string[] {
@@ -61,7 +66,7 @@ export function scoreTurn(record: TurnRecord): TurnScore {
   const everything = `${said} ${record.chat.join(' ')}`.toLowerCase();
   const spoke = record.spoken.length > 0 && record.timing.firstAudio !== undefined;
   const addressed = directlyAddressesNogita(record.script);
-  const addressHeard = addressed ? !!record.heard && directlyAddressesNogita(record.heard) : undefined;
+  const addressHeard = addressed ? !!record.heard && wakeWordHeard(record.heard) : undefined;
 
   if (!record.heard && expect.respond !== 'silent') checks.push({ name: 'heard', ok: false, detail: 'no transcript reached Nogita' });
   if (addressHeard === false) checks.push({ name: 'name heard', ok: false, detail: `heard "${record.heard ?? ''}"` });
@@ -124,9 +129,14 @@ export function scoreTurn(record: TurnRecord): TurnScore {
   }
   if (record.interruptedByNoise) checks.push({ name: 'not cut off', ok: false, detail: 'speech was interrupted without anyone talking over her' });
   if (record.turn.bargeIn) {
-    const stop = record.timing.bargeInStop;
-    checks.push({ name: 'stops when interrupted', ok: stop !== undefined && stop < 2_500,
-      detail: stop === undefined ? 'kept talking' : `${stop} ms` });
+    if (record.turn.bargeIn.kind === 'backchannel') {
+      const cut = record.events.some(event => event.type === 'interrupt' && event.cause === 'voice');
+      checks.push({ name: 'keeps talking through backchannel', ok: !cut, detail: cut ? 'playback was interrupted' : undefined });
+    } else {
+      const stop = record.timing.bargeInStop;
+      checks.push({ name: 'stops when interrupted', ok: stop !== undefined && stop <= (expect.bargeInWithinMs ?? 300),
+        detail: stop === undefined ? 'kept talking' : `${stop} ms` });
+    }
   }
   return {
     checks, passed: checks.every(check => check.ok), addressHeard,

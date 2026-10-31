@@ -34,6 +34,8 @@ export interface Expectation {
   firstSoundWithinMs?: number;
   /** Her own words (not a canned filler) within this many ms of the last word. */
   contentWithinMs?: number;
+  /** Acoustic onset to silence for scripted barge-in; default voice parity target is 300ms. */
+  bargeInWithinMs?: number;
   /** How the question asked in this turn must end in Nogita's question tracker (answered, cancelled, stopped...). */
   questionStatus?: string[];
   /** After this turn reached Nogita she must not speak again in this turn's window (for "stop"). */
@@ -51,8 +53,8 @@ export interface Turn {
   pauseMs?: number;
   /** Silence after Nogita finished (or after the previous turn) before this turn starts. */
   gapMs?: number;
-  /** Start speaking while Nogita is still answering the previous turn, after this much of her audio. */
-  bargeIn?: { afterAudioMs: number };
+  /** Start speaking while Nogita is still answering the previous turn. Backchannels must not stop playback. */
+  bargeIn?: { afterAudioMs: number; kind?: 'interrupt' | 'backchannel' };
   /** Start this long after the previous speaker started, talking over them (two people at once). */
   overlapPreviousMs?: number;
   /** Start this long after the previous speaker finished, without waiting for Nogita (a second question queued). */
@@ -412,6 +414,28 @@ SCENARIOS.push(
         expect: { respond: 'any' } },
       { speaker: 'roee', say: "Not yet, I'll read it after lunch.", afterPreviousMs: 300,
         expect: { respond: 'any', note: 'She waits for the two of them to finish, then answers; she never starts talking over them.' } },
+    ],
+  },
+  {
+    name: 'backchannels', title: 'Short listener acknowledgements do not seize the floor', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, explain in four short sentences how a web request reaches a server.',
+        expect: { respond: 'speak' } },
+      { speaker: 'dana', say: 'Yeah.', bargeIn: { afterAudioMs: 700, kind: 'backchannel' },
+        expect: { respond: 'any', note: 'A listener acknowledgement; Nogita should keep finishing the existing answer.' } },
+      { speaker: 'roee', say: 'Nogita, explain in four short sentences what a database index does.',
+        expect: { respond: 'speak' } },
+      { speaker: 'dana', say: 'Right.', bargeIn: { afterAudioMs: 700, kind: 'backchannel' },
+        expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, explain in four short sentences why services use a queue.',
+        expect: { respond: 'speak' } },
+      { speaker: 'dana', say: 'Mm-hm.', bargeIn: { afterAudioMs: 700, kind: 'backchannel' },
+        expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, explain in four short sentences what a cache is for.',
+        expect: { respond: 'speak' } },
+      { speaker: 'dana', say: 'Okay.', bargeIn: { afterAudioMs: 700, kind: 'backchannel' },
+        expect: { respond: 'any' } },
     ],
   },
 );

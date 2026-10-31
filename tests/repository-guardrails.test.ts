@@ -26,10 +26,15 @@ test('local secrets and runtime state are excluded from source control', () => {
   const sensitive = tracked.filter(path => {
     const parts = path.split('/');
     const basename = parts.at(-1)!;
-    return (basename !== '.env.example' && (basename === '.env' || basename.startsWith('.env.'))) ||
+    return (basename !== '.env.example' && path !== '.env.control.example' && (basename === '.env' || basename.startsWith('.env.'))) ||
       parts.includes('.nogita-state');
   });
   assert.deepEqual(sensitive, []);
+  // The tracked control-plane template must never acquire real credentials.
+  const template = readFileSync('.env.control.example', 'utf8');
+  for (const line of template.split(/\r?\n/)) {
+    if (/^[A-Z0-9_]*(?:KEY|SECRET|TOKEN)=/.test(line)) assert.match(line, /^[A-Z0-9_]+=\s*$/);
+  }
 });
 
 test('production container is non-root, health-checked, secret-safe, and built in CI', () => {

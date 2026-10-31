@@ -63,11 +63,14 @@ export function concat(parts: Float32Array[]): Float32Array {
 
 /** Leading/trailing silence trimmed to `keepMs`, so "end of speech" is the end of the words. */
 export function trimSilence(samples: Float32Array, keepMs = 30): Float32Array {
-  const threshold = Math.max(0.004, activeRms(samples) * 0.05);
+  // Synthesis often contains isolated low-level samples in an otherwise silent lead-in. Sample-by-sample
+  // trimming treats those as speech and moves the lab's acoustic onset hundreds of milliseconds early. A
+  // 20 ms frame RMS matches the streaming detector and keeps breaths/words while rejecting the noise bed.
+  const threshold = Math.max(0.004, activeRms(samples) * 0.1);
   let start = 0;
   let end = samples.length;
-  while (start < end && Math.abs(samples[start]!) < threshold) start++;
-  while (end > start && Math.abs(samples[end - 1]!) < threshold) end--;
+  while (start + FRAME_SAMPLES <= end && rms(samples, start, start + FRAME_SAMPLES) < threshold) start += FRAME_SAMPLES;
+  while (end - FRAME_SAMPLES >= start && rms(samples, end - FRAME_SAMPLES, end) < threshold) end -= FRAME_SAMPLES;
   const keep = msToSamples(keepMs);
   return samples.slice(Math.max(0, start - keep), Math.min(samples.length, end + keep));
 }

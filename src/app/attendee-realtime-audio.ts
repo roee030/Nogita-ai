@@ -1,6 +1,6 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
-import { SpeechInterruptedError } from '../core/contracts.ts';
+import { SpeechInterruptedError, type SpeechTrace } from '../core/contracts.ts';
 
 const AUDIO_PATH = '/webhooks/attendee/audio';
 const AUDIO_SAMPLE_RATE = 16_000;
@@ -13,6 +13,13 @@ const MAX_PENDING_SPEAKER_BYTES = 5 * AUDIO_SAMPLE_RATE * 2;
 const MAX_PARTICIPANTS_PER_SESSION = 16;
 const MAX_TTS_TURN_BYTES = 5 * 1024 * 1024;
 const DEEPGRAM_IDLE_MS = 10_000;
+/** Output is already paused at the acoustic gate; abandon it only if continuous speech outlives STT's backchannel window. */
+const BARGE_IN_CANCEL_MS = 1_500;
+const BACKCHANNEL_PAUSE_MAX_MS = 1_500;
+/** Four 20 ms frames reject clicks while leaving transport headroom inside the 300 ms participant target. */
+const OWN_VOICE_GATE_MS = 80;
+/** Preserve onset through short unvoiced phonemes, but not across separate utterances. */
+const VOICE_RUN_GRACE_MS = 180;
 /** Flux early end-of-turn confidence for speculative starts (DEEPGRAM_EAGER_EOT_THRESHOLD; "off" disables them). */
 export const DEFAULT_EAGER_EOT_THRESHOLD = 0.5;
 
@@ -123,6 +130,8 @@ export interface RealtimeAudioOptions {
   baseUrl: string;
   signingSecret: string;
   deepgramApiKey: string;
+  /** Exclude meeting audio, transcripts, TTS text and synthesized audio from Deepgram model improvement. Default true. */
+  deepgramMipOptOut?: boolean;
   sttMode?: SttMode;
   /** Language hints for Nova-3 multilingual (default English). */
   languages?: readonly string[];
@@ -141,7 +150,7 @@ export interface RealtimeAudioOptions {
   ttsSynthesisTimeoutMs?: number;
   onTranscript: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string },
-    recognition?: { confidence?: number }) => void | Promise<void>;
+    recognition?: { confidence?: number; inputTurnId?: string }) => void | Promise<void>;
   onSpeechActivity?: (sessionId: string, participantUuid: string) => void;
   /** A participant's own voice on their microphone (audio level, within about 100 ms; no transcript). */
   onVoice?: (sessionId: string, participantUuid: string) => void;
@@ -150,18 +159,24 @@ export interface RealtimeAudioOptions {
   /** RMS level of a participant's own-voice audio frame (for the presence screen). */
   onInputLevel?: (sessionId: string, rms: number) => void;
   /** Nogita's speech audio as it is sent to the meeting, at playback pace. */
-  onOutputAudio?: (sessionId: string, pcm: Buffer) => void;
+  onOutputAudio?: (sessionId: string, pcm: Buffer, trace: SpeechTrace) => void;
   /** The first audio of a speak() call was sent to the meeting (the moment people start to hear her). */
-  onSpeechStart?: (sessionId: string) => void;
+  onSpeechStart?: (sessionId: string, trace: SpeechTrace & { ttfaMs: number }) => void;
   /** A speak() call ended: played to the end, cut off, or failed, with how much of it had played. */
-  onSpeechEnd?: (sessionId: string, end: { outcome: 'done' | 'interrupted' | 'failed'; playedMs: number }) => void;
+  onSpeechEnd?: (sessionId: string, end: SpeechTrace & { outcome: 'done' | 'interrupted' | 'failed'; playedMs: number }) => void;
   /** Her speech was stopped: `latencyMs` from the participant's voice onset (or the stop request) to the stop. */
-  onInterrupt?: (sessionId: string, interrupt: { cause: 'voice' | 'command'; latencyMs?: number; playedMs: number }) => void;
+  onInterrupt?: (sessionId: string, interrupt: SpeechTrace & { cause: 'voice' | 'command'; latencyMs?: number; playedMs: number }) => void;
+  /** Output paused while a short utterance is classified; it may resume when that utterance is a backchannel. */
+  onSpeechPause?: (sessionId: string, pause: SpeechTrace & { latencyMs: number; playedMs: number; remainingMs: number }) => void;
   /** Flux EagerEndOfTurn: the speaker is probably done with these words. */
   onEagerTranscript?: (sessionId: string, participantUuid: string, transcript: string,
-    identity?: { attendeeUserUuid?: string; displayName?: string }) => void;
+    identity?: { attendeeUserUuid?: string; displayName?: string }, inputTurnId?: string) => void;
   /** Flux TurnResumed: the speaker went on after an early end-of-turn. */
   onTurnResumed?: (sessionId: string, participantUuid: string) => void;
+  /** Server receipt timing; the own-voice frame is an estimate, not a client microphone timestamp. */
+  onTurnTiming?: (sessionId: string, participantUuid: string, event: {
+    phase: 'eager' | 'confirmed' | 'resumed'; sinceLastVoiceMs?: number; inputTurnId: string;
+  }) => void;
   onUsage?: (sessionId: string, usage: { sttBytes?: number; ttsCharacters?: number }) => void;
   authorizeRecoveredBot?: (sessionId: string, botId: string) => Promise<boolean>;
   onError?: (code: string) => void;
@@ -170,6 +185,7 @@ export interface RealtimeAudioOptions {
 }
 
 interface SpeakerStream {
+  inputTurnId: string;
   socket: WebSocket;
   pendingAudio: Buffer[];
   finalSegments: string[];
@@ -187,6 +203,7 @@ interface SpeakerStream {
   lastTurnText?: string;
   lastTurnAt?: number;
   lastVoiceSignalAt: number;
+  lastOwnVoiceAt?: number;
 }
 
 interface RealtimeSession {
@@ -201,16 +218,21 @@ interface RealtimeSession {
   participantIdentity: Map<string, { attendeeUserUuid?: string; displayName?: string }>;
   ttsSocket?: WebSocket;
   ttsOpening?: Promise<WebSocket>;
+  speechPreparation?: { abort: AbortController; trace: SpeechTrace };
   ttsPending?: { resolve: () => void; reject: (error: Error) => void;
-    synthesisComplete: () => void; bytes: number; firstAudioAt?: number; sentMs: number };
+    synthesisComplete: () => void; bytes: number; firstAudioAt?: number; lastAudioEndsAt?: number;
+    sentMs: number; requestedAt: number; trace: SpeechTrace };
   /** When the latest own-voice run began on any microphone (interruption latency is measured from it). */
   voiceOnsetAt?: number;
+  voiceOnsetParticipant?: string;
   ttsCarry?: Buffer;
   ttsQueue: Buffer[];
   ttsFlushed: boolean;
   /** Loudest speaking level heard from anyone in the meeting (the own-voice gate's room reference). */
   voicePeak: number;
   ttsTimer?: ReturnType<typeof setTimeout>;
+  ttsPaused: boolean;
+  ttsPauseTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
 }
 
@@ -308,7 +330,8 @@ export class AttendeeRealtimeAudioHub {
       session.attendeeSocket = client;
       client.on('message', data => this.onAttendeeMessage(sessionId, session, data));
       client.on('close', () => {
-        if (session.attendeeSocket === client) session.attendeeSocket = undefined;
+        if (session.attendeeSocket !== client) return;
+        session.attendeeSocket = undefined;
         this.closeProviderSockets(session);
       });
       client.on('error', () => this.options.onError?.('attendee_audio_socket_error'));
@@ -317,14 +340,34 @@ export class AttendeeRealtimeAudioHub {
     return true;
   }
 
-  async speak(sessionId: string, text: string): Promise<void> {
+  async speak(sessionId: string, text: string, trace: SpeechTrace = {}): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session || session.closed || session.attendeeSocket?.readyState !== WebSocket.OPEN || !session.botId) {
       throw new Error('Attendee realtime audio is not connected');
     }
     if (!text.trim() || text.length > 2000) throw new Error('invalid realtime speech text');
-    if (session.ttsPending) throw new Error('realtime speech is already in progress');
-    const tts = await this.openTts(session);
+    if (session.ttsPending || session.speechPreparation) throw new Error('realtime speech is already in progress');
+    const requestedAt = this.now();
+    const preparation = { abort: new AbortController(), trace: { questionId: trace.questionId, playbackId: trace.playbackId } };
+    session.speechPreparation = preparation;
+    let rejectOpening!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectOpening = () => reject(preparation.abort.signal.reason);
+      preparation.abort.signal.addEventListener('abort', rejectOpening, { once: true });
+    });
+    let tts: WebSocket;
+    try {
+      tts = await Promise.race([this.openTts(session), cancelled]);
+      preparation.abort.signal.throwIfAborted();
+      if (session.closed || session.attendeeSocket?.readyState !== WebSocket.OPEN) throw new Error('Attendee realtime audio disconnected');
+    } catch (error) {
+      this.options.onSpeechEnd?.(sessionId, { ...preparation.trace, playedMs: 0,
+        outcome: error instanceof SpeechInterruptedError ? 'interrupted' : 'failed' });
+      throw error;
+    } finally {
+      preparation.abort.signal.removeEventListener('abort', rejectOpening);
+      if (session.speechPreparation === preparation) session.speechPreparation = undefined;
+    }
     await new Promise<void>((resolve, reject) => {
       let pending!: NonNullable<RealtimeSession['ttsPending']>;
       const timeout = setTimeout(() => {
@@ -334,18 +377,21 @@ export class AttendeeRealtimeAudioHub {
       const settle = (error?: Error) => {
         clearTimeout(timeout);
         if (session.ttsPending === pending) {
-          this.options.onSpeechEnd?.(sessionId, { outcome: !error ? 'done' : error instanceof SpeechInterruptedError ? 'interrupted' : 'failed',
+          this.options.onSpeechEnd?.(sessionId, { ...pending.trace, outcome: !error ? 'done' : error instanceof SpeechInterruptedError ? 'interrupted' : 'failed',
             playedMs: error instanceof SpeechInterruptedError && error.playedMs !== undefined ? error.playedMs : this.playedMs(pending) });
           session.ttsPending = undefined;
           session.ttsQueue.length = 0;
           session.ttsFlushed = false;
           if (session.ttsTimer) clearTimeout(session.ttsTimer);
           session.ttsTimer = undefined;
+          if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+          session.ttsPauseTimer = undefined;
+          session.ttsPaused = false;
         }
         if (error) reject(error); else resolve();
       };
       pending = { resolve: () => settle(), reject: settle,
-        synthesisComplete: () => clearTimeout(timeout), bytes: 0, sentMs: 0 };
+        synthesisComplete: () => clearTimeout(timeout), bytes: 0, sentMs: 0, requestedAt, trace: preparation.trace };
       session.ttsPending = pending;
       session.ttsCarry = Buffer.alloc(0);
       session.ttsQueue.length = 0;
@@ -365,10 +411,22 @@ export class AttendeeRealtimeAudioHub {
   interruptSpeech(sessionId: string, cause: 'voice' | 'command' = 'command'): boolean {
     const session = this.sessions.get(sessionId);
     const pending = session?.ttsPending;
+    if (session?.speechPreparation) {
+      const preparation = session.speechPreparation;
+      session.speechPreparation = undefined;
+      preparation.abort.abort(new SpeechInterruptedError(0));
+      const onset = cause === 'voice' ? session.voiceOnsetAt : undefined;
+      this.options.onInterrupt?.(sessionId, { ...preparation.trace, cause, playedMs: 0,
+        ...(onset !== undefined ? { latencyMs: Math.max(0, this.now() - onset) } : {}) });
+      return true;
+    }
     if (!session || !pending) return false;
+    if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+    session.ttsPauseTimer = undefined;
+    session.ttsPaused = false;
     const playedMs = this.playedMs(pending);
     const onset = cause === 'voice' ? session.voiceOnsetAt : undefined;
-    this.options.onInterrupt?.(sessionId, { cause, playedMs, ...(onset !== undefined ? { latencyMs: Math.max(0, this.now() - onset) } : {}) });
+    this.options.onInterrupt?.(sessionId, { ...pending.trace, cause, playedMs, ...(onset !== undefined ? { latencyMs: Math.max(0, this.now() - onset) } : {}) });
     session.ttsQueue.length = 0;
     session.ttsCarry = Buffer.alloc(0);
     const interruptedSocket = session.ttsSocket;
@@ -383,6 +441,32 @@ export class AttendeeRealtimeAudioHub {
     // The answer to whoever interrupted should not wait for a new handshake.
     this.warmTts(session);
     return true;
+  }
+
+  /** Stop after the current paced frame, preserving the queued turn until recognition resolves a backchannel. */
+  private pauseSpeech(session: RealtimeSession): void {
+    const pending = session.ttsPending;
+    if (!pending) return;
+    if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+    // Continued voice extends the hold. A short acknowledgement resumes after its final transcript (or this
+    // fallback); continuous speech never leaks the queued answer back into the meeting between audio frames.
+    session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session), BACKCHANNEL_PAUSE_MAX_MS);
+    session.ttsPauseTimer.unref?.();
+    if (session.ttsPaused) return;
+    session.ttsPaused = true;
+    const onset = session.voiceOnsetAt ?? this.now();
+    const queuedUntil = pending.lastAudioEndsAt ?? this.now();
+    const remainingMs = Math.max(0, Math.round(queuedUntil - this.now()));
+    this.options.onSpeechPause?.(session.sessionId, { ...pending.trace, playedMs: this.playedMs(pending),
+      latencyMs: Math.max(0, Math.round(Math.max(this.now(), queuedUntil) - onset)), remainingMs });
+  }
+
+  private resumeSpeech(session: RealtimeSession): void {
+    if (!session.ttsPaused) return;
+    session.ttsPaused = false;
+    if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+    session.ttsPauseTimer = undefined;
+    this.drainAttendeeAudio(session);
   }
 
   /** Milliseconds of this speak() call's audio heard so far: sent at playback pace, never more than was sent. */
@@ -492,25 +576,55 @@ export class AttendeeRealtimeAudioHub {
     // so a first word is never mistaken for the room's background.
     const floor = speaker.noiseFloor ?? 0.003;
     speaker.noiseFloor = level < floor ? Math.max(level, 1e-5) : floor * 2 ** (frameMs / 1000);
-    if (level < speaker.noiseFloor * 4) return;
+    if (level < speaker.noiseFloor * 4) {
+      // Speech contains short unvoiced valleys. Decay the run instead of resetting it at once, otherwise the
+      // onset clock restarts inside a word and the measured interruption budget begins hundreds of ms late.
+      speaker.loudRunMs = Math.max(0, speaker.loudRunMs - frameMs / 2);
+      if (speaker.loudRunMs === 0 && session.voiceOnsetParticipant === participantUuid) {
+        session.voiceOnsetAt = undefined;
+        session.voiceOnsetParticipant = undefined;
+      }
+      return;
+    }
     // The speaker's own level fades over minutes (about 10% a minute), not seconds: with a fast fade, nearby
     // talk ten seconds after they stopped became "their" voice and cut Nogita off.
     speaker.speechPeak = Math.max(level, speaker.speechPeak * 0.999998 ** frameMs);
-    // Own speech: at least 100 ms within 6 dB of the speaker's level. Single loud syllables of nearby talk at
-    // -15 dB still passed a one-frame, 10 dB gate and cut Nogita off in the office scenario.
+    // Own speech: at least 100 ms within about 9 dB of the speaker's prior peak. Six dB made a quieter second
+    // utterance invisible after a loud first one. Single nearby syllables still cannot pass the 100 ms run gate.
     // Before someone has spoken, background talk on their microphone is the loudest thing it hears and sets their
     // level; the room's loudest speaker keeps that talk from counting (it must also be within 12 dB of them).
     session.voicePeak = Math.max(speaker.speechPeak, session.voicePeak * 0.999998 ** frameMs);
-    const own = level >= speaker.speechPeak * 0.5 && level >= session.voicePeak * 0.25;
+    const own = level >= speaker.speechPeak * 0.35 && level >= session.voicePeak * 0.25;
+    if (own && speaker.lastOwnVoiceAt !== undefined && this.now() - speaker.lastOwnVoiceAt > VOICE_RUN_GRACE_MS) {
+      speaker.loudRunMs = 0;
+      if (session.voiceOnsetParticipant === participantUuid) {
+        session.voiceOnsetAt = undefined;
+        session.voiceOnsetParticipant = undefined;
+      }
+    }
+    if (own) speaker.lastOwnVoiceAt = this.now();
     if (own) this.options.onInputLevel?.(session.sessionId, level);
-    if (own && speaker.loudRunMs === 0) session.voiceOnsetAt = this.now() - frameMs;
+    if (own && speaker.loudRunMs === 0) {
+      session.voiceOnsetAt = this.now() - frameMs;
+      session.voiceOnsetParticipant = participantUuid;
+    }
     speaker.loudRunMs = own ? speaker.loudRunMs + frameMs : Math.max(0, speaker.loudRunMs - frameMs / 2);
-    if (speaker.loudRunMs >= 100) {
+    if (!own && speaker.loudRunMs === 0 && session.voiceOnsetParticipant === participantUuid) {
+      session.voiceOnsetAt = undefined;
+      session.voiceOnsetParticipant = undefined;
+    }
+    if (speaker.loudRunMs >= OWN_VOICE_GATE_MS) {
       // Recognition results trail the audio, so speech vouches for the next 1.5 s of results.
       speaker.loudUntil = this.now() + 1_500;
       if (own && this.now() - speaker.lastVoiceSignalAt >= 200) {
         speaker.lastVoiceSignalAt = this.now();
         this.options.onVoice?.(session.sessionId, participantUuid);
+      }
+      if (own) this.pauseSpeech(session);
+      // The output has already stopped within the 300 ms acceptance budget. Keep its queue recoverable long
+      // enough for interim STT to distinguish an acknowledgement; abandon it if recognition never arrives.
+      if (own && session.voiceOnsetAt !== undefined && this.now() - session.voiceOnsetAt >= BARGE_IN_CANCEL_MS) {
+        this.interruptSpeech(session.sessionId, 'voice');
       }
     }
   }
@@ -554,20 +668,22 @@ export class AttendeeRealtimeAudioHub {
       // Hints bias detection toward the team's languages without restricting it (English by default).
       for (const language of this.options.languages ?? DEFAULT_LANGUAGES) url.searchParams.append('language_hint', language);
     }
+    if (this.options.deepgramMipOptOut !== false) url.searchParams.set('mip_opt_out', 'true');
     // Without a keyterm, Nova-3 and Flux hear the wake word as "Nokita", "Notita" or "Nikita".
     for (const term of new Set(['Nogita', ...(this.options.keyterms ?? [])])) url.searchParams.append('keyterm', term);
-    const speaker: SpeakerStream = { socket: this.createWebSocket(url.toString(), {
+    const speaker: SpeakerStream = { inputTurnId: randomUUID(), socket: this.createWebSocket(url.toString(), {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
     }), pendingAudio: [], finalSegments: [], confidences: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0, lastVoiceSignalAt: 0 };
     const deliverTurn = (turn: string) => {
-      if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId, 'voice');
+      if (isBackchannel(turn)) this.resumeSpeech(session);
+      else if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId, 'voice');
       speaker.lastTurnText = turn;
       speaker.lastTurnAt = this.now();
       const scores = speaker.confidences.splice(0);
       const recognition = scores.length
         ? { confidence: Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length * 1000) / 1000 } : {};
       void Promise.resolve(this.options.onTranscript(sessionId, participantUuid, turn,
-        session.participantIdentity.get(participantUuid), recognition))
+        session.participantIdentity.get(participantUuid), { ...recognition, inputTurnId: speaker.inputTurnId }))
       .catch(() => this.options.onError?.('attendee_transcript_processing_failed'));
     };
     speaker.socket.on('open', () => {
@@ -589,15 +705,26 @@ export class AttendeeRealtimeAudioHub {
         const interim = liveTranscript(message);
         if (interim) this.options.onInterim?.(sessionId, participantUuid, interim);
         if (ownVoice) {
-          this.interruptSpeech(sessionId, 'voice');
+          // Flux first emits a wordless StartOfTurn. That confirms voice but says nothing about intent: output is
+          // already paused, so only a real non-backchannel hypothesis may discard it. An acknowledgement resumes
+          // immediately instead of waiting for the final endpoint.
+          if (interim && isBackchannel(interim)) this.resumeSpeech(session);
+          else if (interim) this.interruptSpeech(sessionId, 'voice');
           this.options.onSpeechActivity?.(sessionId, participantUuid);
         }
       }
       if (flux) {
         const info = message as { type?: string; event?: string; transcript?: unknown };
+        const phase = info.event === 'EagerEndOfTurn' ? 'eager' : info.event === 'EndOfTurn' ? 'confirmed'
+          : info.event === 'TurnResumed' ? 'resumed' : undefined;
+        if (info.type === 'TurnInfo' && phase) {
+          this.options.onTurnTiming?.(sessionId, participantUuid, { phase, inputTurnId: speaker.inputTurnId,
+            ...(speaker.lastOwnVoiceAt !== undefined ? { sinceLastVoiceMs: Math.max(0, this.now() - speaker.lastOwnVoiceAt) } : {}) });
+          if (phase === 'confirmed') speaker.lastOwnVoiceAt = undefined;
+        }
         if (info.type === 'TurnInfo' && info.event === 'EagerEndOfTurn' && typeof info.transcript === 'string' && info.transcript.trim()) {
           this.options.onEagerTranscript?.(sessionId, participantUuid, info.transcript.trim().slice(0, 4000),
-            session.participantIdentity.get(participantUuid));
+            session.participantIdentity.get(participantUuid), speaker.inputTurnId);
         } else if (info.type === 'TurnInfo' && info.event === 'TurnResumed') {
           this.options.onTurnResumed?.(sessionId, participantUuid);
         }
@@ -606,6 +733,7 @@ export class AttendeeRealtimeAudioHub {
       if (score !== undefined) { speaker.confidences.push(score); if (speaker.confidences.length > 24) speaker.confidences.shift(); }
       const turn = assembleNova3Turn(message, speaker.finalSegments);
       if (turn && !(speaker.lastTurnText === turn && this.now() - (speaker.lastTurnAt ?? 0) < 2_000)) deliverTurn(turn);
+      if (turn) speaker.inputTurnId = randomUUID();
     });
     speaker.socket.on('error', () => this.options.onError?.('deepgram_listen_socket_error'));
     speaker.socket.on('close', () => {
@@ -621,6 +749,7 @@ export class AttendeeRealtimeAudioHub {
     url.searchParams.set('model', this.options.ttsModel ?? 'aura-2-thalia-en');
     url.searchParams.set('encoding', 'linear16');
     url.searchParams.set('sample_rate', String(AUDIO_SAMPLE_RATE));
+    if (this.options.deepgramMipOptOut !== false) url.searchParams.set('mip_opt_out', 'true');
     const opening = new Promise<WebSocket>((resolve, reject) => {
       const tts = this.createWebSocket(url.toString(), {
         headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
@@ -720,7 +849,7 @@ export class AttendeeRealtimeAudioHub {
   }
 
   private drainAttendeeAudio(session: RealtimeSession): void {
-    if (session.ttsTimer || !session.ttsPending) return;
+    if (session.ttsTimer || session.ttsPaused || !session.ttsPending) return;
     const audio = session.ttsQueue.shift();
     if (!audio) {
       if (session.ttsFlushed) session.ttsPending.resolve();
@@ -736,14 +865,18 @@ export class AttendeeRealtimeAudioHub {
       session.ttsPending.reject(new Error('Attendee audio output failed'));
       return;
     }
-    this.options.onOutputAudio?.(session.sessionId, audio);
+    this.options.onOutputAudio?.(session.sessionId, audio, session.ttsPending.trace);
     // Pace PCM near playback time so an interruption can discard audio still queued locally.
     const durationMs = audio.length / (AUDIO_SAMPLE_RATE * 2) * 1000;
     if (session.ttsPending.firstAudioAt === undefined) {
       session.ttsPending.firstAudioAt = this.now();
-      this.options.onSpeechStart?.(session.sessionId);
+      this.options.onSpeechStart?.(session.sessionId, { ...session.ttsPending.trace,
+        ttfaMs: Math.max(0, this.now() - session.ttsPending.requestedAt) });
     }
     session.ttsPending.sentMs += durationMs;
+    // Timer callbacks can run late. The end of the frame that was actually just sent is more accurate than
+    // firstAudioAt + ideal accumulated duration when reporting when the meeting will become quiet.
+    session.ttsPending.lastAudioEndsAt = this.now() + durationMs;
     session.ttsTimer = setTimeout(() => {
       session.ttsTimer = undefined;
       this.drainAttendeeAudio(session);
@@ -751,9 +884,14 @@ export class AttendeeRealtimeAudioHub {
   }
 
   private closeProviderSockets(session: RealtimeSession): void {
+    session.speechPreparation?.abort.abort(new Error('realtime audio session closed'));
+    session.speechPreparation = undefined;
     for (const [participantUuid, speaker] of session.speakers) this.closeSpeaker(session, participantUuid, speaker);
     session.ttsPending?.reject(new Error('realtime audio session closed'));
     session.ttsPending = undefined;
+    if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+    session.ttsPauseTimer = undefined;
+    session.ttsPaused = false;
     session.ttsCarry = Buffer.alloc(0);
     session.ttsSocket?.close(1000, 'meeting stream ended');
     session.ttsSocket = undefined;
@@ -772,7 +910,7 @@ export class AttendeeRealtimeAudioHub {
 
   private newSession(sessionId: string): RealtimeSession {
     return { sessionId, pendingFrames: [], speakers: new Map(), participantIdentity: new Map(),
-      ttsQueue: [], ttsFlushed: false, closed: false, voicePeak: 0 };
+      ttsQueue: [], ttsFlushed: false, ttsPaused: false, closed: false, voicePeak: 0 };
   }
 }
 
@@ -806,6 +944,12 @@ export function liveTranscript(message: unknown): string | undefined {
   const alternatives = channel && typeof channel === 'object' ? (channel as Record<string, unknown>).alternatives : undefined;
   const first = Array.isArray(alternatives) ? alternatives[0] as Record<string, unknown> | undefined : undefined;
   return typeof first?.transcript === 'string' ? first.transcript.trim() || undefined : undefined;
+}
+
+/** Short listener acknowledgements should not seize the floor from an answer already playing. */
+export function isBackchannel(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/-/g, ' ').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return /^(?:yeah|yep|yes|right|ok(?:ay)?|sure|got it|i see|m+h+m+|m+ h+m+|u+h+ h+u+h+|h+m+)$/.test(normalized);
 }
 
 export function hasFluxSpeechActivity(message: unknown): boolean {
