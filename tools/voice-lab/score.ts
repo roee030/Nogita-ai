@@ -3,7 +3,7 @@
  * the room left in silence.
  */
 import { directlyAddressesNogita, normalizeWakeWord } from '../../src/core/policy.ts';
-import type { TurnRecord } from './conversation.ts';
+import { FILLERS, type TurnRecord } from './conversation.ts';
 import { isReasoningAloud, refersToSelfInThirdPerson } from '../../src/core/speech-guard.ts';
 
 export interface Check { name: string; ok: boolean; detail?: string }
@@ -26,8 +26,14 @@ export interface ConversationFailures {
 
 export function conversationFailures(turns: ReadonlyArray<{ record: TurnRecord; score: TurnScore }>): ConversationFailures {
   return {
-    lostQuestions: turns.filter(({ record, score }) => record.turn.expect.respond === 'speak' &&
-      score.checks.some(check => check.name === 'answered aloud' && !check.ok)).length,
+    lostQuestions: turns.filter(({ record }) => {
+      const expected = record.turn.expect;
+      if (expected.respond !== 'speak' && !expected.questionStatus) return false;
+      if (record.questionStatus) {
+        return !['answered', 'chat_only', 'cancelled', 'stopped', 'superseded', 'rolled_back'].includes(record.questionStatus);
+      }
+      return !record.spoken.some(piece => !FILLERS.has(piece)) && record.chat.length === 0;
+    }).length,
     answersToOthers: turns.filter(({ record, score }) => record.turn.expect.respond === 'silent' &&
       score.checks.some(check => check.name === 'stayed silent' && !check.ok)).length,
   };

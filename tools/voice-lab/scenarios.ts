@@ -210,9 +210,10 @@ SCENARIOS.push(
     participants: [roee, dana],
     turns: [
       { speaker: 'roee', say: 'Nogita, which file contains the main meeting engine?',
-        expect: { respond: 'speak', mentions: [['engine']] } },
+        expect: { respond: 'any', questionStatus: ['answered'] } },
       { speaker: 'dana', say: 'Nogita, and which file handles the realtime meeting audio?', afterPreviousMs: 250,
-        expect: { respond: 'speak', mentions: [['realtime', 'audio', 'attendee']] } },
+        expect: { respond: 'speak', questionStatus: ['answered'], mentions: [['engine'], ['realtime', 'audio', 'attendee']],
+          note: 'Both queued questions must be answered; their audio is scored in this shared answer window.' } },
     ],
   },
   {
@@ -230,7 +231,7 @@ SCENARIOS.push(
     turns: [
       { speaker: 'roee', say: 'Nogita, which file handles the meeting engine?', expect: { respond: 'any' } },
       { speaker: 'roee', say: 'No, I meant which file handles the realtime meeting audio?', afterPreviousMs: 300,
-        expect: { respond: 'speak', mentions: [['realtime', 'audio', 'attendee']],
+        expect: { respond: 'speak', mentions: [['realtime', 'audio', 'attendee']], forbid: ['engine.ts', 'meeting engine'],
           note: 'The correction replaces the first question; answer the corrected question, not the engine question.' } },
     ],
   },

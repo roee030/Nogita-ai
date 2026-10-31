@@ -121,6 +121,9 @@ test('multi-speaker scenarios cover queued questions, other people talking, and 
   assert.ok(queued);
   assert.deepEqual(queued.turns.map(turn => turn.speaker), ['roee', 'dana']);
   assert.ok(queued.turns[1]?.afterPreviousMs !== undefined);
+  assert.deepEqual(queued.turns[0]?.expect.questionStatus, ['answered']);
+  assert.equal(queued.turns[0]?.expect.respond, 'any');
+  assert.equal(queued.turns[1]?.expect.mentions?.length, 2);
 
   const others = SCENARIOS.find(candidate => candidate.name === 'other-people-conversation');
   assert.ok(others);
@@ -131,6 +134,7 @@ test('multi-speaker scenarios cover queued questions, other people talking, and 
   assert.ok(correction);
   assert.match(String(correction.turns[1]?.say), /no,? (?:sorry,? )?i meant/i);
   assert.ok(correction.turns[1]?.afterPreviousMs !== undefined);
+  assert.ok(correction.turns[1]?.expect.forbid?.includes('engine.ts'));
 });
 
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
@@ -162,6 +166,21 @@ test('report counts lost questions and answers to conversations that were not he
   const report = markdown(summary, [result]);
   assert.match(report, /Lost questions: \*\*1\*\*/);
   assert.match(report, /Answers to conversations that were not hers: \*\*1\*\*/);
+});
+
+test('lost-question count uses tracker completion and does not mistake filler for an answer', () => {
+  const tracked: Turn = { speaker: 'roee', say: 'Nogita, what changed?',
+    expect: { respond: 'any', questionStatus: ['answered'] } };
+  const untracked: Turn = { speaker: 'dana', say: 'Nogita, what is open?', expect: { respond: 'speak' } };
+  const cases = [
+    { record: record(tracked, { questionStatus: 'answered' }), score: scoreTurn(record(tracked, { questionStatus: 'answered' })) },
+    { record: record(tracked, { questionStatus: 'working' }), score: scoreTurn(record(tracked, { questionStatus: 'working' })) },
+    { record: record(untracked, { spoken: ['Still on it.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } }),
+      score: scoreTurn(record(untracked, { spoken: ['Still on it.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } })) },
+    { record: record(untracked, { spoken: ['Three tasks are open.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } }),
+      score: scoreTurn(record(untracked, { spoken: ['Three tasks are open.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } })) },
+  ];
+  assert.deepEqual(conversationFailures(cases), { lostQuestions: 2, answersToOthers: 0 });
 });
 
 test('scoring checks hearing, silence, required phrases, writes and interruptions', () => {
