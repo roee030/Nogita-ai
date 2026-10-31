@@ -36,7 +36,7 @@ import { readFileSync } from 'node:fs';
 import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
 import { FileMeetingMemory } from './meeting-memory.ts';
 import { FileActionReceipts } from './action-receipts.ts';
-import { parseGitHubPush, verifyGitHubWebhookSignature } from './github-webhook.ts';
+import { acceptGitHubWebhook, GitHubRefreshQueue, githubWebhookConfigured } from './github-webhook.ts';
 
 loadDotEnv();
 const env = process.env;
@@ -46,6 +46,10 @@ if (!validAdminToken(token)) {
   throw new Error('Set a strong NOGITA_ADMIN_TOKEN in .env before starting server');
 }
 let providerConfigValid = true;
+if (!githubWebhookConfigured(githubPushRefreshEnabled, env.GITHUB_WEBHOOK_SECRET)) {
+  providerConfigValid = false;
+  console.error('github_webhook_configuration_invalid');
+}
 const turnTakingV2 = env.NOGITA_TURN_TAKING_V2 === 'true';
 if (env.NOGITA_TURN_TAKING_V2 !== undefined && !['true', 'false'].includes(env.NOGITA_TURN_TAKING_V2)) {
   providerConfigValid = false;
@@ -68,6 +72,12 @@ try {
 if (dependencies.code.prepare) {
   void dependencies.code.prepare().catch(() => console.error('repository_index_warmup_failed'));
 }
+const githubRefreshQueue = new GitHubRefreshQueue(async sha => {
+  const code = dependencies.code as typeof dependencies.code & { refreshIndex?(commitSha: string): Promise<void> };
+  if (!code.refreshIndex || !providerConfigValid) throw new Error('GitHub index refresh unavailable');
+  await code.refreshIndex(sha);
+}, (error, sha) => console.error('repository_index_refresh_failed', JSON.stringify({ sha,
+  error: error instanceof Error ? error.message : 'unknown error' })));
 const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
 const sessionBudgetEnabled = env.NOGITA_SESSION_BUDGET === 'true';
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
@@ -682,20 +692,14 @@ const server = createServer(async (req, res) => {
     }
     if (githubPushRefreshEnabled && req.method === 'POST' && pathname === '/webhooks/github') {
       const raw = await readRaw(req);
-      if (!verifyGitHubWebhookSignature(env.GITHUB_WEBHOOK_SECRET ?? '', raw,
-        req.headers['x-hub-signature-256'] as string | undefined)) {
-        respond(res, 401, { error: 'invalid GitHub signature' }); return;
-      }
-      const push = parseGitHubPush(raw, req.headers['x-github-event'] as string | undefined, {
-        owner: env.GITHUB_OWNER ?? '', repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main',
+      const result = acceptGitHubWebhook({
+        secret: env.GITHUB_WEBHOOK_SECRET ?? '', raw,
+        signature: req.headers['x-hub-signature-256'] as string | undefined,
+        event: req.headers['x-github-event'] as string | undefined,
+        expected: { owner: env.GITHUB_OWNER ?? '', repo: env.GITHUB_REPO ?? '', ref: env.GITHUB_REF ?? 'main' },
+        refresh: sha => githubRefreshQueue.enqueue(sha),
       });
-      if (!push) { respond(res, 202, { ok: true, ignored: true }); return; }
-      const code = dependencies.code as typeof dependencies.code & { refreshIndex?(sha: string): Promise<void> };
-      if (!code.refreshIndex || !providerConfigValid) {
-        respond(res, 503, { error: 'GitHub index refresh unavailable' }); return;
-      }
-      await code.refreshIndex(push.sha);
-      respond(res, 200, { ok: true, indexedSha: push.sha }); return;
+      respond(res, result.status, result.response); return;
     }
     if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
     if (req.method === 'GET' && pathname === '/api/connections') {

@@ -251,6 +251,7 @@ export class GitHubCode implements CodePort {
   private indexedCommitSha?: string;
   private indexExpiresAt = 0;
   private indexing?: { sha: string; promise: Promise<IndexBuild> };
+  private refreshTail: Promise<void> = Promise.resolve();
   private readonly indexTtlMs: number;
   private readonly now: () => number;
 
@@ -478,6 +479,7 @@ export class GitHubCode implements CodePort {
       const pinnedTreeSha = commit.commit?.tree?.sha;
       if (!commit.sha || !/^[a-f0-9]{40}$/i.test(commit.sha) || !pinnedTreeSha ||
           !/^[a-f0-9]{40,64}$/i.test(pinnedTreeSha)) throw new Error('GitHub returned an invalid commit revision');
+      if (commit.sha.toLowerCase() !== ref.toLowerCase()) throw new Error('GitHub returned a different requested commit');
       tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${pinnedTreeSha}?recursive=1`);
       if (tree.sha !== pinnedTreeSha || !Array.isArray(tree.tree)) {
         throw new Error('GitHub returned an incomplete pinned repository tree');
@@ -536,14 +538,24 @@ export class GitHubCode implements CodePort {
 
   async refreshIndex(commitSha: string): Promise<void> {
     if (!/^[a-f0-9]{40}$/i.test(commitSha)) throw new Error('invalid commit sha');
-    await this.loadIndex(commitSha.toLowerCase(), true);
+    const refresh = this.refreshTail.then(async () => {
+      await this.loadIndex(commitSha.toLowerCase(), true);
+      const status = await this.indexStatus();
+      if (!status.current) await this.loadIndex(status.headSha, true);
+    });
+    this.refreshTail = refresh.catch(() => undefined);
+    await refresh;
   }
 
   async indexStatus(): Promise<{ indexedSha?: string; headSha: string; current: boolean }> {
-    const commit = await this.get<GitHubCommit>(
-      `/repos/${this.config.owner}/${this.config.repo}/commits/${encodeURIComponent(this.config.ref)}`);
-    if (!commit.sha || !/^[a-f0-9]{40}$/i.test(commit.sha)) throw new Error('GitHub returned an invalid commit revision');
-    const headSha = commit.sha.toLowerCase();
+    let headSha: string;
+    if (!this.config.token && this.config.publicRepo === true) headSha = (await this.resolvePublicRef()).toLowerCase();
+    else {
+      const commit = await this.get<GitHubCommit>(
+        `/repos/${this.config.owner}/${this.config.repo}/commits/${encodeURIComponent(this.config.ref)}`);
+      if (!commit.sha || !/^[a-f0-9]{40}$/i.test(commit.sha)) throw new Error('GitHub returned an invalid commit revision');
+      headSha = commit.sha.toLowerCase();
+    }
     const indexedSha = this.indexedCommitSha?.toLowerCase();
     return { ...(indexedSha ? { indexedSha } : {}), headSha, current: indexedSha === headSha };
   }
