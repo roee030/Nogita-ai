@@ -15,7 +15,8 @@ import type { ActionReceipt, Capability, ChatPort, CodePort, Evidence } from '..
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const guest = { id: 'guest', displayName: 'Guest', verified: true };
 
-type Step = { text?: string; tools?: Array<{ name: string; input: Record<string, unknown> }> };
+/** `stop` overrides the stop reason, e.g. 'max_tokens' for output cut off inside its last tool call. */
+type Step = { text?: string; tools?: Array<{ name: string; input: Record<string, unknown> }>; stop?: string };
 /** Scripted model: each call returns the next step, streaming its text in small pieces. */
 class ScriptedModel implements ChatModel {
   readonly agentModel = 'scripted';
@@ -34,7 +35,7 @@ class ScriptedModel implements ChatModel {
     for (const [n, tool] of (step.tools ?? []).entries()) {
       content.push({ type: 'tool_use', id: `t${this.index}-${n}`, name: tool.name, input: tool.input });
     }
-    return { content, stopReason: step.tools?.length ? 'tool_use' : 'end_turn' };
+    return { content, stopReason: step.stop ?? (step.tools?.length ? 'tool_use' : 'end_turn') };
   }
 }
 
@@ -103,6 +104,84 @@ test('agent loop runs tools, feeds results back and separates the lead-in from t
   assert.equal(result.answer, 'It retries three times.');
   const second = model.requests[1]!.messages.at(-1)!;
   assert.ok(Array.isArray(second.content) && second.content.every(block => block.type === 'tool_result'));
+  assert.deepEqual(result.stops, [
+    { step: 0, stopReason: 'tool_use', maxTokens: 900 }, { step: 1, stopReason: 'end_turn', maxTokens: 900 },
+  ]);
+});
+
+const recordingToolbox = (ran: Array<{ name: string; input: Record<string, unknown> }>) => ({
+  specs: [], isWrite: (name: string) => name === 'create_task',
+  run: async (name: string, input: Record<string, unknown>) => { ran.push({ name, input }); return { content: `${name} ok` }; },
+});
+
+test('cut off at max_tokens: the whole tool calls run, the partial one is dropped and the model is told (live Meet 2026-10-31)', async () => {
+  const model = new ScriptedModel([
+    { text: 'Opening three tasks.', stop: 'max_tokens', tools: [
+      { name: 'create_task', input: { title: 'Cache' } }, { name: 'create_task', input: { title: 'Retries' } },
+      { name: 'create_task', input: {} }] },
+    { tools: [{ name: 'create_task', input: { title: 'Docs' } }] },
+    { text: 'Done, all three are open.' },
+  ]);
+  const ran: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const result = await runAgent(model, { stableSystem: 's', turnSystem: 't', stream: false,
+    messages: [{ role: 'user', content: 'open three tasks' }], toolbox: recordingToolbox(ran), maxTokens: 600, toolStepMaxTokens: 2_000 });
+  assert.deepEqual(ran.map(call => call.input.title), ['Cache', 'Retries', 'Docs']);
+  assert.equal(result.answer, 'Done, all three are open.');
+  assert.equal(result.stoppedEarly, false);
+  const sent = model.requests[1]!.messages;
+  const assistant = sent.at(-2)!.content as AgentContent[];
+  assert.equal(assistant.filter(block => block.type === 'tool_use').length, 2, 'the partial call is not sent back');
+  const results = sent.at(-1)!.content as AgentContent[];
+  assert.deepEqual(results.map(block => block.type), ['tool_result', 'tool_result', 'text']);
+  assert.match((results[2] as { text: string }).text, /create_task call was cut off/);
+  assert.deepEqual(result.stops.map(stop => [stop.stopReason, stop.maxTokens, stop.droppedToolCall]), [
+    ['max_tokens', 2_000, 'create_task'], ['tool_use', 2_000, undefined], ['end_turn', 2_000, undefined]]);
+});
+
+test('cut off inside its only tool call: the step is retried once with twice the budget, the lead-in said once', async () => {
+  const model = new ScriptedModel([
+    { text: 'Let me open that.', stop: 'max_tokens', tools: [{ name: 'create_task', input: {} }] },
+    { text: 'Let me open that.', tools: [{ name: 'create_task', input: { title: 'Cache' } }] },
+    { text: 'It is open.' },
+  ]);
+  const ran: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const said: string[] = [];
+  const result = await runAgent(model, { stableSystem: 's', turnSystem: 't', stream: true, onSpeech: text => said.push(text),
+    messages: [{ role: 'user', content: 'open a task' }], toolbox: recordingToolbox(ran), maxTokens: 600, toolStepMaxTokens: 2_000 });
+  assert.deepEqual(ran.map(call => call.input.title), ['Cache']);
+  assert.deepEqual(said, ['Let me open that.', 'It is open.']);
+  assert.equal(result.preface, 'Let me open that.');
+  assert.deepEqual(model.requests.map(request => request.maxTokens), [2_000, 4_000, 2_000]);
+  assert.deepEqual(result.stops.map(stop => [stop.step, stop.stopReason, stop.retry]), [
+    [0, 'max_tokens', undefined], [0, 'tool_use', true], [1, 'end_turn', undefined]]);
+  assert.equal(result.steps, 2);
+});
+
+test('still cut off after the retry: nothing runs and the turn is marked unfinished', async () => {
+  const model = new ScriptedModel([
+    { text: 'On it.', stop: 'max_tokens', tools: [{ name: 'create_task', input: {} }] },
+    { text: 'On it.', stop: 'max_tokens', tools: [{ name: 'create_task', input: {} }] },
+  ]);
+  const ran: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const result = await runAgent(model, { stableSystem: 's', turnSystem: 't', stream: false,
+    messages: [{ role: 'user', content: 'open a task' }], toolbox: recordingToolbox(ran) });
+  assert.equal(ran.length, 0);
+  assert.equal(result.stoppedEarly, true);
+  assert.equal(model.requests.length, 2);
+  assert.deepEqual(result.stops.map(stop => stop.droppedToolCall), ['create_task', 'create_task']);
+});
+
+test('voice turns give tool steps room for several calls and keep the tool-free last step short', async () => {
+  const model = new ScriptedModel([
+    { tools: [{ name: 'search_code', input: { query: 'a' } }] }, { tools: [{ name: 'search_code', input: { query: 'b' } }] },
+    { tools: [{ name: 'search_code', input: { query: 'c' } }] }, { tools: [{ name: 'search_code', input: { query: 'd' } }] },
+    { text: 'Here is what I found.' },
+  ]);
+  const f = fixture(model);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, how does the cache work?', '1');
+  assert.deepEqual(model.requests.map(request => [request.maxTokens, request.tools.length > 0]),
+    [[2_000, true], [2_000, true], [2_000, true], [2_000, true], [600, false]]);
 });
 
 test('voice: lead-in and answer are spoken as they stream, chat gets the answer once with a code link', async () => {
