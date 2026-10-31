@@ -19,6 +19,7 @@ test('repository pins a supported Node runtime and verifies every pull request',
 
 test('local secrets and runtime state are excluded from source control', () => {
   const ignore = readFileSync('.gitignore', 'utf8');
+  const workflow = readFileSync('.github/workflows/verify.yml', 'utf8');
   assert.match(ignore, /^\.env$/m);
   assert.match(ignore, /^\.env\.\*$/m);
   assert.match(ignore, /^\.nogita-state\/$/m);
@@ -30,6 +31,8 @@ test('local secrets and runtime state are excluded from source control', () => {
       parts.includes('.nogita-state');
   });
   assert.deepEqual(sensitive, []);
+  assert.match(workflow, /\\\.env\\\.control\\\.example/,
+    'CI must allow the same tracked control-plane template as the local guardrail');
   // The tracked control-plane template must never acquire real credentials.
   const template = readFileSync('.env.control.example', 'utf8');
   for (const line of template.split(/\r?\n/)) {

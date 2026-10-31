@@ -36,5 +36,5 @@ jobs:
       - name: Reject tracked local environment files
         shell: bash
         run: |
-          tracked_sensitive="$(git ls-files | grep -E '(^|/)\.env($|\.)|(^|/)\.nogita-state(/|$)' | grep -v -E '(^|/)\.env\.example$' || true)"
+          tracked_sensitive="$(git ls-files | grep -E '(^|/)\.env($|\.)|(^|/)\.nogita-state(/|$)' | grep -v -E '(^|/)\.env\.example$|^\.env\.control\.example$' || true)"
           test -z "$tracked_sensitive"
