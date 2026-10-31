@@ -36,6 +36,8 @@ test('incomplete hold times out, while complete questions and default behavior a
     [2500, 'Nogita, can you check?', true], [2500, 'Nogita, can you check the deploy?', false],
     [0, 'Nogita, can you check?', false], [2500, 'Nogita, how many open tasks?', false],
     [2500, 'Nogita, how many open?', false],
+    // Live Meet 2026-10-31: a follow-up broken off mid-search ("All the the?") was answered three times.
+    [2500, 'All the the?', true], [2500, 'I want to open tasks for the', true], [2500, 'Open tasks for all of them.', false],
   ] as const) {
     const emitted: string[] = [];
     const jobs = new Map<unknown, () => void | Promise<void>>();

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
 import { SpeechChunker, runAgent, type AgentContent, type ChatModel, type ChatModelRequest, type ChatModelResponse } from '../src/core/agent.ts';
 import { buildToolbox, requestsChatPost, requestsTaskWrite } from '../src/core/agent-tools.ts';
-import { NogitaEngine, REST_IN_CHAT } from '../src/core/engine.ts';
+import { NogitaEngine, REST_IN_CHAT, acceptsOffer, offeredAction } from '../src/core/engine.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
 import { AnthropicBrain } from '../src/adapters/anthropic.ts';
@@ -126,6 +126,23 @@ test('voice: lead-in and answer are spoken as they stream, chat gets the answer 
   assert.match(model.requests[0]!.messages[0]!.content as string, /Lead says to you now:\nhow do sessions work\?/);
 });
 
+test('what a lookup showed stays with the answer, so the next turn can act on it (live Meet 2026-10-31)', async () => {
+  const model = new ScriptedModel([
+    { text: 'Let me check.', tools: [{ name: 'recent_commits', input: { branch: 'main' } }] },
+    { text: 'Four merges today: six through nine.' },
+    { text: 'Opening them now.' },
+  ]);
+  const f = fixture(model, { code: Object.assign(new DemoCode(), {
+    recentCommits: async () => [{ path: 'commit 023ccfb', url: 'https://example.invalid/c', excerpt: 'Merge pull request #9 from early-commit' }],
+  }) });
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what did we merge to main today?', '1');
+  await f.utter('Nogita, open a task for each one and mark them done.', '2');
+  const transcript = JSON.stringify(model.requests[2]!.messages);
+  assert.match(transcript, /Four merges today/);
+  assert.match(transcript, /recent_commits[^]*Merge pull request #9/);
+});
+
 test('task for a named person is assigned through the identity map and its link posted', async () => {
   const model = new ScriptedModel([
     { tools: [{ name: 'create_task', input: { title: 'Add retry limit', description: 'From the planning discussion.', assignee: 'Dana' } }] },
@@ -209,11 +226,51 @@ test('follow-up that is not for Nogita gets silence', async () => {
   assert.equal(f.meeting.events.length, before);
 });
 
+test('a yes to her own offer is the request (live Meet 2026-10-31)', () => {
+  const offer = 'Yes, the main branch has four merges from today. Do you want me to open a Jira task for each one and mark them done?';
+  assert.equal(offeredAction(offer), 'open a Jira task for each one and mark them done');
+  assert.equal(requestsTaskWrite(offeredAction(offer)!), true);
+  for (const text of ['Yes, please and send the link here in the chat.', 'Sure.', 'Yeah, go ahead.', 'ok do it'])
+    assert.equal(acceptsOffer(text), true, text);
+  for (const text of ['No, not yet.', 'Yes, but wait for Dana.', 'Which ones?', 'Check GitHub first.'])
+    assert.equal(acceptsOffer(text), false, text);
+  assert.equal(offeredAction('Which PR numbers are they?'), undefined);
+});
+
+test('"Yes, please" to her offer opens the task (live Meet 2026-10-31)', async () => {
+  const model = new ScriptedModel([
+    { text: 'Two merges today. Do you want me to open a task for each one?' },
+    { tools: [{ name: 'create_task', input: { title: 'Merged PR 6', description: 'd' } }] },
+    { text: 'Done.' },
+  ]);
+  const f = fixture(model);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what did we merge today?', '1');
+  await f.utter('Yes, please and send the link here in the chat.', '2');
+  assert.equal(f.board.tasks.length, 1);
+});
+
+test('"open one for me" from someone with no board account opens it unassigned instead of failing', async () => {
+  const model = new ScriptedModel([
+    { tools: [{ name: 'create_task', input: { title: 'Tests for the socket reconnect', description: 'd', assignee: 'me' } }] },
+    { text: 'Done, unassigned.' },
+  ]);
+  const board = new DemoBoard();
+  const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead'])), agent: model, people: new IdentityDirectory([]) },
+  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 20, talkingMs: 20 } });
+  await engine.startSession('s', new RecordingMeeting('m'));
+  await engine.onUtterance('s', { text: 'Nogita, and open one for me to write tests for the socket reconnect.', eventId: '1', actor: lead });
+  assert.equal(board.tasks.length, 1);
+  assert.equal(board.tasks[0]!.assigneeId, undefined);
+  assert.match(JSON.stringify(model.requests[1]!.messages.at(-1)), /unassigned \(I do not have a board account mapped/);
+});
+
 test('explicit write detectors', () => {
   for (const text of ['open a task for Moshe', 'can you log a bug for this', 'add it to the backlog', 'create tickets for both'])
     assert.equal(requestsTaskWrite(text), true, text);
   for (const text of ['make a jira ticket for the export bug', 'put it in the backlog', 'can you open two tasks for Dana?',
-    'please log a bug about the crash', 'write that up'])
+    'please log a bug about the crash', 'write that up', 'and open one for me to write tests for the Slack socket reconnect.'])
     assert.equal(requestsTaskWrite(text), true, text);
   for (const text of ['what is the status of KAN-12?', 'how does the task runner work', 'prepare a PR',
     'what are the open issues?', "what's new in the backlog?", 'any open tasks for Dana?', "what's open in jira?",

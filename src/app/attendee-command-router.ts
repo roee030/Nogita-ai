@@ -66,16 +66,17 @@ function matchesSpokenChallenge(text: string, challenge: string): boolean {
   if (!expected) return false;
   const words = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Only these wake-word variants were observed in the provider transcript.
-  const spoken = /^(?:(?:ah|um|no) )?(?:nogita|nogeta|novita) verify (.+)$/.exec(words)?.[1];
+  const spoken = /^(?:(?:ah|um|no) )?(?:nogita|nogeta|novita) verif(?:y|ied|ying) (.+)$/.exec(words)?.[1];
   if (!spoken) return false;
   let digits = '';
   for (const token of spoken.split(' ')) {
     const part = /^\d+$/.test(token) ? token : spokenDigits[token];
     if (part === undefined) return false;
     digits += part;
-    if (digits.length > 6) return false;
+    if (digits.length > 12) return false;
   }
-  return digits === expected;
+  // A restart is heard as extra digits first ("45-451948" in a live Meet): the code must still end the phrase.
+  return digits.endsWith(expected);
 }
 
 export class AttendeeCommandRouter {
@@ -408,6 +409,9 @@ function remainderAfter(prefix: string, text: string): string | undefined {
 
 /** Narrow incomplete prefixes observed in the lab; complete questions still take the fast path. */
 function incompleteRequest(text: string): boolean {
+  // "All the the?": a speaker searching for words, not a finished turn (heard in a live Meet).
+  const last = text.toLowerCase().replace(/[^\p{L}\p{N}'\s]+/gu, ' ').trim().split(/\s+/).at(-1);
+  if (last && DANGLING.has(last)) return true;
   if (!directlyAddressesNogita(text)) return false;
   const request = removeAddress(text).toLowerCase().replace(/[.,?!]/g, '').replace(/\b(?:um|uh)\b/g, '').trim().replace(/\s+/g, ' ');
   return /^(?:can|could|would) you (?:please )?(?:check|look|tell me)$/.test(request);

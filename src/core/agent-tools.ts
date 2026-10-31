@@ -76,12 +76,17 @@ const TASK_NOUN = String.raw`(?:task|tasks|ticket|tickets|issue|issues|bug|bugs|
 
 /** A direct request to make a ticket. Wider than the legacy planner check, still deterministic. */
 export function requestsTaskWrite(request: string): boolean {
+  // A follow-up carries the earlier request on its own line ("what did we merge today?" / "open a task for each
+  // one" / "Yes, please"): any line may be the ask, and a question on one line must not veto another.
+  if (request.includes('\n')) return request.split('\n').some(line => requestsTaskWrite(line));
   const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
   if (isInformationQuestion(t)) return false;
   if (/\b(?:pr|pull request)\b/.test(t) && !new RegExp(`\\b${TASK_NOUN}\\b`).test(t)) return false;
   // "open" right before a plural noun after a determiner is an adjective: "the open issues", "any open tasks".
   const cleaned = t.replace(/\b(?:the|any|all|our|their|my|your|which|what|many|more|of|are|is|for|with)\s+open\s+(?:tasks|tickets|issues|bugs|stories|items)\b/g, '');
   return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${TASK_NOUN}\\b`).test(cleaned) ||
+    // "And open one for me to write tests for ...", right after a task was opened.
+    /\b(?:create|open|add|file|log|make)\s+(?:another\s+)?one\s+(?:for|to|about|on)\b/.test(cleaned) ||
     /\b(?:add|put|move|log)\s+(?:it|this|that|these|those|them|both)\b.{0,40}\b(?:backlog|jira|board|sprint)\b/.test(cleaned) ||
     /\bwrite (?:it|this|that) up\b/.test(cleaned);
 }
@@ -95,6 +100,10 @@ const COMMENT_CHANGE = new RegExp(String.raw`\b(?:comment\s+on\s+${TASK_TARGET}\
  * KAN-12?") changes nothing, and each part needs its own words, so a move never brings along a comment nobody asked for.
  */
 export function requestedTaskChanges(request: string): { status: boolean; assignee: boolean; comment: boolean } {
+  if (request.includes('\n')) {
+    const parts = request.split('\n').map(line => requestedTaskChanges(line));
+    return { status: parts.some(p => p.status), assignee: parts.some(p => p.assignee), comment: parts.some(p => p.comment) };
+  }
   const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
   if (isInformationQuestion(t)) return { status: false, assignee: false, comment: false };
   return { status: STATUS_CHANGE.test(t), assignee: ASSIGN_CHANGE.test(t), comment: COMMENT_CHANGE.test(t) };
@@ -287,14 +296,17 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       let assigneeId: string | undefined;
       let assigneeName: string | undefined;
       let volunteered = false;
+      let unassignedBecause: string | undefined;
       const target = board.boards ? str(input.board, 40) : undefined;
       const wanted = str(input.assignee, 100);
       const lines = context.transcript?.() ?? [];
       if (wanted) {
         const resolved = await resolveAssignee(wanted, context, target);
-        if ('problem' in resolved) return { content: `Not created: ${resolved.problem}`, isError: true };
-        assigneeId = resolved.id;
-        assigneeName = resolved.displayName;
+        // "Open one for me" from someone the board does not know: the task matters more than its owner (the voice
+        // lab saw her give up on the whole request instead).
+        if ('problem' in resolved && isSpeaker(wanted)) unassignedBecause = resolved.problem;
+        else if ('problem' in resolved) return { content: `Not created: ${resolved.problem}`, isError: true };
+        else { assigneeId = resolved.id; assigneeName = resolved.displayName; }
       } else if (taskIndex === 0) {
         // Someone already said "I'll take it": they own it, if the board knows exactly one person by that name.
         const volunteer = findVolunteer(lines);
@@ -314,7 +326,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         report.wroteSomething = true;
         await context.onReceipt(receipt).catch(() => undefined);
       }
-      return { content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}${volunteered ? ', who said they would take it' : ''}` : ', unassigned'}: ${receipt.url}. The link is already in the chat.` };
+      return { content: `Created ${receipt.label}${assigneeName ? `, assigned to ${assigneeName}${volunteered ? ', who said they would take it' : ''}` : ', unassigned'}${unassignedBecause ? ` (${unassignedBecause} Tell them it is unassigned.)` : ''}: ${receipt.url}. The link is already in the chat.` };
     }, true);
     if (board.updateTask) add({ name: 'update_task', description: `Change an existing ${board.name} task: move it to a status, assign it to someone, and/or add a comment. Only the changes the person explicitly asked for in this request. Use the key they named or the task just discussed; if unclear which task, ask.`,
       input_schema: { type: 'object', properties: { key: { type: 'string', description: 'Task key such as KAN-12.' },
@@ -513,9 +525,11 @@ async function taskFilter(input: Record<string, unknown>, context: ToolboxContex
   return filter;
 }
 
+function isSpeaker(name: string): boolean { return /^(?:me|myself|i)$/i.test(name.trim()); }
+
 async function resolveAssignee(name: string, context: ToolboxContext, board?: string):
   Promise<{ id: string; displayName: string } | { problem: string }> {
-  if (/^(?:me|myself|i)$/i.test(name)) {
+  if (isSpeaker(name)) {
     const display = context.people?.displayNameFor(context.actor.id);
     if (!display) return { problem: 'I do not have a board account mapped for the speaker.' };
     return { id: context.actor.id, displayName: display };

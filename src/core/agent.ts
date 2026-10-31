@@ -69,9 +69,13 @@ export interface AgentResult {
   /** Text spoken before tool calls ("Let me check the retry worker."). */
   preface: string;
   toolCalls: string[];
+  /** What each lookup returned, shortened: kept with the answer so the next turn can still see what it rested on. */
+  lookups: string[];
   steps: number;
   stoppedEarly: boolean;
 }
+
+const MAX_LOOKUP_NOTE_CHARS = 600;
 
 const MAX_TOOL_RESULT_CHARS = 14_000;
 
@@ -140,12 +144,13 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const messages = turn.messages.slice();
   const toolCalls: string[] = [];
   const prefaces: string[] = [];
+  const lookups: string[] = [];
   let answer = '';
   let steps = 0;
   for (; steps < maxSteps; steps++) {
     turn.signal?.throwIfAborted();
     const remaining = (turn.deadlineMs ?? 60_000) - (now() - started);
-    if (remaining < 1_500) return { answer, preface: prefaces.join(' '), toolCalls, steps, stoppedEarly: true };
+    if (remaining < 1_500) return { answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly: true };
     const step = steps;
     const chunker = turn.stream && turn.onSpeech ? new SpeechChunker(text => turn.onSpeech!(text, step)) : undefined;
     const lastStep = steps === maxSteps - 1;
@@ -192,13 +197,19 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       results.set(use.id, await safeRun(turn.toolbox, use));
     }
     toolCalls.push(...uses.map(use => use.name));
+    for (const use of uses) {
+      const outcome = results.get(use.id)!;
+      const content = (outcome.content || '(empty)').replace(/\s+/g, ' ');
+      lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
+        (content.length > MAX_LOOKUP_NOTE_CHARS ? `${content.slice(0, MAX_LOOKUP_NOTE_CHARS)}...` : content));
+    }
     messages.push({ role: 'user', content: uses.map(use => {
       const outcome = results.get(use.id)!;
       return { type: 'tool_result' as const, tool_use_id: use.id, content: truncate(outcome.content || '(empty)'),
         ...(outcome.isError ? { is_error: true } : {}) };
     }) });
   }
-  return { answer, preface: prefaces.join(' '), toolCalls, steps, stoppedEarly: false };
+  return { answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly: false };
 }
 
 /** A rolled-back speculative attempt must not remain suspended behind an unopened write gate. */
