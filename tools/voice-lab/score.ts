@@ -4,6 +4,7 @@
  */
 import { directlyAddressesNogita, normalizeWakeWord } from '../../src/core/policy.ts';
 import type { TurnRecord } from './conversation.ts';
+import { isReasoningAloud, refersToSelfInThirdPerson } from '../../src/core/speech-guard.ts';
 
 export interface Check { name: string; ok: boolean; detail?: string }
 export interface Judgement { correct: number; natural: number; concise: number; comment: string }
@@ -55,6 +56,8 @@ export function machineTells(spoken: readonly string[], speaker?: string): strin
   if (/\bto (?:walk you through|answer|explain) (?:it|this|that) (?:accurately|properly|correctly)\b|\bI (?:will|'ll) (?:look at|check) .{3,60} (?:to|so I can) (?:walk|answer|explain)\b/i.test(said)) tells.push('narrates her plan');
   if (/(?:^|\s)(?:\.{0,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-z]{1,5}\b/i.test(said)) tells.push('reads a file path aloud');
   if (/\b(?:I have put the rest in the chat|please try again later|I cannot|I could not|I am unable)\b/.test(said)) tells.push('stiff wording');
+  if (spoken.some(piece => piece.split(/(?<=[.!?])\s+/).some(isReasoningAloud))) tells.push('reasons aloud');
+  if (refersToSelfInThirdPerson(said)) tells.push('calls herself Nogita');
   if (!/[.!?…"')\]]$/.test(said)) tells.push('stops mid-sentence');
   return tells;
 }
