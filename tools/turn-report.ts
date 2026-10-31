@@ -33,7 +33,7 @@ export interface SessionReport {
   eotSinceVoiceMs: number[];
   speculation: { started: number; adopted: number; rolledBack: number; unresolved: number };
   traces: { turns: number; steps: number; truncated: number; turnMs: number[]; stepMs: number[];
-    models: Record<string, number>; tools: Record<string, number>; stops: Record<string, number> };
+    models: Record<string, number>; tools: Record<string, number>; stops: Record<string, number>; errors: Record<string, number> };
 }
 
 const OPEN = new Set(['speculative', 'working', 'answering', 'interrupted']);
@@ -51,7 +51,7 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0,
     missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
     firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 },
-    traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {} } };
+    traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {}, errors: {} } };
   if (events.length) report.minutes = Math.round((events.at(-1)!.at - events[0]!.at) / 600) / 100;
   const questions = new Map<number, { opened: number; speaker: string; final?: string; firstSpeechAt?: number; firstAudio?: number;
     speculative?: boolean; confirmedAt?: number; inputTurnIds?: string[] }>();
@@ -169,7 +169,12 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
           const name = String((tool as Record<string, unknown>).name || 'unknown');
           report.traces.tools[name] = (report.traces.tools[name] ?? 0) + 1;
         }
-        let truncated = Boolean(event.stoppedEarly);
+        const error = typeof event.error === 'string' ? event.error : undefined;
+        if (error) report.traces.errors[error] = (report.traces.errors[error] ?? 0) + 1;
+        if (Array.isArray(event.stepMs)) for (const ms of event.stepMs) {
+          if (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0) report.traces.stepMs.push(ms);
+        }
+        let truncated = Boolean(event.stoppedEarly) && !error;
         if (Array.isArray(event.stops)) for (const stop of event.stops) {
           const item = stop as Record<string, unknown>;
           const reason = String(item.stopReason || 'unknown');
@@ -274,6 +279,7 @@ export function render(reports: readonly SessionReport[]): string {
     `| Agent models | ${counts(reports.map(r => r.traces.models))} | diagnostic | — |`,
     `| Agent tools | ${counts(reports.map(r => r.traces.tools))} | diagnostic | — |`,
     `| Agent stop reasons | ${counts(reports.map(r => r.traces.stops))} | diagnostic | — |`,
+    `| Agent errors | ${counts(reports.map(r => r.traces.errors))} | diagnostic | — |`,
     '', `Final statuses: ${Object.entries(finals).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`, '',
   ];
   if (missed.length) {

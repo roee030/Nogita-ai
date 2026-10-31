@@ -59,10 +59,22 @@ test('release report summarizes traced turns and truncations', () => {
   }]);
 
   assert.deepEqual(report.traces, { turns: 1, steps: 2, truncated: 1, turnMs: [321], stepMs: [111], models: { 'claude-sonnet': 1 },
-    tools: { search_code: 1 }, stops: { max_tokens: 1 } });
+    tools: { search_code: 1 }, stops: { max_tokens: 1 }, errors: {} });
   assert.match(render([report]), /Agent turns \/ steps \| 1 \/ 2/);
   assert.match(render([report]), /Truncated agent turns \| 1/);
   assert.match(render([report]), /Agent models \| claude-sonnet 1/);
   assert.match(render([report]), /Agent tools \| search_code 1/);
   assert.match(render([report]), /Agent stop reasons \| max_tokens 1/);
+});
+
+test('release report keeps failed-step timing separate from truncations', () => {
+  const report = analyse('meeting', [{
+    at: 1, type: 'agent_trace', model: 'claude-sonnet', ms: 900, steps: 1, stoppedEarly: true,
+    tools: [], stops: [], error: 'aborted', stepMs: [400],
+  }]);
+
+  assert.equal(report.traces.truncated, 0);
+  assert.deepEqual(report.traces.stepMs, [400]);
+  assert.deepEqual(report.traces.errors, { aborted: 1 });
+  assert.match(render([report]), /Agent errors \| aborted 1/);
 });
