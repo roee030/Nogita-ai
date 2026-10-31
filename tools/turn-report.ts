@@ -32,6 +32,8 @@ export interface SessionReport {
   staleAudio: number;
   eotSinceVoiceMs: number[];
   speculation: { started: number; adopted: number; rolledBack: number; unresolved: number };
+  traces: { turns: number; steps: number; truncated: number; turnMs: number[]; stepMs: number[];
+    models: Record<string, number>; tools: Record<string, number>; stops: Record<string, number> };
 }
 
 const OPEN = new Set(['speculative', 'working', 'answering', 'interrupted']);
@@ -48,7 +50,8 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const events = [...lines].sort((a, b) => a.at - b.at);
   const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0,
     missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
-    firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 } };
+    firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 },
+    traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {} } };
   if (events.length) report.minutes = Math.round((events.at(-1)!.at - events[0]!.at) / 600) / 100;
   const questions = new Map<number, { opened: number; speaker: string; final?: string; firstSpeechAt?: number; firstAudio?: number;
     speculative?: boolean; confirmedAt?: number; inputTurnIds?: string[] }>();
@@ -156,6 +159,27 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
         if (event.phase === 'confirmed' && typeof event.sinceLastVoiceMs === 'number' &&
             Number.isFinite(event.sinceLastVoiceMs) && event.sinceLastVoiceMs >= 0) report.eotSinceVoiceMs.push(event.sinceLastVoiceMs);
         break;
+      case 'agent_trace': {
+        report.traces.turns++;
+        report.traces.steps += Number(event.steps) || 0;
+        if (typeof event.ms === 'number' && Number.isFinite(event.ms) && event.ms >= 0) report.traces.turnMs.push(event.ms);
+        const model = String(event.model || 'unknown');
+        report.traces.models[model] = (report.traces.models[model] ?? 0) + 1;
+        if (Array.isArray(event.tools)) for (const tool of event.tools) {
+          const name = String((tool as Record<string, unknown>).name || 'unknown');
+          report.traces.tools[name] = (report.traces.tools[name] ?? 0) + 1;
+        }
+        let truncated = Boolean(event.stoppedEarly);
+        if (Array.isArray(event.stops)) for (const stop of event.stops) {
+          const item = stop as Record<string, unknown>;
+          const reason = String(item.stopReason || 'unknown');
+          report.traces.stops[reason] = (report.traces.stops[reason] ?? 0) + 1;
+          if (reason === 'max_tokens' || item.droppedToolCall) truncated = true;
+          if (typeof item.ms === 'number' && Number.isFinite(item.ms) && item.ms >= 0) report.traces.stepMs.push(item.ms);
+        }
+        if (truncated) report.traces.truncated++;
+        break;
+      }
       case 'turn':
         if (event.addressed && event.result === 'ignored' && Number(event.words) > 2) {
           report.missed.push({ at: event.at, why: 'addressed by name but ignored', ...(event.text ? { text: String(event.text) } : {}) });
@@ -199,6 +223,11 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
 
 const fmt = (ms?: number) => ms === undefined ? 'n/a' : `${(ms / 1000).toFixed(2)} s`;
 const mark = (ok?: boolean) => ok === undefined ? 'no data' : ok ? 'meets' : '**misses**';
+const counts = (records: readonly Record<string, number>[]) => {
+  const total: Record<string, number> = {};
+  for (const record of records) for (const [name, value] of Object.entries(record)) total[name] = (total[name] ?? 0) + value;
+  return Object.entries(total).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, value]) => `${name} ${value}`).join(', ') || 'none';
+};
 
 export function render(reports: readonly SessionReport[]): string {
   const all = (pick: (r: SessionReport) => number[]) => reports.flatMap(pick);
@@ -238,6 +267,13 @@ export function render(reports: readonly SessionReport[]): string {
     `| Answers longer than 15 s of speech | ${reports.reduce((s, r) => s + r.longAnswers, 0)} | 0 | ${mark(reports.every(r => r.longAnswers === 0))} |`,
     `| Unnamed activations (follow-ups / one-to-one) | ${reports.reduce((s, r) => s + r.unnamedActivations.length, 0)} | review each | needs a person |`,
     `| Low-confidence turns (< 0.7) | ${reports.reduce((s, r) => s + r.lowConfidence, 0)} of ${reports.reduce((s, r) => s + r.heard, 0)} | — | — |`,
+    `| Agent turns / steps | ${reports.reduce((s, r) => s + r.traces.turns, 0)} / ${reports.reduce((s, r) => s + r.traces.steps, 0)} | diagnostic | — |`,
+    `| Truncated agent turns | ${reports.reduce((s, r) => s + r.traces.truncated, 0)} | 0 | ${mark(reports.every(r => r.traces.truncated === 0))} |`,
+    `| Agent turn p50 / p95 | ${fmt(percentile(all(r => r.traces.turnMs), 50))} / ${fmt(percentile(all(r => r.traces.turnMs), 95))} | diagnostic | — |`,
+    `| Agent step p50 / p95 | ${fmt(percentile(all(r => r.traces.stepMs), 50))} / ${fmt(percentile(all(r => r.traces.stepMs), 95))} | diagnostic | — |`,
+    `| Agent models | ${counts(reports.map(r => r.traces.models))} | diagnostic | — |`,
+    `| Agent tools | ${counts(reports.map(r => r.traces.tools))} | diagnostic | — |`,
+    `| Agent stop reasons | ${counts(reports.map(r => r.traces.stops))} | diagnostic | — |`,
     '', `Final statuses: ${Object.entries(finals).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`, '',
   ];
   if (missed.length) {

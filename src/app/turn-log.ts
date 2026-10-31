@@ -9,6 +9,7 @@
 import { createHmac } from 'node:crypto';
 import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { AgentResult, AgentStepStop } from '../core/agent.ts';
 
 export type TurnLogMode = 'off' | 'redacted' | 'full';
 
@@ -18,6 +19,7 @@ export type TurnLogEvent =
   | { type: 'turn'; speaker: string; addressed: boolean; words: number; result: string; ms: number; text?: string }
   | { type: 'question'; id: number; status: string; speaker: string; detail?: string; request?: string; inputTurnIds?: string[] }
   | { type: 'tool'; id?: number; tools: string[] }
+  | AgentTraceEvent
   | { type: 'model_first_text'; id?: number; step: number; ms: number }
   | { type: 'eot'; speaker: string; phase: 'eager' | 'confirmed' | 'resumed'; sinceLastVoiceMs?: number; inputTurnId?: string }
   | { type: 'speech'; id: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }
@@ -28,6 +30,37 @@ export type TurnLogEvent =
   | { type: 'stale_question'; id: number }
   | { type: 'mission'; id: string; status: string; activity?: string }
   | { type: 'error'; code: string };
+
+export interface AgentTraceEvent {
+  type: 'agent_trace';
+  id?: number;
+  model: string;
+  ms: number;
+  steps: number;
+  stoppedEarly: boolean;
+  tools: Array<{ name: string; input: string }>;
+  stops: Array<AgentStepStop & { ms?: number }>;
+}
+
+const MAX_TOOL_INPUT_CHARS = 160;
+
+/** Builds an operational trace without copying answer, preface, lookup output, or transcript text. */
+export function buildTurnTrace(input: { id?: number; model: string; ms: number; result: AgentResult;
+  toolUses: ReadonlyArray<{ name: string; input: Record<string, unknown> }>; stepMs: readonly number[] }): AgentTraceEvent {
+  return {
+    type: 'agent_trace', ...(input.id !== undefined ? { id: input.id } : {}), model: input.model,
+    ms: input.ms, steps: input.result.steps, stoppedEarly: input.result.stoppedEarly,
+    tools: input.toolUses.map(use => ({ name: use.name, input: shortenInput(use.input) })),
+    stops: input.result.stops.map((stop, index) => ({ ...stop,
+      ...(input.stepMs[index] !== undefined ? { ms: input.stepMs[index] } : {}) })),
+  };
+}
+
+function shortenInput(value: Record<string, unknown>): string {
+  let serialized: string;
+  try { serialized = JSON.stringify(value); } catch { serialized = '[unserializable]'; }
+  return serialized.length > MAX_TOOL_INPUT_CHARS ? `${serialized.slice(0, MAX_TOOL_INPUT_CHARS)}…` : serialized;
+}
 
 /** Text fields dropped unless the log is in full mode. */
 const TEXT_FIELDS = ['text', 'request', 'detail'] as const;
