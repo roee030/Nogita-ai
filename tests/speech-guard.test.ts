@@ -12,6 +12,7 @@ const deliberation = [
   "That wasn't directed at me.",
   "I'll stay out of this one.",
   'This question is about the retry logic, so I should check the worker first.',
+  "The config has a project key field, so I need to see where it's set.",
 ];
 
 const answers = [
@@ -26,6 +27,8 @@ const answers = [
   'The message queue retries it five times before it gives up.',
   'Nope, that one is still open.',
   "Quiet hours start at ten, so I'll post it tomorrow morning.",
+  'The token expires hourly, so you need to refresh it.',
+  'I need to see the logs first; can you paste them?',
 ];
 
 test('deliberation said aloud is recognized', () => {

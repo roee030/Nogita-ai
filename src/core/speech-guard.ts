@@ -16,6 +16,8 @@ const DELIBERATION: readonly RegExp[] = [
   /\bempty (?:reply|message|response|answer)\b/i,
   /\bstay(?:ing)? (?:quiet|silent|out of (?:this|it|that))\b/i,
   /\bso I(?:'ll| will| should| need to)\s+(?:answer|respond|reply|skip|ignore|stay)\b/i,
+  // Planning the lookup out loud ("..., so I need to see where it's set").
+  /\bso I (?:need|have|want) to (?:see|check|look|find out|confirm|verify|figure out)\b/i,
   // Classifying the request out loud.
   /^(?:this|that)\s+(?:is\s+(?:a|an)\s+)?(?:follow-up|message|question|request|utterance)\b(?=.*\b(?:me|so I)\b)/i,
   // Reasoning over tool output instead of answering from it.
