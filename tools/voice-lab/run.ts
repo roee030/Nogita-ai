@@ -149,13 +149,14 @@ for (const scenario of scenarios) {
   const errors: string[] = [];
   let records: Awaited<ReturnType<typeof playScenario>> = [];
   try {
-    await rig.start(scenario.participants.map((p, i) => ({
+    // People sharing a meeting-room mic speak through its owner; the meeting sees only the owner.
+    await rig.start(scenario.participants.flatMap((p, i) => p.sharesMicWith ? [] : [{
       id: p.id, name: p.name, mic: p.mic,
       actor: p.authorized
         ? { id: actorIdFor(p.id, i), displayName: p.name, verified: true }
         : { id: `unmapped:lab:${p.id}`, displayName: p.name, verified: false },
       noise: createNoise(scenario.noise, 1000 + i * 77, babble),
-    })));
+    }]));
     records = await playScenario(rig, scenario, audio, {
       onTurn: (index, turn) => console.log(`  ${index + 1}. ${turn.speaker}: ${Array.isArray(turn.say) ? turn.say.join(' … ') : turn.say}`) });
   } catch (error) {

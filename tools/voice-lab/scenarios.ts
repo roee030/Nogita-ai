@@ -13,6 +13,9 @@ export interface Participant {
   authorized: boolean;
   /** 'open' streams noise for the whole conversation; 'push' unmutes only around this person's turns. */
   mic: 'open' | 'push';
+  /** Talks into this other participant's microphone, like several people around one meeting-room laptop: the
+   *  meeting sees a single participant, and two of them talking at once are mixed on that one stream. */
+  sharesMicWith?: string;
 }
 
 export interface Expectation {
@@ -51,6 +54,8 @@ export interface Turn {
   /** One line, or several spoken with `pauseMs` of silence between them (a mid-sentence hesitation). */
   say: string | string[];
   pauseMs?: number;
+  /** Keep only this fraction of the spoken audio (0 to 1): the speaker is cut off mid-word. */
+  cutAt?: number;
   /** Silence after Nogita finished (or after the previous turn) before this turn starts. */
   gapMs?: number;
   /** Start speaking while Nogita is still answering the previous turn. Backchannels must not stop playback. */
@@ -76,6 +81,11 @@ const roee: Participant = { id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', 
 const dana: Participant = { id: 'dana', name: 'Dana', voice: 'aura-2-luna-en', authorized: true, mic: 'push' };
 const avi: Participant = { id: 'avi', name: 'Avi', voice: 'aura-2-arcas-en', authorized: true, mic: 'push' };
 const guest: Participant = { id: 'guest', name: 'Sam', voice: 'aura-2-asteria-en', authorized: false, mic: 'push' };
+
+/** The participant whose microphone carries this speaker's voice. */
+export function micOf(scenario: Scenario, speaker: string): string {
+  return scenario.participants.find(p => p.id === speaker)?.sharesMicWith ?? speaker;
+}
 
 const refusal = ["can't", 'cannot', "won't", 'not able', "don't have", 'not allowed', 'only', 'not going to', 'unable'];
 const notFound = ["don't see", "couldn't find", 'could not find', 'no payment', "isn't", "doesn't", 'not find', 'no sign',
@@ -483,6 +493,84 @@ SCENARIOS.push(
         expect: { respond: 'speak' } },
       { speaker: 'dana', say: 'Okay.', bargeIn: { afterAudioMs: 700, kind: 'backchannel' },
         expect: { respond: 'any' } },
+    ],
+  },
+);
+
+// Stage 3: a meeting room. Several people around one laptop mic, people cut off mid-word, two talking at once.
+const roomDana: Participant = { ...dana, sharesMicWith: 'roee' };
+const roomAvi: Participant = { ...avi, sharesMicWith: 'roee' };
+const noa: Participant = { id: 'noa', name: 'Noa', voice: 'aura-2-andromeda-en', authorized: true, mic: 'push' };
+
+SCENARIOS.push(
+  {
+    name: 'meeting-room', title: 'Three people around one meeting-room mic, and one remote', noise: { kind: 'office', snrDb: 20 },
+    participants: [roee, roomDana, roomAvi, noa],
+    turns: [
+      { speaker: 'dana', say: 'Nogita, which file has the main meeting engine?',
+        expect: { respond: 'speak', mentions: [['engine']],
+          note: 'Dana asks through Roee\'s laptop mic; the meeting sees the question as coming from Roee.' } },
+      { speaker: 'avi', say: 'Wait, is that the really big file?', gapMs: 400, expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'Yeah, the huge one. I opened it last week.', overlapPreviousMs: 1_200,
+        expect: { respond: 'silent', note: 'A side exchange in the room, both on the same mic and partly at once.' } },
+      { speaker: 'avi', say: 'Honestly I need more coffee before the next meeting.', expect: { respond: 'silent' } },
+      { speaker: 'roee', say: "Nogita, what's in progress on the board right now?", overlapPreviousMs: 900,
+        expect: { respond: 'speak', tools: ['search_tasks'],
+          note: 'Asked while Avi is still talking into the same mic; the transcript mixes both. She should pick out the question.' } },
+      { speaker: 'dana', say: "So for the release, I think we're fine if the tests pass on Thursday.", expect: { respond: 'silent' } },
+      { speaker: 'noa', say: 'Nogita, what language is this project written in?', overlapPreviousMs: 1_500,
+        expect: { respond: 'speak', mentions: [['typescript']],
+          note: 'The remote person asks while the room is still talking; she answers Noa and ignores the room chatter.' } },
+      { speaker: 'roee', say: "Thanks Nogita, that's it from the room.", expect: { respond: 'any', note: 'A short acknowledgement or nothing.' } },
+    ],
+  },
+  {
+    name: 'cut-off', title: 'People cut each other off mid-word, and restart their own sentence', noise: { kind: 'pink', snrDb: 25 },
+    participants: [roee, dana, avi],
+    turns: [
+      { speaker: 'dana', say: 'Nogita, can you check which file handles the Slack socket connection for us?', cutAt: 0.55,
+        expect: { respond: 'any', write: 'none' } },
+      { speaker: 'avi', say: 'Sorry Dana, quick one first. Nogita, what does HTTP status 429 mean?', afterPreviousMs: 150,
+        expect: { respond: 'speak', mentions: [['too many', 'rate']],
+          note: "Avi cut Dana off mid-word. She answers Avi; Dana's half question gets at most a short mention, not a guessed answer." } },
+      { speaker: 'dana', say: 'Okay, as I was saying. Nogita, which file handles the Slack socket connection?',
+        expect: { respond: 'speak', mentions: [['socket']] } },
+      { speaker: 'roee', say: ["Nogita, what's the stat", "sorry, what's in progress on the board?"], pauseMs: 300,
+        expect: { respond: 'speak', tools: ['search_tasks'],
+          note: 'Roee breaks off his own sentence and restarts it; one answer to the restarted question.' } },
+      { speaker: 'avi', say: 'Nogita, open a task to add retries to the Jira client, and assign it to', cutAt: 0.8,
+        expect: { respond: 'any', write: 'none',
+          note: 'Cut off before the owner. She should ask who it is for, or wait; she must not open a task with a guessed owner.' } },
+    ],
+  },
+  {
+    name: 'room-crosstalk', title: 'Two people on the same meeting-room mic talk at the same moment', noise: { kind: 'office', snrDb: 20 },
+    participants: [roee, roomDana, roomAvi],
+    turns: [
+      { speaker: 'dana', say: 'Did anyone book the room for Thursday afternoon?', expect: { respond: 'silent' } },
+      { speaker: 'roee', say: 'Nogita, what does HTTP status 503 mean?', overlapPreviousMs: 300,
+        expect: { respond: 'speak', mentions: [['unavailable', 'overload', 'down']],
+          note: 'Both start almost together on the one mic. She answers the question addressed to her.' } },
+      { speaker: 'dana', say: 'Oh wait, I think I booked it myself, let me check my calendar.', expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'Nogita, and which file starts the server?', overlapPreviousMs: 800,
+        expect: { respond: 'speak', mentions: [['server', 'index', 'main']],
+          note: 'Avi asks while Dana is still talking into the same mic; he still gets his answer.' } },
+      { speaker: 'roee', say: 'Okay. Moving on to the design review.', expect: { respond: 'silent' } },
+    ],
+  },
+  {
+    name: 'long-pauses', title: 'Long thinking pauses in the middle of a question or a request', noise: { kind: 'keyboard', snrDb: 25 },
+    participants: [roee, dana, avi],
+    turns: [
+      { speaker: 'roee', say: ['Nogita, which file', 'uh,', 'starts the', 'the server?'], pauseMs: 2_000,
+        expect: { respond: 'speak', mentions: [['server', 'index', 'main']],
+          note: 'Two-second pauses between fragments; one answer to the whole question, not to "which file".' } },
+      { speaker: 'dana', say: ['Nogita, open a task to', 'hmm, let me think,', 'to add retries to the Jira client.'], pauseMs: 1_800,
+        expect: { respond: 'speak', write: 'task', writeIncludes: ['retr'],
+          note: 'One task about Jira retries; not a task titled "to" from the first fragment.' } },
+      { speaker: 'avi', say: ['Nogita, what changed in the last commit?', 'And who made it?'], pauseMs: 3_000,
+        expect: { respond: 'speak', tools: ['recent_commits'], mentions: [['commit', 'change', 'fix', 'add']],
+          note: 'The follow-up comes after three seconds, maybe while she is already answering; both parts are covered.' } },
     ],
   },
 );

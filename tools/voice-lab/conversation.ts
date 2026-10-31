@@ -6,7 +6,7 @@ import { OVERLAP_PROGRESS, STILL_WORKING, agentProgressPhrases, progressPhrases 
 import { concat, msToSamples } from './audio.ts';
 import { createPerturbation } from './noise.ts';
 import type { LabEvent, VoiceRig } from './rig.ts';
-import type { Scenario, Turn } from './scenarios.ts';
+import { micOf, type Scenario, type Turn } from './scenarios.ts';
 import type { Synthesize } from './tts.ts';
 
 export interface TurnTiming {
@@ -60,7 +60,13 @@ export async function synthesizeTurn(turn: Turn, voice: string, synthesize: Synt
     if (i > 0) audio.push(new Float32Array(msToSamples(turn.pauseMs ?? 800)));
     audio.push(await synthesize(voice, part));
   }
-  return concat(audio);
+  const full = concat(audio);
+  if (turn.cutAt === undefined) return full;
+  // Cut off mid-word, with a 10 ms fade so the cut is not a click.
+  const cut = full.slice(0, Math.round(full.length * turn.cutAt));
+  const fade = Math.min(cut.length, msToSamples(10));
+  for (let i = 0; i < fade; i++) cut[cut.length - 1 - i]! *= i / fade;
+  return cut;
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -111,7 +117,7 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
       await settle(rig, 600, options.answerTimeoutMs ?? 45_000);
       await sleep(turn.gapMs ?? 800);
     }
-    const spoken = rig.say(turn.speaker, audio[index]!);
+    const spoken = rig.say(micOf(scenario, turn.speaker), audio[index]!);
     const mark = { start: spoken.start, end: Infinity };
     marks.push(mark);
     ends.push(spoken.ended.then(end => { mark.end = end; }));
@@ -131,12 +137,14 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
   }
   await Promise.all(ends);
   await settle(rig, 1_500, options.answerTimeoutMs ?? 45_000);
-  return scenario.turns.map((turn, index) => record(rig.events, turn, index, marks[index]!, marks[index + 1]?.start));
+  return scenario.turns.map((turn, index) => record(rig.events, turn, index, marks[index]!, marks[index + 1]?.start,
+    micOf(scenario, turn.speaker)));
 }
 
-export function record(events: LabEvent[], turn: Turn, index: number, mark: { start: number; end: number }, nextStart?: number): TurnRecord {
+export function record(events: LabEvent[], turn: Turn, index: number, mark: { start: number; end: number }, nextStart?: number,
+  mic = turn.speaker): TurnRecord {
   const window = events.filter(event => event.t >= mark.start && (nextStart === undefined || event.t < nextStart));
-  const participantUuid = `lab_${turn.speaker}`;
+  const participantUuid = `lab_${mic}`;
   const after = (type: LabEvent['type'], from: number, predicate: (event: LabEvent) => boolean = () => true) =>
     events.find(event => event.type === type && event.t >= from && (nextStart === undefined || event.t < nextStart) && predicate(event));
   const finals = window.filter(event => event.type === 'stt_final' && event.participant === participantUuid);

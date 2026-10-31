@@ -110,7 +110,8 @@ class LabMeeting implements MeetingPort {
 interface MicState {
   participant: MicParticipant;
   uuid: string;
-  speech?: { samples: Float32Array; at: number; resolve: (end: number) => void };
+  /** Lines being spoken into this mic; several at once when people around one meeting-room mic talk together. */
+  speeches: Array<{ samples: Float32Array; at: number; resolve: (end: number) => void }>;
   /** Mic sample position until which a push-to-talk mic stays open. */
   openUntil: number;
   on: boolean;
@@ -314,7 +315,7 @@ export class VoiceRig {
       const uuid = `lab_${participant.id}`;
       actors.set(uuid, participant.actor);
       this.hub.bindParticipant(this.sessionId, uuid, { displayName: participant.name });
-      this.mics.set(participant.id, { participant, uuid, openUntil: 0, on: false });
+      this.mics.set(participant.id, { participant, uuid, speeches: [], openUntil: 0, on: false });
     }
     this.t0 = performance.now();
     const frameMs = this.frameSamples * 1000 / SAMPLE_RATE;
@@ -326,17 +327,16 @@ export class VoiceRig {
   }
 
   /** Speaks `samples` on a participant's mic from the next frame: when the first word starts, and a promise
-   *  of the mic time of the last word. */
+   *  of the mic time of the last word. A line started while another is playing on the same mic is mixed in. */
   say(participantId: string, samples: Float32Array): { start: number; ended: Promise<number> } {
     const mic = this.mics.get(participantId);
     if (!mic) throw new Error(`unknown participant ${participantId}`);
-    if (mic.speech) throw new Error(`${participantId} is already speaking`);
     // A push-to-talk mic unmutes a moment before the words, like a person unmuting.
     const lead = mic.participant.mic === 'push' && !mic.on ? msToSamples(300) : 0;
     const at = this.micPosition + this.frameSamples + lead;
     mic.openUntil = Math.max(mic.openUntil, at + samples.length + msToSamples(2500));
     const start = this.micTime(at);
-    const ended = new Promise<number>(resolve => { mic.speech = { samples, at, resolve }; });
+    const ended = new Promise<number>(resolve => { mic.speeches.push({ samples, at, resolve }); });
     return { start, ended };
   }
 
@@ -368,8 +368,7 @@ export class VoiceRig {
       }
       if (!open) continue;
       const frame = mic.participant.noise.next(this.frameSamples);
-      const speech = mic.speech;
-      if (speech) {
+      for (const speech of [...mic.speeches]) {
         const offset = position - speech.at;
         if (offset + this.frameSamples > 0 && offset < speech.samples.length) {
           if (offset <= 0 && offset + this.frameSamples > 0) this.log('speech_start', { participant: mic.participant.id }, this.micTime(speech.at));
@@ -378,7 +377,7 @@ export class VoiceRig {
         if (offset + this.frameSamples >= speech.samples.length) {
           const end = this.micTime(speech.at + speech.samples.length);
           this.log('speech_end', { participant: mic.participant.id }, end);
-          mic.speech = undefined;
+          mic.speeches.splice(mic.speeches.indexOf(speech), 1);
           speech.resolve(end);
         }
       }
