@@ -5,6 +5,7 @@ import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-to
 import { ActionItemTracker } from './drafting.ts';
 import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
+import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { PhrasePicker, toSpoken } from './spoken.ts';
 import { stripReasoningAloud } from './speech-guard.ts';
@@ -312,6 +313,11 @@ export class NogitaEngine {
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   private readonly actionItemRecap: boolean;
   private readonly agentCacheWarmup: boolean;
+  private team(): TeamTime {
+    const tenant = this.dependencies.tenant;
+    return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
+  }
+
   constructor(private readonly dependencies: {
     board: BoardPort;
     code: CodePort;
@@ -326,6 +332,8 @@ export class NogitaEngine {
     /** Opt-in: decisions and action items kept after a meeting ends. */
     memory?: MeetingMemoryPort;
     people?: PeopleDirectory;
+    /** The team's calendar, for "today" and "this week". */
+    tenant?: { timeZone?: string; weekStartsOn?: TeamTime['weekStartsOn'] };
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
     this.agentProgressDelayMs = options.agentProgressDelayMs ?? 2_000;
@@ -849,7 +857,7 @@ export class NogitaEngine {
       actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId, transcript: () => transcript,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
-      actionItems: () => s.items.list(), memory: this.dependencies.memory,
+      actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       onReceipt: receipt => {
         if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
         return s.meeting.sendCompletion(receipt);
@@ -961,7 +969,7 @@ export class NogitaEngine {
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
           chatName: authorized ? this.dependencies.chat?.name : undefined }),
-        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), followUp: pending !== undefined,
+        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), team: this.team(), followUp: pending !== undefined,
           raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`) }),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,

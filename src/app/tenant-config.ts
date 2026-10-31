@@ -9,6 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { parseIdentityRecords, type IdentityRecord } from '../core/identity.ts';
+import { isTimeZone } from '../core/team-time.ts';
 
 export type BoardConnection = { id: string; default?: boolean } & (
   | { provider: 'jira'; baseUrl: string; email?: string; cloudId?: string; token: string; projectKey: string; issueType?: string;
@@ -40,7 +41,8 @@ export interface AiConfig {
 }
 
 export interface TenantConfig {
-  tenant: { id: string; name: string };
+  /** timeZone (IANA) and weekStartsOn set what "today" and "this week" mean; UTC and Monday when left out. */
+  tenant: { id: string; name: string; timeZone?: string; weekStartsOn?: 'sunday' | 'monday' };
   ai: AiConfig;
   /** The first board marked `default` (else the first) is where new tasks go unless someone names another. */
   boards: BoardConnection[];
@@ -60,6 +62,17 @@ const num = (value: string | undefined, fallback: number) => {
   return value !== undefined && value !== '' && Number.isFinite(parsed) ? parsed : fallback;
 };
 
+function teamCalendar(timeZone: unknown, weekStartsOn: unknown, zonePath: string, weekPath: string):
+    Pick<TenantConfig['tenant'], 'timeZone' | 'weekStartsOn'> {
+  if (timeZone !== undefined && (typeof timeZone !== 'string' || !isTimeZone(timeZone))) {
+    throw new ConfigError(zonePath, 'an IANA time zone such as Asia/Jerusalem');
+  }
+  if (weekStartsOn !== undefined && weekStartsOn !== 'sunday' && weekStartsOn !== 'monday') {
+    throw new ConfigError(weekPath, 'sunday or monday');
+  }
+  return { ...(timeZone !== undefined ? { timeZone } : {}), ...(weekStartsOn !== undefined ? { weekStartsOn } : {}) };
+}
+
 /** The single-company configuration the environment has always described. */
 export function tenantConfigFromEnv(env: NodeJS.ProcessEnv): TenantConfig {
   const boards: BoardConnection[] = env.BOARD_PROVIDER === 'jira'
@@ -75,7 +88,8 @@ export function tenantConfigFromEnv(env: NodeJS.ProcessEnv): TenantConfig {
         token: env.GITHUB_TOKEN ?? '', publicRepo: env.GITHUB_PUBLIC_REPO === 'true', draftPullRequests: env.GITHUB_DRAFT_PRS === 'true' }]
     : [];
   return {
-    tenant: { id: env.NOGITA_TENANT_ID || 'default', name: env.NOGITA_TENANT_NAME || 'Default' },
+    tenant: { id: env.NOGITA_TENANT_ID || 'default', name: env.NOGITA_TENANT_NAME || 'Default',
+      ...teamCalendar(env.TEAM_TIMEZONE || undefined, env.TEAM_WEEK_START || undefined, 'TEAM_TIMEZONE', 'TEAM_WEEK_START') },
     ai: {
       mode: env.NOGITA_MODE === 'live' ? 'live' : 'demo',
       anthropicApiKey: env.ANTHROPIC_API_KEY,
@@ -211,7 +225,8 @@ export function parseTenantConfig(raw: string, env: NodeJS.ProcessEnv): TenantCo
     catch (error) { throw new ConfigError('people', error instanceof Error ? error.message : 'invalid'); }
   }
   return {
-    tenant: { id: tenantId, name: text(tenant.name, 'tenant.name', true) || tenantId },
+    tenant: { id: tenantId, name: text(tenant.name, 'tenant.name', true) || tenantId,
+      ...teamCalendar(tenant.timeZone, tenant.weekStartsOn, 'tenant.timeZone', 'tenant.weekStartsOn') },
     ai: {
       mode: ai.mode === 'live' ? 'live' : 'demo',
       ...(ai.anthropicApiKey !== undefined ? { anthropicApiKey: text(ai.anthropicApiKey, 'ai.anthropicApiKey') } : {}),

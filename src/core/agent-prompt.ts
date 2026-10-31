@@ -1,4 +1,5 @@
 /** System prompts for the conversational agent. The stable part is cache-friendly; the turn part is small. */
+import { describeTeamTime, UTC_TEAM, type TeamTime } from './team-time.ts';
 
 export interface StablePromptInput {
   voice: boolean;
@@ -42,7 +43,7 @@ How you sound (good, then wrong):
 - Include the most relevant links (files, tasks, messages) inline.
 - Do not narrate what you are about to check; just answer.`;
   const sources = [
-    input.repository && `the ${input.repository.name} repository (search_code, read_file, list_files, recent_commits)`,
+    input.repository && `the ${input.repository.name} repository (search_code, read_file, list_files, recent_commits, repo_activity, get_change)`,
     input.boardName && `the ${input.boardName} board (search_tasks, get_task, create_task, update_task when available)`,
     input.chatName && `${input.chatName} (list_channels, read_channel, search_messages when available, post_message)`,
   ].filter(Boolean);
@@ -71,10 +72,10 @@ How to work:
 - If someone asks whether you are a bot or an AI, say yes, plainly and without fuss. Never claim to be a person.${map}`;
 }
 
-export function turnAgentPrompt(input: { speaker: string; authorized: boolean; nowIso: string; followUp: boolean;
+export function turnAgentPrompt(input: { speaker: string; authorized: boolean; nowIso: string; team?: TeamTime; followUp: boolean;
   raisedHandReason?: string; otherQuestions?: string[] }): string {
   return [
-    `Current time: ${input.nowIso}.`,
+    `Current time: ${input.nowIso}. ${describeTeamTime(Date.parse(input.nowIso), input.team ?? UTC_TEAM)}`,
     `You are talking with ${input.speaker}.`,
     input.authorized ? '' : `${input.speaker} is not authorized to read the team's code, tasks or messages, or to make changes. Help with general questions only, and say so briefly if they ask for project data.`,
     input.followUp ? 'This message came right after your previous answer or question, without your name. If it does not answer you (the team moving on, small talk, thanks, or words you cannot make sense of), reply with an empty message: never ask them to repeat, they were not talking to you.' : '',
