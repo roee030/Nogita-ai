@@ -1,12 +1,15 @@
-# Meeting readiness, webcam presence and missions (2026-10-29)
+# Meeting readiness after the first live Meet (2026-10-31)
 
-What changed in this round, what each change was verified against, and what still needs a real Google Meet with
-people in it. Verification levels used below:
+What changed in this round, what the 31 October live Google Meet proved, and what still needs another meeting.
+Verification levels used below:
 
-- **unit**: automated tests against fakes (`npm test`, 331 tests).
+- **unit**: automated tests against fakes (`npm test`, 492 tests on `main` at the start of this update).
 - **live-tools**: run against the real Anthropic, Jira and GitHub from this machine (read-only).
 - **voice-lab**: the production voice path with synthetic speakers (see `docs/VOICE_LAB.md`); only Meet is simulated.
-- **real-meet**: a real Google Meet with people. **Nothing in this round has been verified in a real Meet yet.**
+- **real-meet observed**: behavior seen in the 2026-10-31 meeting. This is evidence of the failure, not evidence that
+  its later fix works.
+- **real-meet verified**: a fix exercised successfully in a later real meeting. **No 31 October fix has reached this
+  level yet.**
 
 ## Milestone 1: conversation reliability
 
@@ -79,6 +82,35 @@ Verified:
     two different answers, which exposed a real adapter bug (fixed: `recentCommits` now loads the code snapshot first).
   - Two Slack reads failed in that run (probably missing scopes on the bot token); not investigated further.
 
+## First live Meet, 2026-10-31
+
+The meeting moved this document beyond synthetic readiness: the voice path, verification, agent loop and Jira flow
+were exercised with people in Google Meet. It also showed that passing unit and voice-lab checks did not predict all
+live behavior. The fixes below are merged to `main` and have regression tests, but still need a second live Meet.
+
+| What happened live | Cause | Change now on `main` | Evidence now |
+|---|---|---|---|
+| `Nogita verify 45-451948` was rejected after the speaker restarted the code | recognition kept both attempts, producing eight digits | accept a six-digit code at the end of a digits-only verification phrase, with a bounded restarted prefix; accept “verified” | real-meet observed; unit |
+| “Wait, wait, wait, wait!” did not stop her for about 10 seconds | repeated `wait` was absent from the stop-command patterns | repeated `wait` stops speech, while “wait for/until” and “can't wait” remain ordinary speech | real-meet observed; unit |
+| A supported answer was retracted on the next turn, so she refused the requested task write | conversation history retained her words but not the lookup results behind them | each answer keeps a bounded (1,400-character) note of its lookup results for follow-ups | real-meet observed; unit |
+| She repeatedly asked the speaker to supply task titles | the prompt did not tell the agent to derive details it could look up | look up available context, write useful titles, and apply a requested status after creation | real-meet observed; prompt regression test |
+| The fragment “All the the?” was treated as a complete request and answered three times | a turn ending in a dangling word counted as complete | dangling endings wait for more speech when the incomplete-turn hold is enabled | real-meet observed; unit |
+| Deliberation such as “All the is garbled ... Ask him once briefly” was spoken aloud | the speech guard missed talk about the speaker and self-auditing | guard those deliberation patterns before TTS | real-meet observed; unit |
+
+Two related write-flow failures from the same meeting are also fixed and covered by regression tests: “Yes, please”
+now carries Nogita's offered action into the write scope, and “open one for me” creates an unassigned task when the
+speaker has no mapped board account instead of failing the request. A recognition variant, “Nogita explained ...”,
+also addresses her.
+
+Two larger failures remain open and are tracked separately in the work plan:
+
+- A request to open several tasks produced fewer tasks or none. A tool step can exceed the 600-token limit; when the
+  model stops at `max_tokens`, complete tool calls already emitted are currently discarded. This is P1-1 and is not
+  fixed by the prompt changes above.
+- “What entered the repository today?” returned partial, stale history. `recent_commits` returns only ten commits from
+  the startup snapshot, and the Render deployment also had `GITHUB_REF` set to an old feature branch instead of
+  `main`. The Render setting must be corrected; live, paginated activity and date handling are P1-2.
+
 ## Voice lab after these changes (Nova-3 multilingual, the production default)
 
 Run 1, 2026-10-29, 8 scenarios (quiet-standup, team-discussion, barge-in, cancel-stop, follow-up, interrupt-resume,
@@ -117,26 +149,36 @@ cancel-stop and "in one sentence" now pass. Still open:
 Also in the tree: a compound "stop. <new request>" handler (`splitLeadingStop` in `engine.ts`) and its test were added
 by someone else during this round; they fit these changes and pass.
 
-## What a real Meet test still has to show (needs you)
+## What live Meet #2 still has to show
 
-Run with `NOGITA_TURN_LOG=full` (everyone consents) and then `npm run turn-report -- --out report.md`. Three sessions,
-at least two people besides Nogita:
+Run with `NOGITA_TURN_LOG=full` (everyone consents) and then `npm run turn-report -- --out report.md`. Use the
+deployment's `/version` response to record the exact SHA first. Test with at least two people besides Nogita:
 
-1. Call her once; she answers. Then two follow-ups without her name; then Dana answers you and you ask Dana something:
+1. Repeat the 31 October regressions: restart the verification code, repeat “wait”, act on an answer that used a
+   lookup, ask for tasks without supplying titles, pause on a dangling phrase, accept her offered task with “yes”,
+   and ask for a task as a speaker without a mapped board account. None may regress or expose deliberation.
+2. Ask for three distinct tasks and verify three real receipts, then ask what entered the repository today and compare
+   the answer with `git log` and the day's merged PRs. Until P1-1 and P1-2 land, these are expected failure probes, not
+   release gates that can pass through prompt changes.
+3. Call her once; she answers. Then two follow-ups without her name; then Dana answers you and you ask Dana something:
    she must stay silent.
-2. A guest (unmapped account) joins and speaks: unnamed questions are no longer hers; "show me KAN-20" is refused on screen.
-3. Interrupt her mid-answer and keep talking; later interrupt and go quiet (she resumes from the unheard sentence);
+4. A guest (unmapped account) joins and speaks: unnamed questions are no longer hers; "show me KAN-20" is refused on screen.
+5. Interrupt her mid-answer and keep talking; later interrupt and go quiet (she resumes from the unheard sentence);
    say "stop" quietly; say "No, I meant ...".
-4. Her tile: Ready, Listening, Understanding, Investigating, Speaking, a card; check it is legible in a normal grid.
-5. "Nogita, take care of KAN-20" → progress on her tile → approve by voice → result. End the meeting while a mission
+6. Her tile: Ready, Listening, Understanding, Investigating, Speaking, a card; check it is legible in a normal grid.
+7. "Nogita, take care of KAN-20" → progress on her tile → approve by voice → result. End the meeting while a mission
    runs; restart the server; check it resumes (`npm run mission -- list`).
-6. Restart the server mid-meeting: the tile must come back by itself.
+8. Restart the server mid-meeting: the tile must come back by itself.
 
 Targets (`docs/voice-benchmark.md`): first audible response p50 ≤ 1.0 s / p95 ≤ 2.0 s, interruption to silence
 p95 ≤ 0.3 s, no missed or silently lost questions, no speech after a stop, no stuck screens.
 
 ## Remaining risks
 
+- The first live Meet proved that complete multi-action writes and same-day repository research are not reliable yet;
+  P1-1 and P1-2 are release blockers for those scenarios.
+- The deployed `GITHUB_REF` must be checked after every environment change, and `/version` should be recorded with
+  every live report so a result is tied to the code that actually ran.
 - Speaker targeting is rules plus the model's judgement; a quiet unnamed question in a group is now ignored more
   often (by design). Measure false negatives in the real sessions.
 - "Heard" is estimated from playback time at 14 characters per second; Aura-2's real pace varies.
