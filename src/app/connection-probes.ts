@@ -1,7 +1,14 @@
 import { DEFAULT_ANTHROPIC_AGENT_MODEL, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
+import type { ConnectionCheck, ConnectionProvider, ConnectionReadinessReport } from './readiness.ts';
 
-export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetch = fetch) {
-  const checks = await Promise.all(['github', 'jira', 'attendee', 'slack', 'anthropic'].map(async provider => {
+const PROVIDERS: readonly ConnectionProvider[] =
+  ['github', 'jira', 'slack', 'anthropic', 'deepgram', 'attendee'];
+
+export async function probeConnections(
+  env: NodeJS.ProcessEnv,
+  http: typeof fetch = fetch,
+): Promise<ConnectionReadinessReport> {
+  const checks = await Promise.all(PROVIDERS.map(async (provider): Promise<ConnectionCheck> => {
     let url: string;
     const headers: Record<string, string> = {};
     if (provider === 'github') {
@@ -20,19 +27,24 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
         return { provider, status: 'invalid_configuration' };
       url = `${base.origin}/rest/api/3/project/${encodeURIComponent(env.JIRA_PROJECT_KEY)}`;
       headers.Authorization = `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString('base64')}`;
-    } else if (provider === 'attendee') {
-      if (!env.ATTENDEE_API_KEY) return { provider, status: 'unconfigured' };
-      url = 'https://app.attendee.dev/api/v1/bots';
-      headers.Authorization = `Token ${env.ATTENDEE_API_KEY}`;
     } else if (provider === 'slack') {
       if (!env.SLACK_BOT_TOKEN) return { provider, status: 'unconfigured' };
       url = 'https://slack.com/api/auth.test';
       headers.Authorization = `Bearer ${env.SLACK_BOT_TOKEN}`;
-    } else {
+    } else if (provider === 'anthropic') {
       if (!env.ANTHROPIC_API_KEY) return { provider, status: 'unconfigured' };
       url = 'https://api.anthropic.com/v1/models?limit=100';
       headers['x-api-key'] = env.ANTHROPIC_API_KEY;
       headers['anthropic-version'] = '2023-06-01';
+    } else if (provider === 'deepgram') {
+      if (!env.DEEPGRAM_API_KEY) return { provider,
+        status: env.NOGITA_REALTIME_AUDIO_ENABLED === 'true' ? 'unconfigured' : 'not_required' };
+      url = 'https://api.deepgram.com/v1/auth/token';
+      headers.Authorization = `Token ${env.DEEPGRAM_API_KEY}`;
+    } else {
+      if (!env.ATTENDEE_API_KEY) return { provider, status: 'unconfigured' };
+      url = 'https://app.attendee.dev/api/v1/bots';
+      headers.Authorization = `Token ${env.ATTENDEE_API_KEY}`;
     }
     const started = performance.now();
     try {
@@ -72,5 +84,5 @@ export async function probeConnections(env: NodeJS.ProcessEnv, http: typeof fetc
       return { provider, status: 'unreachable', durationMs: Math.round(performance.now() - started) };
     }
   }));
-  return { ok: checks.every(check => check.status === 'connected'), checks };
+  return { ok: checks.every(check => check.status === 'connected' || check.status === 'not_required'), checks };
 }

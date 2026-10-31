@@ -13,6 +13,23 @@ export interface ReadinessReport {
   blockers: ReadinessCheck['id'][];
 }
 
+export type ConnectionProvider = 'github' | 'jira' | 'slack' | 'anthropic' | 'deepgram' | 'attendee';
+export type ConnectionStatus =
+  'connected' | 'not_required' | 'unconfigured' | 'invalid_configuration' | 'failed' | 'unreachable';
+
+export interface ConnectionCheck {
+  provider: ConnectionProvider;
+  status: ConnectionStatus;
+  /** Present only when an HTTP capability probe was attempted. */
+  durationMs?: number;
+  httpStatus?: number;
+}
+
+export interface ConnectionReadinessReport {
+  ok: boolean;
+  checks: ConnectionCheck[];
+}
+
 function present(env: NodeJS.ProcessEnv, names: readonly string[]): boolean {
   return names.every(name => Boolean(env[name]?.trim()));
 }
