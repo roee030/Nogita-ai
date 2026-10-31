@@ -66,3 +66,19 @@
 | [ ] | P1-8 | פגישה חיה #2 עם תסריט קבוע: שני הכשלים וששת הממצאים | רועי | | P1-1, P1-2 |
 | [ ] | P1-9 | טייס אוטומטי: `npm run board` מחשב סטטוס מ-GitHub, והלוח בלי סטטוסים ידניים | Claude | `tools/board.ts`, `tests/board.test.ts`, `docs/TASK_BOARD.md`, `package.json` | - |
 | [ ] | P1-10 | משימה אחת לכל צ'אט: הסוכן עוצר אחרי PR מוכן ומחזיר לינק למיזוג | Claude | `AGENTS.md`, `CLAUDE.md`, `docs/TASK_BOARD.md` | - |
+
+### שלב 2, שבועות 2–3: אמינות הבקשה
+
+**שער:** "פתחי חמש משימות" יוצרת בדיוק חמש, או מסבירה בדיוק מה חסר, ב-10 מתוך 10 ניסיונות. אין כפילויות.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P2-0 | שלב 2 בלוח המשימות | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P2-1 | `create_tasks` ו-`update_tasks`: מערך של עד 10 פריטים, בדיקת הרשאה אחת, מפתח idempotency לכל פריט, כתיבות אחת אחרי השנייה, וקבלה אחת בצ'אט | Claude | `src/core/agent-tools.ts`, `tests/batch-tasks.test.ts` | - |
+| [ ] | P2-2 | idempotency ששורד retry ו-restart: פעולה שהצליחה לא רצה שוב (היום `completed` ב-`engine.ts` חי רק בזיכרון) | Claude | `src/core/engine.ts`, `src/app/action-receipts.ts`, `tests/idempotency.test.ts` | P2-1 |
+| [ ] | P2-3 | Completion Gate: בסוף התורה משווים את הפעולות שהתבקשו לתוצאות הכלים, בלי קריאת מודל נוספת; תורה שחסרה בה פעולה לא מסומנת כהצלחה | Claude | `src/core/agent.ts`, `src/core/completion-gate.ts`, `tests/completion-gate.test.ts` | P2-1 |
+| [ ] | P2-4 | הצלחה חלקית ותשובה כנה: "פתחתי שתיים משלוש, השלישית לא נפתחה כי...", וכשתורה נקטעת (deadline, תקרת צעדים, כלי שנכשל) אומרים מה חסר ומציעים להמשיך | Claude | `src/core/agent.ts`, `src/core/agent-prompt.ts`, `tests/partial-success.test.ts` | P2-3 |
+| [ ] | P2-5 | סט ההערכה מגיע ל-40 מקרים, כולל בקשות של 2 עד 10 פעולות, בקשה עם בעלים שלא קיים, ובקשה שחוזרת אחרי retry | Claude | `tests/eval/` | - |
+| [ ] | P2-6 | מדידה בצד המאזין: הקלטה ממשתתף שני ב-Meet, זמן משאלה עד צליל ומ-"wait" עד שקט, ודוח שאפשר להשוות בין פגישות | Codex | `tools/listener-probe/`, `tests/listener-probe.test.ts` | - |
+| [ ] | P2-7 | תיקון "wait" ועצירה כשמישהו מתחיל לדבר, לפי מה שפגישה #2 והמדידה בצד המאזין חשפו | Codex | `src/core/speech-floor.ts`, `src/core/speech-guard.ts`, `src/app/attendee-realtime-audio.ts` | P1-8, P2-6 |
+| [ ] | P2-8 | פגישה חיה #3 עם תסריט השער: "פתחי חמש משימות" 10 פעמים, בעלים שלא קיים, ו-"wait" באמצע תשובה | רועי | | P2-2, P2-4, P2-7 |
