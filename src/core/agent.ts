@@ -7,6 +7,8 @@
  * so a voice meeting hears the first sentence long before the whole answer exists.
  */
 
+import { checkCompletion, type CompletionReport, type GateCall } from './completion-gate.ts';
+
 export type AgentContent =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
@@ -68,6 +70,8 @@ export interface AgentTurn {
   /** Overall budget for the turn; the loop stops calling the model after it. */
   deadlineMs?: number;
   now?: () => number;
+  /** The person's words this turn: the completion gate counts the actions they asked for in them. */
+  request?: string;
 }
 export interface AgentResult {
   /** Text of the final model step: the answer itself. */
@@ -81,6 +85,8 @@ export interface AgentResult {
   stoppedEarly: boolean;
   /** One entry per model request, in order, so a trace can show why each step ended. */
   stops: AgentStepStop[];
+  /** Asked-for actions compared with what the tools did; `complete: false` means the turn is not a success. */
+  completion: CompletionReport;
 }
 export interface AgentStepStop {
   step: number;
@@ -167,10 +173,12 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const prefaces: string[] = [];
   const lookups: string[] = [];
   const stops: AgentStepStop[] = [];
+  const gateCalls: GateCall[] = [];
   let answer = '';
   let steps = 0;
   const result = (stoppedEarly: boolean): AgentResult =>
-    ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops });
+    ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops,
+      completion: checkCompletion(turn.request, gateCalls) });
   for (; steps < maxSteps; steps++) {
     turn.signal?.throwIfAborted();
     if (deadline - (now() - started) < 1_500) return result(true);
@@ -241,6 +249,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     toolCalls.push(...uses.map(use => use.name));
     for (const use of uses) {
       const outcome = results.get(use.id)!;
+      gateCalls.push({ name: use.name, input: use.input ?? {}, outcome, write: turn.toolbox.isWrite(use.name) });
       const content = (outcome.content || '(empty)').replace(/\s+/g, ' ');
       lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
         (content.length > MAX_LOOKUP_NOTE_CHARS ? `${content.slice(0, MAX_LOOKUP_NOTE_CHARS)}...` : content));
