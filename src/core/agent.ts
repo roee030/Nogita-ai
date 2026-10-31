@@ -58,7 +58,11 @@ export interface AgentTurn {
   stream: boolean;
   usageContext?: string;
   maxSteps?: number;
+  /** Output budget of a step that cannot call tools (the last one), and the default for the others. */
   maxTokens?: number;
+  /** Output budget of a step that may call tools: several whole tool calls need more room than a spoken answer.
+   *  How much of an answer is spoken is limited by the caller, not by this budget. */
+  toolStepMaxTokens?: number;
   /** Overall budget for the turn; the loop stops calling the model after it. */
   deadlineMs?: number;
   now?: () => number;
@@ -73,6 +77,18 @@ export interface AgentResult {
   lookups: string[];
   steps: number;
   stoppedEarly: boolean;
+  /** One entry per model request, in order, so a trace can show why each step ended. */
+  stops: AgentStepStop[];
+}
+export interface AgentStepStop {
+  step: number;
+  /** The provider's stop reason: 'end_turn', 'tool_use', 'max_tokens', ... */
+  stopReason: string;
+  maxTokens: number;
+  /** A tool call cut off by `max_tokens`; it was not run. */
+  droppedToolCall?: string;
+  /** This request repeated the step with twice the budget: the first attempt was cut off before any whole tool call. */
+  retry?: boolean;
 }
 
 const MAX_LOOKUP_NOTE_CHARS = 600;
@@ -140,52 +156,75 @@ function truncate(text: string): string {
 export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<AgentResult> {
   const now = turn.now ?? Date.now;
   const started = now();
+  const deadline = turn.deadlineMs ?? 60_000;
   const maxSteps = turn.maxSteps ?? 8;
+  const answerTokens = turn.maxTokens ?? 900;
+  const toolStepTokens = turn.toolStepMaxTokens ?? answerTokens;
   const messages = turn.messages.slice();
   const toolCalls: string[] = [];
   const prefaces: string[] = [];
   const lookups: string[] = [];
+  const stops: AgentStepStop[] = [];
   let answer = '';
   let steps = 0;
+  const result = (stoppedEarly: boolean): AgentResult =>
+    ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops });
   for (; steps < maxSteps; steps++) {
     turn.signal?.throwIfAborted();
-    const remaining = (turn.deadlineMs ?? 60_000) - (now() - started);
-    if (remaining < 1_500) return { answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly: true };
+    if (deadline - (now() - started) < 1_500) return result(true);
     const step = steps;
-    const chunker = turn.stream && turn.onSpeech ? new SpeechChunker(text => turn.onSpeech!(text, step)) : undefined;
     const lastStep = steps === maxSteps - 1;
-    const requestStarted = now();
     let firstText = false;
-    const response = await model.streamChat({
-      stableSystem: turn.stableSystem,
-      turnSystem: lastStep
-        ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.`
-        : turn.turnSystem,
-      messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens: turn.maxTokens ?? 900,
-      usageContext: turn.usageContext, timeoutMs: Math.min(30_000, remaining), signal: turn.signal,
-    }, delta => {
-      if (turn.signal?.aborted) return;
-      if (delta.length && !firstText) {
-        firstText = true;
-        turn.onFirstText?.(step, Math.max(0, now() - requestStarted));
-      }
-      chunker?.push(delta);
-    });
-    chunker?.flush();
-    const text = response.content.filter(block => block.type === 'text')
-      .map(block => (block as { text: string }).text).join('').trim();
-    if (!turn.stream && turn.onSpeech && text) turn.onSpeech(text, step);
-    const uses = response.content.filter(block => block.type === 'tool_use') as
-      Array<Extract<AgentContent, { type: 'tool_use' }>>;
-    if (!uses.length || response.stopReason !== 'tool_use') {
+    let spoken = '';
+    const request = async (maxTokens: number, retry: boolean) => {
+      // A retry does not stream when the first attempt already spoke: the lead-in is not said twice.
+      const chunker = turn.stream && turn.onSpeech && !spoken ? new SpeechChunker(text => turn.onSpeech!(text, step)) : undefined;
+      const requestStarted = now();
+      const response = await model.streamChat({
+        stableSystem: turn.stableSystem,
+        turnSystem: lastStep
+          ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.`
+          : turn.turnSystem,
+        messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens,
+        usageContext: turn.usageContext, timeoutMs: Math.min(30_000, deadline - (now() - started)), signal: turn.signal,
+      }, delta => {
+        if (turn.signal?.aborted) return;
+        if (delta.length && !firstText) {
+          firstText = true;
+          turn.onFirstText?.(step, Math.max(0, now() - requestStarted));
+        }
+        chunker?.push(delta);
+      });
+      chunker?.flush();
+      const text = response.content.filter(block => block.type === 'text')
+        .map(block => (block as { text: string }).text).join('').trim();
+      if (chunker) spoken = text;
+      const calls = wholeToolCalls(response);
+      stops.push({ step, stopReason: response.stopReason, maxTokens,
+        ...(calls.dropped ? { droppedToolCall: calls.dropped.name } : {}), ...(retry ? { retry: true } : {}) });
+      return { response, text, ...calls };
+    };
+    const budget = lastStep ? answerTokens : toolStepTokens;
+    let attempt = await request(budget, false);
+    if (attempt.dropped && !attempt.uses.length && deadline - (now() - started) >= 1_500) {
+      // Cut off inside its only tool call: one more try with room for it.
+      turn.signal?.throwIfAborted();
+      attempt = await request(budget * 2, true);
+      // What was already said before tools stays the lead-in.
+      if (spoken && attempt.uses.length) attempt.text = spoken;
+    }
+    const { response, text, uses, dropped } = attempt;
+    if (turn.onSpeech && text && (!turn.stream || text !== spoken)) turn.onSpeech(text, step);
+    if (!uses.length) {
       answer = text;
       steps++;
-      break;
+      // A tool call that was still cut off after the retry did not run: the turn did not finish.
+      return result(dropped !== undefined);
     }
     if (text) prefaces.push(text);
     turn.onToolUse?.(uses.map(use => use.name), step);
     turn.signal?.throwIfAborted();
-    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'assistant', content: dropped ? response.content.filter(block => block !== dropped) : response.content });
     const results = new Map<string, ToolOutcome>();
     const reads = uses.filter(use => !turn.toolbox.isWrite(use.name));
     const writes = uses.filter(use => turn.toolbox.isWrite(use.name));
@@ -203,13 +242,32 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
         (content.length > MAX_LOOKUP_NOTE_CHARS ? `${content.slice(0, MAX_LOOKUP_NOTE_CHARS)}...` : content));
     }
-    messages.push({ role: 'user', content: uses.map(use => {
-      const outcome = results.get(use.id)!;
-      return { type: 'tool_result' as const, tool_use_id: use.id, content: truncate(outcome.content || '(empty)'),
-        ...(outcome.isError ? { is_error: true } : {}) };
-    }) });
+    messages.push({ role: 'user', content: [
+      ...uses.map(use => {
+        const outcome = results.get(use.id)!;
+        return { type: 'tool_result' as const, tool_use_id: use.id, content: truncate(outcome.content || '(empty)'),
+          ...(outcome.isError ? { is_error: true } : {}) };
+      }),
+      ...(dropped ? [{ type: 'text' as const, text: `Your ${dropped.name} call was cut off by the output limit and did not run. ` +
+        'Call it again if it is still needed.' }] : []),
+    ] });
   }
-  return { answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly: false };
+  return result(false);
+}
+
+type ToolUse = Extract<AgentContent, { type: 'tool_use' }>;
+
+/**
+ * The tool calls that were written out whole. Output cut off by `max_tokens` ends inside its last block, so a tool
+ * call there is incomplete (its input partial or unreadable) and must not run; every earlier call is whole.
+ */
+function wholeToolCalls(response: ChatModelResponse): { uses: ToolUse[]; dropped?: ToolUse } {
+  const uses = response.content.filter(block => block.type === 'tool_use') as ToolUse[];
+  if (response.stopReason === 'tool_use') return { uses };
+  const last = response.content.at(-1);
+  if (response.stopReason === 'max_tokens' && last?.type === 'tool_use') return { uses: uses.slice(0, -1), dropped: last };
+  // Any other stop reason ('end_turn', 'refusal', ...) does not ask for tools to run.
+  return { uses: [] };
 }
 
 /** A rolled-back speculative attempt must not remain suspended behind an unopened write gate. */

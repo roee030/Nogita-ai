@@ -41,7 +41,7 @@
 | | ID | משימה | באחריות | קבצים | סטטוס |
 |---|---|---|---|---|---|
 | [ ] | P1-0 | תוכנית העבודה ולוח המשימות | Claude | `docs/WORK_PLAN.md`, `docs/TASK_BOARD.md`, `AGENTS.md`, `CLAUDE.md` | בבדיקה |
-| [ ] | P1-1 | לא לזרוק קריאות כלי שנקטעו ב-`max_tokens`; להגדיל את התקרה לצעדים עם כלים; להחזיר את סיבת העצירה של כל צעד ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/engine.ts` (שורת התקציב), `tests/agent.test.ts` | בעבודה |
+| [ ] | P1-1 | לא לזרוק קריאות כלי שנקטעו ב-`max_tokens`; להגדיל את התקרה לצעדים עם כלים; להחזיר את סיבת העצירה של כל צעד ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/engine.ts` (שורת התקציב), `tests/agent.test.ts` | בבדיקה |
 | [ ] | P1-2 | `repo_activity` ו-`get_change`; היסטוריה מה-branch החי; אזור הזמן של הצוות ב-prompt של כל תורה | Claude | `src/adapters/github.ts`, `src/core/contracts.ts`, `src/core/agent-tools.ts`, `src/core/agent-prompt.ts`, `tests/` חדשים | ממתין ל-P1-1 |
 | [ ] | P1-3 | סט הערכה: 15 מקרים ראשונים, כולל שני הכשלים החיים, וסקריפט `npm run eval` | Claude | `tests/eval/` חדש, `package.json` (סקריפט אחד) | ממתין ל-P1-2 |
 | [ ] | P1-4 | `/version` שמחזיר את ה-SHA של הפריסה (ב-Render: `RENDER_GIT_COMMIT`) | Codex | `src/app/server.ts`, `tests/` | פתוח |
@@ -57,3 +57,4 @@
 כל סוכן מוסיף כאן שורה כשמשימה שלו עוברת לבדיקה: מה נעשה, מה הסוכן השני צריך לדעת, ומה נשאר פתוח.
 
 - P1-0 (Claude): נוצרו תוכנית העבודה, הלוח הזה, `AGENTS.md` ו-`CLAUDE.md`.
+- P1-1 (Claude): צעד שנקטע ב-`max_tokens` מריץ את קריאות הכלי השלמות, משמיט את החלקית ואומר למודל שהיא לא רצה. אם לא נכתבה אף קריאה שלמה, הצעד נשלח שוב פעם אחת עם תקציב כפול, בלי לחזור על משפט הפתיחה. תקציב צעד עם כלים: 2,000 בקול ו-4,000 בצ'אט (`toolStepMaxTokens`); הצעד האחרון, בלי כלים, נשאר 600/1,500. **ל-Codex (P1-5):** `AgentResult.stops` מחזיר רשומה לכל קריאת מודל: `step`, `stopReason`, `maxTokens`, `droppedToolCall`, `retry`. פתוח: אין flag, כי flags מחווטים ב-`server.ts` ש-P1-4 מחזיקה. ראו את ה-PR.
