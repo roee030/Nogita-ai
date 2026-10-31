@@ -41,7 +41,7 @@
 | | ID | משימה | באחריות | קבצים | סטטוס |
 |---|---|---|---|---|---|
 | [ ] | P1-0 | תוכנית העבודה ולוח המשימות | Claude | `docs/WORK_PLAN.md`, `docs/TASK_BOARD.md`, `AGENTS.md`, `CLAUDE.md` | בבדיקה |
-| [ ] | P1-1 | לא לזרוק קריאות כלי שנקטעו ב-`max_tokens`; להגדיל את התקרה לצעדים עם כלים; להחזיר את סיבת העצירה של כל צעד ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/engine.ts` (שורת התקציב), `tests/agent.test.ts` | פתוח |
+| [ ] | P1-1 | לא לזרוק קריאות כלי שנקטעו ב-`max_tokens`; להגדיל את התקרה לצעדים עם כלים; להחזיר את סיבת העצירה של כל צעד ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/engine.ts` (שורת התקציב), `tests/agent.test.ts` | בעבודה |
 | [ ] | P1-2 | `repo_activity` ו-`get_change`; היסטוריה מה-branch החי; אזור הזמן של הצוות ב-prompt של כל תורה | Claude | `src/adapters/github.ts`, `src/core/contracts.ts`, `src/core/agent-tools.ts`, `src/core/agent-prompt.ts`, `tests/` חדשים | ממתין ל-P1-1 |
 | [ ] | P1-3 | סט הערכה: 15 מקרים ראשונים, כולל שני הכשלים החיים, וסקריפט `npm run eval` | Claude | `tests/eval/` חדש, `package.json` (סקריפט אחד) | ממתין ל-P1-2 |
 | [ ] | P1-4 | `/version` שמחזיר את ה-SHA של הפריסה (ב-Render: `RENDER_GIT_COMMIT`) | Codex | `src/app/server.ts`, `tests/` | פתוח |
