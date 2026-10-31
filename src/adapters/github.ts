@@ -1,4 +1,5 @@
-import { CodeLookupRateLimitError, type CodeFile, type CodePort, type Evidence } from '../core/contracts.ts';
+import { CodeLookupRateLimitError, type CodeChange, type CodeFile, type CodePort, type Evidence,
+  type RepoActivity } from '../core/contracts.ts';
 import { gunzipSync } from 'node:zlib';
 import { readToken, type TokenSource } from './token-source.ts';
 
@@ -38,8 +39,24 @@ const MAX_LISTED_PATHS = 500;
 
 interface GitHubCommit {
   sha?: string;
-  commit?: { message?: string; author?: { date?: string }; tree?: { sha?: string } };
+  commit?: { message?: string; author?: { name?: string; date?: string }; tree?: { sha?: string } };
+  author?: { login?: string } | null;
+  parents?: Array<{ sha?: string }>;
+  stats?: { additions?: number; deletions?: number };
+  files?: GitHubFile[];
 }
+interface GitHubFile { filename?: string; status?: string; additions?: number; deletions?: number; patch?: string }
+interface GitHubPull {
+  number?: number; title?: string; body?: string | null; state?: string; user?: { login?: string } | null;
+  merged_at?: string | null; updated_at?: string; created_at?: string; additions?: number; deletions?: number;
+}
+
+const MAX_ACTIVITY_PAGES = 3;
+const MAX_TOP_FILES = 15;
+const MAX_BODY_CHARS = 600;
+const MAX_CHANGE_FILES = 100;
+const MAX_FILE_PATCH_CHARS = 3_000;
+const MAX_CHANGE_PATCH_CHARS = 12_000;
 interface IndexedRevision { files: IndexedFile[]; commitSha: string }
 
 function isSupportedTextFile(path: string): boolean {
@@ -192,6 +209,24 @@ function indexTarArchive(compressed: Buffer): IndexBuild {
     offset = next;
   }
   throw new Error('GitHub archive is missing its end marker');
+}
+
+/** Files of a change with patches inside a fixed budget; credential-looking files never show their patch. */
+function changedFiles(files: readonly GitHubFile[], more: boolean): Pick<CodeChange, 'files' | 'truncated'> {
+  let budget = MAX_CHANGE_PATCH_CHARS;
+  let truncated = more || files.length > MAX_CHANGE_FILES;
+  const listed = files.filter(file => file.filename).slice(0, MAX_CHANGE_FILES).map(file => {
+    const path = file.filename!;
+    const entry: CodeChange['files'][number] = { path, status: file.status ?? 'modified',
+      additions: file.additions ?? 0, deletions: file.deletions ?? 0 };
+    if (!file.patch || excludedCredentialPaths.test(path)) return entry;
+    let patch = redactSource(file.patch);
+    if (patch.length > MAX_FILE_PATCH_CHARS) { patch = `${patch.slice(0, MAX_FILE_PATCH_CHARS)}\n... (patch cut)`; truncated = true; }
+    if (patch.length > budget) { truncated = true; return entry; }
+    budget -= patch.length;
+    return { ...entry, patch };
+  });
+  return { files: listed, truncated };
 }
 
 export class GitHubCode implements CodePort {
@@ -522,6 +557,106 @@ export class GitHubCode implements CodePort {
     // the index existed the first call read the branch head and later ones the snapshot, so two calls disagreed.
     if (!ref?.trim() && !this.indexedCommitSha) await this.loadIndex().catch(() => undefined);
     return this.findCommitEvidence(ref?.trim() || this.indexedCommitSha || this.config.ref);
+  }
+
+  /** Reads the live branch, not the snapshot: "what landed today" must include the push from five minutes ago. */
+  async repoActivity(query: { since: string; until?: string; branch?: string }): Promise<RepoActivity> {
+    const { owner, repo } = this.config;
+    const since = new Date(query.since);
+    const until = query.until ? new Date(query.until) : new Date(this.now());
+    if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime()) || since > until) throw new Error('invalid time range');
+    const branch = query.branch?.trim() || this.config.ref;
+    if (!/^[\w./-]{1,100}$/.test(branch)) throw new Error('invalid branch name');
+    const range = `since=${encodeURIComponent(since.toISOString())}&until=${encodeURIComponent(until.toISOString())}`;
+    let truncated = false;
+    const commits: GitHubCommit[] = [];
+    for (let page = 1; page <= MAX_ACTIVITY_PAGES; page++) {
+      const batch = await this.get<GitHubCommit[]>(
+        `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branch)}&${range}&per_page=100&page=${page}`);
+      if (!Array.isArray(batch)) throw new Error('GitHub returned an invalid commit history');
+      commits.push(...batch);
+      if (batch.length < 100) break;
+      if (page === MAX_ACTIVITY_PAGES) truncated = true;
+    }
+    const pulls: GitHubPull[] = [];
+    for (let page = 1; page <= MAX_ACTIVITY_PAGES; page++) {
+      const batch = await this.get<GitHubPull[]>(`/repos/${owner}/${repo}/pulls?state=closed&base=${encodeURIComponent(branch)}` +
+        `&sort=updated&direction=desc&per_page=50&page=${page}`);
+      if (!Array.isArray(batch)) throw new Error('GitHub returned an invalid pull request list');
+      pulls.push(...batch);
+      // Sorted by last update: once a page reaches back before the range, later pages cannot hold a merge inside it.
+      if (batch.length < 50 || batch.some(pull => pull.updated_at && new Date(pull.updated_at) < since)) break;
+      if (page === MAX_ACTIVITY_PAGES) truncated = true;
+    }
+    const valid = commits.filter(commit => commit.sha && /^[a-f0-9]{40}$/i.test(commit.sha));
+    // One compare call sums the whole range: the commit list carries no files.
+    let files: RepoActivity['files'];
+    const newest = valid[0]?.sha;
+    const base = valid.at(-1)?.parents?.[0]?.sha;
+    if (newest && base && /^[a-f0-9]{40}$/i.test(base) && !truncated) {
+      const compare = await this.get<{ files?: GitHubFile[] }>(`/repos/${owner}/${repo}/compare/${base}...${newest}`)
+        .catch(() => undefined);
+      const changed = (compare?.files ?? []).filter(file => file.filename);
+      if (changed.length) {
+        const size = (file: GitHubFile) => (file.additions ?? 0) + (file.deletions ?? 0);
+        files = { changed: changed.length,
+          additions: changed.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+          deletions: changed.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+          top: [...changed].sort((a, b) => size(b) - size(a)).slice(0, MAX_TOP_FILES).map(file => ({
+            path: file.filename!, status: file.status ?? 'modified', additions: file.additions ?? 0, deletions: file.deletions ?? 0 })) };
+        if (changed.length >= 300) truncated = true;
+      }
+    }
+    return {
+      repository: `${owner}/${repo}`, branch, since: since.toISOString(), until: until.toISOString(),
+      ...(this.indexedCommitSha ? { snapshot: this.indexedCommitSha } : {}),
+      commits: valid.map(commit => ({ sha: commit.sha!, url: `https://github.com/${owner}/${repo}/commit/${commit.sha}`,
+        author: commit.author?.login || commit.commit?.author?.name || 'unknown', date: commit.commit?.author?.date ?? '',
+        title: (commit.commit?.message ?? '').split('\n')[0]!.slice(0, 200) })),
+      mergedPullRequests: pulls.filter(pull => Number.isSafeInteger(pull.number) && pull.merged_at
+          && new Date(pull.merged_at) >= since && new Date(pull.merged_at) <= until)
+        .map(pull => ({ number: pull.number!, url: `https://github.com/${owner}/${repo}/pull/${pull.number}`,
+          title: (pull.title ?? '').slice(0, 200), body: redactSource((pull.body ?? '').trim()).slice(0, MAX_BODY_CHARS),
+          author: pull.user?.login ?? 'unknown', mergedAt: pull.merged_at! })),
+      ...(files ? { files } : {}),
+      truncated,
+    };
+  }
+
+  async getChange(ref: { sha?: string; pr?: number }): Promise<CodeChange | undefined> {
+    const { owner, repo } = this.config;
+    const unlessMissing = <T>(promise: Promise<T>) => promise.catch((error: unknown) => {
+      if (error instanceof Error && /HTTP (?:404|422)\b/.test(error.message)) return undefined;
+      throw error;
+    });
+    if (ref.sha !== undefined) {
+      if (!/^[a-f0-9]{7,40}$/i.test(ref.sha)) throw new Error('invalid commit sha');
+      const commit = await unlessMissing(this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${ref.sha}`));
+      if (!commit?.sha) return undefined;
+      const [title = '', ...rest] = (commit.commit?.message ?? '').trim().split('\n');
+      return { kind: 'commit', id: commit.sha, url: `https://github.com/${owner}/${repo}/commit/${commit.sha}`,
+        title: title.slice(0, 200), body: redactSource(rest.join('\n').trim()).slice(0, MAX_BODY_CHARS),
+        author: commit.author?.login || commit.commit?.author?.name || 'unknown', date: commit.commit?.author?.date,
+        additions: commit.stats?.additions ?? 0, deletions: commit.stats?.deletions ?? 0,
+        ...changedFiles(commit.files ?? [], (commit.files?.length ?? 0) >= 300) };
+    }
+    if (ref.pr === undefined || !Number.isSafeInteger(ref.pr) || ref.pr < 1) throw new Error('a commit sha or a pull request number is required');
+    const pull = await unlessMissing(this.get<GitHubPull>(`/repos/${owner}/${repo}/pulls/${ref.pr}`));
+    if (!pull?.number) return undefined;
+    const files: GitHubFile[] = [];
+    let more = false;
+    for (let page = 1; page <= MAX_ACTIVITY_PAGES; page++) {
+      const batch = await this.get<GitHubFile[]>(`/repos/${owner}/${repo}/pulls/${ref.pr}/files?per_page=100&page=${page}`);
+      if (!Array.isArray(batch)) throw new Error('GitHub returned an invalid file list');
+      files.push(...batch);
+      if (batch.length < 100) break;
+      if (page === MAX_ACTIVITY_PAGES) more = true;
+    }
+    return { kind: 'pull_request', id: `#${pull.number}`, url: `https://github.com/${owner}/${repo}/pull/${pull.number}`,
+      title: (pull.title ?? '').slice(0, 200), body: redactSource((pull.body ?? '').trim()).slice(0, MAX_BODY_CHARS),
+      author: pull.user?.login ?? 'unknown', date: pull.merged_at ?? pull.created_at,
+      state: pull.merged_at ? 'merged' : pull.state, additions: pull.additions ?? 0, deletions: pull.deletions ?? 0,
+      ...changedFiles(files, more) };
   }
 
   async overview(): Promise<{ paths: string[]; readme?: string; revision?: string }> {

@@ -1,7 +1,8 @@
-import type { ActionReceipt, Actor, BoardPort, ChatPort, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, ScreenCard, TaskSearch } from './contracts.ts';
+import type { ActionReceipt, Actor, BoardPort, ChatPort, CodeChange, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, RepoActivity, ScreenCard, TaskSearch } from './contracts.ts';
 import { isExplicitPRRequest } from './policy.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
+import { TEAM_PERIODS, UTC_TEAM, teamPeriod, type TeamPeriod, type TeamTime } from './team-time.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
 export interface PeopleDirectory {
@@ -45,6 +46,9 @@ export interface ToolboxContext {
   missions?: MissionPort;
   /** Leaves the meeting once this reply is over. Live meetings only. */
   leave?: () => void;
+  /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
+  team?: TeamTime;
+  now?: () => number;
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -122,6 +126,43 @@ function str(value: unknown, max: number): string | undefined {
 function int(value: unknown, min: number, max: number): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : undefined;
 }
+function formatActivity(activity: RepoActivity): string {
+  const lines = [`${activity.repository}, live branch ${activity.branch}, ${activity.since} to ${activity.until}.` +
+    (activity.snapshot ? ` (search_code and read_file read the snapshot ${activity.snapshot.slice(0, 7)}.)` : '')];
+  lines.push(`${activity.commits.length} commit(s), ${activity.mergedPullRequests.length} merged pull request(s)` +
+    `${activity.truncated ? '; lists were capped, so these are lower bounds' : ''}.`);
+  if (activity.mergedPullRequests.length) {
+    lines.push('', 'Merged pull requests:');
+    for (const pull of activity.mergedPullRequests) {
+      lines.push(`- #${pull.number} ${pull.title} (${pull.author}, merged ${pull.mergedAt}) ${pull.url}`);
+      if (pull.body) lines.push(`  ${pull.body.replace(/\s*\n\s*/g, ' ').slice(0, 300)}`);
+    }
+  }
+  if (activity.commits.length) {
+    lines.push('', 'Commits (newest first):');
+    for (const commit of activity.commits.slice(0, 60)) {
+      lines.push(`- ${commit.sha.slice(0, 7)} ${commit.title} (${commit.author}, ${commit.date}) ${commit.url}`);
+    }
+    if (activity.commits.length > 60) lines.push(`- ... ${activity.commits.length - 60} more`);
+  }
+  if (activity.files) {
+    lines.push('', `Files: ${activity.files.changed} changed, +${activity.files.additions} -${activity.files.deletions}. Most changed:`);
+    for (const file of activity.files.top) lines.push(`- ${file.path} (${file.status}, +${file.additions} -${file.deletions})`);
+  }
+  if (!activity.commits.length && !activity.mergedPullRequests.length) lines.push('Nothing landed on this branch in that range.');
+  return lines.join('\n');
+}
+function formatChange(change: CodeChange): string {
+  const head = change.kind === 'commit' ? `Commit ${change.id.slice(0, 7)}` : `Pull request ${change.id}${change.state ? ` (${change.state})` : ''}`;
+  const lines = [`${head}: ${change.title}`, `${change.author}${change.date ? `, ${change.date}` : ''}. ${change.url}`,
+    `${change.files.length} file(s), +${change.additions} -${change.deletions}${change.truncated ? '; cut to fit, ask for a single file with read_file if needed' : ''}.`];
+  if (change.body) lines.push('', change.body);
+  for (const file of change.files) {
+    lines.push('', `${file.path} (${file.status}, +${file.additions} -${file.deletions})${file.patch ? '' : ' [no patch shown]'}`);
+    if (file.patch) lines.push(file.patch);
+  }
+  return lines.join('\n');
+}
 function formatEvidence(items: readonly Evidence[]): string {
   if (!items.length) return 'No matching code found. Try other words, a likely symbol name, or list_files.';
   return items.map((item, index) => `[${index + 1}] ${item.path}\n${item.url}\n${item.excerpt}`).join('\n---\n');
@@ -176,12 +217,47 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const paths = await code.listFiles!(str(input.prefix, 300));
       return { content: paths.length ? paths.join('\n') : 'No files under that prefix.' };
     });
-    if (code.recentCommits) add({ name: 'recent_commits', description: 'Recent commits (newest first), with messages and links. Omit branch to use the revision Nogita reads; pass a branch only if the person named one. Use for "what changed", "what did we push".',
+    if (code.recentCommits) add({ name: 'recent_commits', description: 'Recent commits (newest first), with messages and links. Omit branch to use the revision Nogita reads; pass a branch only if the person named one. Use for "what was the last push"; for a time range ("today", "this week") use repo_activity.',
       input_schema: { type: 'object', properties: { branch: { type: 'string' } } } },
     async input => {
       const commits = await code.recentCommits!(str(input.branch, 100));
       remember(commits.slice(0, 1));
       return { content: formatEvidence(commits) };
+    });
+    if (code.repoActivity) add({ name: 'repo_activity', description: 'Everything that landed on a branch in a time range, read live: all commits, merged pull requests with their descriptions, authors, and the files changed. Use for "what went in today", "what did we merge this week", "what did Dana push yesterday". Give period for the team\'s today, yesterday or week, or since/until as ISO times. Omit branch for the main branch.',
+      input_schema: { type: 'object', properties: {
+        period: { type: 'string', enum: [...TEAM_PERIODS] },
+        since: { type: 'string', description: 'ISO time, when period does not fit.' },
+        until: { type: 'string', description: 'ISO time; defaults to now.' },
+        branch: { type: 'string' } } } },
+    async input => {
+      const period = TEAM_PERIODS.find(item => item === input.period) as TeamPeriod | undefined;
+      const range = period ? teamPeriod(period, (context.now ?? Date.now)(), context.team ?? UTC_TEAM)
+        : { since: str(input.since, 40), until: str(input.until, 40) };
+      if (!range.since) return { content: `period (${TEAM_PERIODS.join(', ')}) or since is required`, isError: true };
+      if (Number.isNaN(Date.parse(range.since)) || (range.until && Number.isNaN(Date.parse(range.until)))) {
+        return { content: 'since and until must be ISO times, for example 2026-10-31T00:00:00+02:00', isError: true };
+      }
+      const activity = await code.repoActivity!({ since: range.since, until: range.until, branch: str(input.branch, 100) });
+      context.recordAction?.('code_lookup');
+      const pull = activity.mergedPullRequests[0];
+      const commit = activity.commits[0];
+      if (pull) remember([{ path: `PR #${pull.number}`, url: pull.url, excerpt: pull.title }]);
+      else if (commit) remember([{ path: `commit ${commit.sha.slice(0, 7)}`, url: commit.url, excerpt: commit.title }]);
+      return { content: formatActivity(activity) };
+    });
+    if (code.getChange) add({ name: 'get_change', description: 'One commit or pull request in detail: its description, the files it changed with +/- counts, and the diff (cut to fit). Use after repo_activity or recent_commits to see what a change actually did.',
+      input_schema: { type: 'object', properties: { sha: { type: 'string', description: 'Commit sha (7-40 hex characters).' },
+        pr: { type: 'integer', description: 'Pull request number.' } } } },
+    async input => {
+      const sha = str(input.sha, 40);
+      const pr = int(input.pr, 1, 10_000_000);
+      if (sha ? !/^[a-f0-9]{7,40}$/i.test(sha) : pr === undefined) return { content: 'give a commit sha (7-40 hex characters) or a pull request number', isError: true };
+      const change = await code.getChange!(sha ? { sha } : { pr });
+      if (!change) return { content: `No ${sha ? `commit ${sha}` : `pull request #${pr}`} in the repository.`, isError: true };
+      context.recordAction?.('code_lookup');
+      remember([{ path: change.kind === 'commit' ? `commit ${change.id.slice(0, 7)}` : `PR ${change.id}`, url: change.url, excerpt: change.title }]);
+      return { content: formatChange(change) };
     });
     if (board.searchTasks) add({ name: 'search_tasks', description: `Search ${board.name} tasks by words, status and owner (all optional; none lists the latest).${board.queryLanguage === 'jql' ? ' For what those cannot say, jql takes a Jira condition (the project filter is added for you).' : ''}`,
       input_schema: { type: 'object', properties: { ...taskFilterSchema(board), limit: { type: 'integer' } } } },

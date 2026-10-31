@@ -193,6 +193,43 @@ export interface CodePort {
   recentCommits?(ref?: string): Promise<Evidence[]>;
   /** Small, stable repository map used to prime the agent prompt. */
   overview?(): Promise<{ paths: string[]; readme?: string; revision?: string }>;
+  /** Everything that landed on a branch in a time range, read from the live branch (not the code snapshot). */
+  repoActivity?(query: { since: string; until?: string; branch?: string }): Promise<RepoActivity>;
+  /** One commit or pull request: files with +/- counts and trimmed patches. Undefined when it does not exist. */
+  getChange?(ref: { sha?: string; pr?: number }): Promise<CodeChange | undefined>;
+}
+export interface RepoActivity {
+  repository: string;
+  branch: string;
+  since: string;
+  until: string;
+  /** The code snapshot search_code and read_file read, when known, so an answer can say which version it describes. */
+  snapshot?: string;
+  /** Newest first. */
+  commits: Array<{ sha: string; url: string; author: string; date: string; title: string }>;
+  mergedPullRequests: Array<{ number: number; url: string; title: string; body: string; author: string; mergedAt: string }>;
+  /** Aggregate of the range: totals and the most changed files. Missing when the range had no commits. */
+  files?: { changed: number; additions: number; deletions: number;
+    top: Array<{ path: string; status: string; additions: number; deletions: number }> };
+  /** True when a list hit its cap, so the counts are lower bounds. */
+  truncated: boolean;
+}
+export interface CodeChange {
+  kind: 'commit' | 'pull_request';
+  /** Commit sha or "#<number>". */
+  id: string;
+  url: string;
+  title: string;
+  body: string;
+  author: string;
+  date?: string;
+  state?: string;
+  additions: number;
+  deletions: number;
+  /** In API order; a patch is left out when the budget ran out, the file is binary, or it may hold credentials. */
+  files: Array<{ path: string; status: string; additions: number; deletions: number; patch?: string }>;
+  /** True when files or patches were cut to fit. */
+  truncated: boolean;
 }
 /** Something Nogita puts on her shared screen when asked (a task, a task list, or code). */
 export type ScreenCard =
