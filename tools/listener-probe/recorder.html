@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nogita listener probe</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.45 system-ui, sans-serif; background: #10151b; color: #eef4fa; }
+  body { max-width: 760px; margin: 3rem auto; padding: 0 1.5rem; }
+  h1 { font-size: 2rem; margin-bottom: .25rem; } .muted { color: #9fb0c0; }
+  .panel { background: #18212b; border: 1px solid #2c3a49; border-radius: 14px; padding: 1.25rem; margin: 1rem 0; }
+  label { display: block; margin: .75rem 0; } input[type=text] { width: 100%; box-sizing: border-box; padding: .65rem; }
+  button { padding: .8rem 1rem; margin: .35rem .35rem .35rem 0; border: 0; border-radius: 9px; font-weight: 700; cursor: pointer; }
+  #start { background: #5dd39e; } #question { background: #79b8ff; } #wait { background: #ffcc66; } #stop { background: #ff7b72; }
+  button:disabled { opacity: .38; cursor: not-allowed; } #level { width: 100%; } code { color: #79b8ff; }
+</style>
+<body>
+  <h1>Listener-side Meet probe</h1>
+  <p class="muted">Run this on a second participant’s device. The microphone should hear the Meet speaker output. Nothing is uploaded.</p>
+  <div class="panel">
+    <label>Meeting label <input id="meeting" type="text" value="meet-run" maxlength="80"></label>
+    <label><input id="consent" type="checkbox"> Everyone being recorded has consented.</label>
+    <button id="start">Start recording</button><button id="question" disabled>Question ended (Q)</button>
+    <button id="wait" disabled>“Wait” started (W)</button><button id="stop" disabled>Stop &amp; export</button>
+    <p><meter id="level" min="0" max="0.25" value="0"></meter></p>
+    <p id="status" class="muted">Ready. Wear no headphones: this device’s microphone must hear Meet playback.</p>
+  </div>
+  <div class="panel"><strong>Protocol</strong><ol>
+    <li>Start before the scripted question. Leave the first second quiet for noise calibration.</li>
+    <li>Press <code>Q</code> when the asker finishes the last word.</li>
+    <li>While Nogita is speaking, say “wait” and press <code>W</code> at the first sound of the word.</li>
+    <li>Stop and keep both downloaded files together. The WebM is audit evidence; JSON drives the report.</li>
+  </ol></div>
+<script>
+  const $ = id => document.getElementById(id);
+  let stream, recorder, context, analyser, timer, startedAt, chunks = [], frames = [], markers = [], noise = [];
+  const now = () => performance.now() - startedAt;
+  function download(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+  function mark(kind) { const atMs = Math.round(now()); const number = markers.filter(m => m.kind === kind).length + 1;
+    markers.push({ kind, atMs, label: `${kind === 'wait' ? 'wait' : 'q'}${number}` }); $('status').textContent = `Marked ${kind} at ${atMs} ms`; }
+  $('question').onclick = () => mark('question_end'); $('wait').onclick = () => mark('wait');
+  document.addEventListener('keydown', event => { if (event.repeat || !recorder || recorder.state !== 'recording') return;
+    if (event.key.toLowerCase() === 'q') mark('question_end'); if (event.key.toLowerCase() === 'w') mark('wait'); });
+  $('start').onclick = async () => {
+    if (!$('consent').checked) { $('status').textContent = 'Confirm recording consent first.'; return; }
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    chunks = []; frames = []; markers = []; noise = []; startedAt = performance.now();
+    context = new AudioContext(); analyser = context.createAnalyser(); analyser.fftSize = 2048;
+    context.createMediaStreamSource(stream).connect(analyser); const samples = new Float32Array(analyser.fftSize);
+    recorder = new MediaRecorder(stream); recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); }; recorder.start(1000);
+    timer = setInterval(() => { analyser.getFloatTimeDomainData(samples); let sum = 0; for (const value of samples) sum += value * value;
+      const rms = Math.sqrt(sum / samples.length); const atMs = Math.round(now()); frames.push({ atMs, rms }); if (atMs < 1000) noise.push(rms); $('level').value = rms; }, 20);
+    $('start').disabled = true; $('question').disabled = false; $('wait').disabled = false; $('stop').disabled = false; $('status').textContent = 'Recording locally…';
+  };
+  $('stop').onclick = async () => {
+    clearInterval(timer); const stopped = new Promise(resolve => recorder.addEventListener('stop', resolve, { once: true })); recorder.stop(); await stopped;
+    stream.getTracks().forEach(track => track.stop()); await context.close();
+    const sortedNoise = noise.slice().sort((a, b) => a - b); const background = sortedNoise[Math.floor(sortedNoise.length * .9)] || .003;
+    const threshold = Math.max(.01, background * 3); const safe = ($('meeting').value.trim() || 'meet-run').replace(/[^a-z0-9_-]+/gi, '-');
+    const base = `${new Date().toISOString().replace(/[:.]/g, '-')}-${safe}`; const audio = new Blob(chunks, { type: recorder.mimeType });
+    download(`${base}.webm`, audio); download(`${base}.json`, new Blob([JSON.stringify({ version: 1, meeting: $('meeting').value.trim() || 'meet-run',
+      recordedAt: new Date().toISOString(), frameMs: 20, threshold, frames, markers, recording: `${base}.webm` }, null, 2)], { type: 'application/json' }));
+    $('start').disabled = false; $('question').disabled = true; $('wait').disabled = true; $('stop').disabled = true;
+    $('status').textContent = `Exported ${frames.length} level frames and ${markers.length} markers. Threshold ${threshold.toFixed(4)}.`;
+  };
+</script>
+</body>
+</html>
