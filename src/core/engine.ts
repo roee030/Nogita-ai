@@ -740,6 +740,13 @@ export class NogitaEngine {
     if (!request || isCancelCommand(request) || isStopCommand(request) || splitLeadingStop(request) || isExplicitLeaveRequest(request)) return undefined;
     const key = questionKey(request);
     if (s.questions.some(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key)) return undefined;
+    // The asker cut off their own answer and is already asking something new: they moved on, even if these early
+    // words are rolled back. Dropped now, before the end of their turn opens the floor for "As I was saying...".
+    const cut = s.questions.find(other => other.id === s.floor!.interrupted);
+    if (cut && cut.actorId === utterance.actor.id) {
+      s.floor.drop(cut.id);
+      this.reportQuestion(sessionId, cut, 'chat_only', 'the asker moved on to a new question; the rest is in chat');
+    }
     const q = this.newQuestion(s, utterance, request, 'speculative', performance.now());
     this.onQuestion?.(sessionId, { id: q.id, status: 'speculative', speaker: q.speaker, request, inputTurnIds: q.inputTurnIds });
     q.run = this.runAgentTurn(sessionId, s, utterance, request, undefined, q, s.history.map(turn => turn.text))
