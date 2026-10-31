@@ -12,8 +12,8 @@ import { playScenario, record as recordEvents, synthesizeTurn, type TurnRecord }
 import { SPEECH_RMS, createNoise, createPerturbation } from '../tools/voice-lab/noise.ts';
 import { VoiceRig, expectedProviderClose, parseWarmupMode } from '../tools/voice-lab/rig.ts';
 import { SCENARIOS, type Scenario, type Turn } from '../tools/voice-lab/scenarios.ts';
-import { machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
-import { summarize, transcriptLines, transcriptMarkdown, writeReport, type ScenarioResult } from '../tools/voice-lab/report.ts';
+import { conversationFailures, machineTells, scoreTurn, stats, wordErrorRate } from '../tools/voice-lab/score.ts';
+import { markdown, summarize, transcriptLines, transcriptMarkdown, writeReport, type ScenarioResult } from '../tools/voice-lab/report.ts';
 import { conversationStats, questionLedger } from '../tools/voice-lab/conversation-metrics.ts';
 
 test('speech recognition variants of the wake word are restored only where someone addresses Nogita', () => {
@@ -116,10 +116,72 @@ test('the false-pause scenario injects every required sound during active playba
   assert.ok(scenario.turns.filter(turn => turn.perturbation).every(turn => (turn.perturbation?.afterAudioMs ?? 0) > 0));
 });
 
+test('multi-speaker scenarios cover queued questions, other people talking, and a correction', () => {
+  const queued = SCENARIOS.find(candidate => candidate.name === 'two-speaker-questions');
+  assert.ok(queued);
+  assert.deepEqual(queued.turns.map(turn => turn.speaker), ['roee', 'dana']);
+  assert.ok(queued.turns[1]?.afterPreviousMs !== undefined);
+  assert.deepEqual(queued.turns[0]?.expect.questionStatus, ['answered']);
+  assert.equal(queued.turns[0]?.expect.respond, 'any');
+  assert.equal(queued.turns[1]?.expect.mentions?.length, 2);
+
+  const others = SCENARIOS.find(candidate => candidate.name === 'other-people-conversation');
+  assert.ok(others);
+  assert.ok(others.turns.length >= 2);
+  assert.ok(others.turns.every(turn => turn.expect.respond === 'silent'));
+
+  const correction = SCENARIOS.find(candidate => candidate.name === 'speaker-correction');
+  assert.ok(correction);
+  assert.match(String(correction.turns[1]?.say), /no,? (?:sorry,? )?i meant/i);
+  assert.ok(correction.turns[1]?.afterPreviousMs !== undefined);
+  assert.ok(correction.turns[1]?.expect.forbid?.includes('engine.ts'));
+});
+
 function record(turn: Turn, fields: Partial<TurnRecord>): TurnRecord {
   return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken: [], chat: [], writes: [], tools: [], spokeAfterUtterance: 0,
     interruptedByNoise: false, handRaisedBefore: false, events: [], timing: { speechStart: 0, speechEnd: 0 }, ...fields };
 }
+
+test('report counts lost questions and answers to conversations that were not hers', () => {
+  const lost: Turn = { speaker: 'roee', say: 'Nogita, what changed?', expect: { respond: 'speak' } };
+  const privateConversation: Turn = { speaker: 'dana', say: 'Avi, can you review this?', expect: { respond: 'silent' } };
+  const lostRecord = record(lost, {});
+  const strayRecord = record(privateConversation, {
+    spoken: ['Sure, I can review it.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 500 },
+  });
+  const turns = [
+    { record: lostRecord, score: scoreTurn(lostRecord) },
+    { record: strayRecord, score: scoreTurn(strayRecord) },
+  ];
+  assert.deepEqual(conversationFailures(turns), { lostQuestions: 1, answersToOthers: 1 });
+
+  const scenario: Scenario = { name: 'failures', title: 'failures', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [
+      { id: 'roee', name: 'Roee', voice: 'unused', authorized: true, mic: 'open' },
+      { id: 'dana', name: 'Dana', voice: 'unused', authorized: true, mic: 'open' },
+    ], turns: [lost, privateConversation] };
+  const result: ScenarioResult = { scenario, turns, room: new Float32Array(), nogita: new Float32Array(), errors: [], events: [] };
+  const summary = summarize([result], {}, 'now');
+  assert.deepEqual(summary.conversationFailures, { lostQuestions: 1, answersToOthers: 1 });
+  const report = markdown(summary, [result]);
+  assert.match(report, /Lost questions: \*\*1\*\*/);
+  assert.match(report, /Answers to conversations that were not hers: \*\*1\*\*/);
+});
+
+test('lost-question count uses tracker completion and does not mistake filler for an answer', () => {
+  const tracked: Turn = { speaker: 'roee', say: 'Nogita, what changed?',
+    expect: { respond: 'any', questionStatus: ['answered'] } };
+  const untracked: Turn = { speaker: 'dana', say: 'Nogita, what is open?', expect: { respond: 'speak' } };
+  const cases = [
+    { record: record(tracked, { questionStatus: 'answered' }), score: scoreTurn(record(tracked, { questionStatus: 'answered' })) },
+    { record: record(tracked, { questionStatus: 'working' }), score: scoreTurn(record(tracked, { questionStatus: 'working' })) },
+    { record: record(untracked, { spoken: ['Still on it.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } }),
+      score: scoreTurn(record(untracked, { spoken: ['Still on it.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } })) },
+    { record: record(untracked, { spoken: ['Three tasks are open.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } }),
+      score: scoreTurn(record(untracked, { spoken: ['Three tasks are open.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 100 } })) },
+  ];
+  assert.deepEqual(conversationFailures(cases), { lostQuestions: 2, answersToOthers: 0 });
+});
 
 test('scoring checks hearing, silence, required phrases, writes and interruptions', () => {
   assert.equal(wordErrorRate('Nogita what is this', 'Nokita what is this'), 0.25);

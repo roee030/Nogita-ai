@@ -3,7 +3,7 @@
  * the room left in silence.
  */
 import { directlyAddressesNogita, normalizeWakeWord } from '../../src/core/policy.ts';
-import type { TurnRecord } from './conversation.ts';
+import { FILLERS, type TurnRecord } from './conversation.ts';
 import { isReasoningAloud, refersToSelfInThirdPerson } from '../../src/core/speech-guard.ts';
 
 export interface Check { name: string; ok: boolean; detail?: string }
@@ -15,6 +15,28 @@ export interface TurnScore {
   /** Was Nogita's name recognized when the script addressed her? */
   addressHeard?: boolean;
   judgement?: Judgement;
+}
+
+export interface ConversationFailures {
+  /** Scripted questions that should have received a spoken answer but did not. */
+  lostQuestions: number;
+  /** Replies Nogita gave to turns that were conversations between other people. */
+  answersToOthers: number;
+}
+
+export function conversationFailures(turns: ReadonlyArray<{ record: TurnRecord; score: TurnScore }>): ConversationFailures {
+  return {
+    lostQuestions: turns.filter(({ record }) => {
+      const expected = record.turn.expect;
+      if (expected.respond !== 'speak' && !expected.questionStatus) return false;
+      if (record.questionStatus) {
+        return !['answered', 'chat_only', 'cancelled', 'stopped', 'superseded', 'rolled_back'].includes(record.questionStatus);
+      }
+      return !record.spoken.some(piece => !FILLERS.has(piece)) && record.chat.length === 0;
+    }).length,
+    answersToOthers: turns.filter(({ record, score }) => record.turn.expect.respond === 'silent' &&
+      score.checks.some(check => check.name === 'stayed silent' && !check.ok)).length,
+  };
 }
 
 function wakeWordHeard(text: string): boolean {

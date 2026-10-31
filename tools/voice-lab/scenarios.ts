@@ -206,6 +206,36 @@ export const SCENARIOS: Scenario[] = [
 // Meetings: several people talking to each other, and now and then to Nogita.
 SCENARIOS.push(
   {
+    name: 'two-speaker-questions', title: 'Two questions in a row from different people', noise: { kind: 'pink', snrDb: 25 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, which file contains the main meeting engine?',
+        expect: { respond: 'any', questionStatus: ['answered'] } },
+      { speaker: 'dana', say: 'Nogita, and which file handles the realtime meeting audio?', afterPreviousMs: 250,
+        expect: { respond: 'speak', questionStatus: ['answered'], mentions: [['engine'], ['realtime', 'audio', 'attendee']],
+          note: 'Both queued questions must be answered; their audio is scored in this shared answer window.' } },
+    ],
+  },
+  {
+    name: 'other-people-conversation', title: 'Two other people talking to each other', noise: { kind: 'office', snrDb: 25 },
+    participants: [dana, avi],
+    turns: [
+      { speaker: 'dana', say: 'Avi, can you review the retry changes after lunch?', expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'Yes, send me the pull request and I will review it.', gapMs: 400, expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'Great, I will send it when the tests finish.', gapMs: 400, expect: { respond: 'silent' } },
+    ],
+  },
+  {
+    name: 'speaker-correction', title: 'The speaker corrects what they meant', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [roee],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, which file handles the meeting engine?', expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'No, I meant which file handles the realtime meeting audio?', afterPreviousMs: 300,
+        expect: { respond: 'speak', mentions: [['realtime', 'audio', 'attendee']], forbid: ['engine.ts', 'meeting engine'],
+          note: 'The correction replaces the first question; answer the corrected question, not the engine question.' } },
+    ],
+  },
+  {
     name: 'team-discussion', title: 'Team discussion: people talk to each other, then to Nogita', noise: { kind: 'pink', snrDb: 30 },
     participants: [roee, dana, avi],
     turns: [
