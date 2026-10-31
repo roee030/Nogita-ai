@@ -37,6 +37,8 @@ export interface RunSummary {
   bargeInStop: Stats;
   /** Scripted listener acknowledgements that did not incorrectly stop playback, with a Wilson 95% upper bound. */
   backchannels: { kept: number; total: number; falseStops: number; falseStopRate?: number; upper95?: number };
+  /** Acoustic-only cough/typing/laughter injections that paused playback, with exact pause duration. */
+  falsePauses: { clean: number; total: number; pauses: number; rate?: number; upper95?: number; duration: Stats };
   passed: number;
   total: number;
   addressHeard: { heard: number; total: number };
@@ -61,7 +63,9 @@ function wilsonUpper95(failures: number, total: number): number | undefined {
 }
 
 export function summarize(results: ScenarioResult[], settings: Record<string, string>, startedAt: string): RunSummary {
-  const turns = results.flatMap(result => result.turns);
+  const allTurns = results.flatMap(result => result.turns);
+  // Acoustic-only probes are measurement fixtures, not questions; exclude them from WER, latency and pass rate.
+  const turns = allTurns.filter(({ record }) => !record.turn.perturbation);
   // Audio after a listener acknowledgement is the previous answer continuing, not a response to the backchannel.
   const answered = turns.filter(({ record }) => record.timing.firstAudio !== undefined && record.turn.bargeIn?.kind !== 'backchannel');
   const t = answered.map(({ record }) => record.timing);
@@ -70,6 +74,20 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
   const judged = turns.map(({ score }) => score.judgement).filter(j => !!j);
   const backchannels = turns.filter(({ record }) => record.turn.bargeIn?.kind === 'backchannel');
   const falseStops = backchannels.filter(({ score }) => score.checks.some(check => check.name === 'keeps talking through backchannel' && !check.ok)).length;
+  const perturbations = allTurns.filter(({ record }) => record.turn.perturbation);
+  const pauseEvents = perturbations.flatMap(({ record }) => {
+    const pause = record.events.find(event => event.type === 'playback_pause' &&
+      event.t >= record.timing.speechStart && event.t <= record.timing.speechEnd + 300);
+    return pause ? [{ record, pause }] : [];
+  });
+  const pauseDurations = pauseEvents.map(({ record, pause }) => {
+    const resume = record.events.find(event => event.type === 'playback_resume' && event.t >= pause.t &&
+      event.playbackId === pause.playbackId);
+    if (resume?.ms !== undefined) return resume.ms;
+    const ended = record.events.find(event => event.t >= pause.t && event.playbackId === pause.playbackId &&
+      (event.type === 'interrupt' || event.type === 'playback_end'));
+    return ended ? Math.max(0, Math.round(ended.t - pause.t)) : undefined;
+  });
   const mean = (values: number[]) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length * 100) / 100 : undefined;
   return {
     startedAt, settings,
@@ -93,6 +111,10 @@ export function summarize(results: ScenarioResult[], settings: Record<string, st
     backchannels: { kept: backchannels.length - falseStops, total: backchannels.length, falseStops,
       ...(backchannels.length ? { falseStopRate: roundedRate(falseStops / backchannels.length),
         upper95: wilsonUpper95(falseStops, backchannels.length) } : {}) },
+    falsePauses: { clean: perturbations.length - pauseEvents.length, total: perturbations.length,
+      pauses: pauseEvents.length, duration: stats(pauseDurations),
+      ...(perturbations.length ? { rate: roundedRate(pauseEvents.length / perturbations.length),
+        upper95: wilsonUpper95(pauseEvents.length, perturbations.length) } : {}) },
     passed: turns.filter(({ score }) => score.passed).length, total: turns.length,
     addressHeard: { heard: address.filter(({ score }) => score.addressHeard).length, total: address.length },
     soundsHuman: (() => {
@@ -130,6 +152,7 @@ export function markdown(summary: RunSummary, results: ScenarioResult[]): string
     ...(summary.judge ? [`- Judge (1-5): correct ${summary.judge.correct} · natural ${summary.judge.natural} · concise ${summary.judge.concise}`] : []),
     `- Lookups as expected: ${summary.toolChecks.ok}/${summary.toolChecks.total}`,
     ...(summary.backchannels.total ? [`- Backchannels kept playback: **${summary.backchannels.kept}/${summary.backchannels.total}**; false-stop rate ${Math.round((summary.backchannels.falseStopRate ?? 0) * 1000) / 10}% (95% upper bound ${Math.round((summary.backchannels.upper95 ?? 0) * 1000) / 10}%)`] : []),
+    ...(summary.falsePauses.total ? [`- Non-speech perturbations without a pause: **${summary.falsePauses.clean}/${summary.falsePauses.total}**; false-pause rate ${Math.round((summary.falsePauses.rate ?? 0) * 1000) / 10}% (95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%); pause duration ${statLine(summary.falsePauses.duration)}`] : []),
     '', '## Conversation management', '', ...conversationLines(summary.conversation), '',
   ];
   for (const result of results) {
@@ -303,6 +326,7 @@ ${tile('Turns passed', `${summary.passed}/${summary.total}`)}${tile('Name recogn
 ${tile('Answer itself p50', ms(summary.meaningfulGap.p50))}${tile('Question completion', summary.conversation.completion === undefined ? '–' : `${Math.round(summary.conversation.completion * 100)}%`)}
 ${tile('Lost answers', String(summary.conversation.unresolved))}${tile('Spoke over someone', String(summary.conversation.spokeOverPeople))}
 ${summary.backchannels.total ? tile('Backchannels kept', `${summary.backchannels.kept}/${summary.backchannels.total}`) : ''}
+${summary.falsePauses.total ? tile('False pauses', `${summary.falsePauses.pauses}/${summary.falsePauses.total}`) : ''}
 ${tile('Early starts used / rolled back', `${summary.conversation.earlyAdopted} / ${summary.conversation.earlyRolledBack}`)}
 ${tile('Transcript WER', String(summary.meanWer ?? '–'))}${summary.judge ? tile('Judge correct/natural', `${summary.judge.correct} / ${summary.judge.natural}`) : ''}</div>
 <div class="legend"><span><i style="background:var(--stt)"></i>speech recognition endpoint</span><span><i style="background:var(--router)"></i>router quiet window</span>

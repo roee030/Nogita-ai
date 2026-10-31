@@ -476,8 +476,10 @@ test('a short recognized backchannel does not interrupt an in-progress answer', 
   let stt!: FakeProviderSocket;
   let tts!: FakeProviderSocket;
   const frames: unknown[] = [];
+  const resumes: Array<{ cause: string; pausedMs: number }> = [];
   const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
     signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode: 'flux-english', turnTakingV2: true, onTranscript: () => {},
+    onSpeechResume: (_sessionId, event) => resumes.push(event),
     createWebSocket: url => {
       const socket = new FakeProviderSocket();
       if (url.includes('/listen')) stt = socket;
@@ -518,6 +520,8 @@ test('a short recognized backchannel does not interrupt an in-progress answer', 
     stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', transcript: 'yeah' })), false);
     await speaking;
     assert.equal(frames.length, 2, 'queued answer resumed after the backchannel hypothesis');
+    assert.equal(resumes[0]?.cause, 'backchannel');
+    assert.ok((resumes[0]?.pausedMs ?? -1) >= 0);
   } finally {
     client.terminate(); hub.close();
     await new Promise<void>(resolve => server.close(() => resolve()));

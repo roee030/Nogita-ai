@@ -22,7 +22,7 @@ export type LabEventType =
   | 'speak_call' | 'speak_done' | 'speak_error' | 'chat'
   | 'audio_start' | 'audio_stop' | 'write' | 'tool' | 'error'
   /** Flux early end-of-turn (an answer may start speculatively) and the speaker going on after it. */
-  | 'stt_eager' | 'stt_resumed' | 'eot_timing' | 'model_first_text' | 'interrupt' | 'playback_pause' | 'playback_start' | 'playback_end' | 'voice_activity' | 'playback_received'
+  | 'stt_eager' | 'stt_resumed' | 'eot_timing' | 'model_first_text' | 'interrupt' | 'playback_pause' | 'playback_resume' | 'playback_start' | 'playback_end' | 'voice_activity' | 'playback_received'
   /** A question's status changed in the engine (detail: "#id status: note"). */
   | 'question';
 
@@ -241,6 +241,8 @@ export class VoiceRig {
       },
       onSpeechPause: (_sessionId, event) => this.log('playback_pause', { questionId: event.questionId,
         playbackId: event.playbackId, latencyMs: event.latencyMs, ms: event.remainingMs }),
+      onSpeechResume: (_sessionId, event) => this.log('playback_resume', { questionId: event.questionId,
+        playbackId: event.playbackId, ms: event.pausedMs, outcome: event.cause }),
       onOutputAudio: (_sessionId, _pcm, trace) => this.outputFrames.push({ ...trace }),
       onSpeechStart: (_sessionId, event) => this.log('playback_start', { questionId: event.questionId,
         playbackId: event.playbackId, ms: event.ttfaMs }),

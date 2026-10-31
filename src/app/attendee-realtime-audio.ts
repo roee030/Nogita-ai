@@ -168,6 +168,10 @@ export interface RealtimeAudioOptions {
   onInterrupt?: (sessionId: string, interrupt: SpeechTrace & { cause: 'voice' | 'command'; latencyMs?: number; playedMs: number }) => void;
   /** Output paused while a short utterance is classified; it may resume when that utterance is a backchannel. */
   onSpeechPause?: (sessionId: string, pause: SpeechTrace & { latencyMs: number; playedMs: number; remainingMs: number }) => void;
+  /** A classified backchannel or timeout released paused output; duration is measured on the hub clock. */
+  onSpeechResume?: (sessionId: string, resume: SpeechTrace & {
+    cause: 'backchannel' | 'timeout'; pausedMs: number;
+  }) => void;
   /** Flux EagerEndOfTurn: the speaker is probably done with these words. */
   onEagerTranscript?: (sessionId: string, participantUuid: string, transcript: string,
     identity?: { attendeeUserUuid?: string; displayName?: string }, inputTurnId?: string) => void;
@@ -245,6 +249,7 @@ interface RealtimeSession {
   voicePeak: number;
   ttsTimer?: ReturnType<typeof setTimeout>;
   ttsPaused: boolean;
+  ttsPausedAt?: number;
   ttsPauseTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
 }
@@ -439,6 +444,7 @@ export class AttendeeRealtimeAudioHub {
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     session.ttsPauseTimer = undefined;
     session.ttsPaused = false;
+    session.ttsPausedAt = undefined;
     const playedMs = this.playedMs(pending);
     const onset = cause === 'voice' ? session.voiceOnsetAt : undefined;
     this.options.onInterrupt?.(sessionId, { ...pending.trace, cause, playedMs, ...(onset !== undefined ? { latencyMs: Math.max(0, this.now() - onset) } : {}) });
@@ -465,10 +471,11 @@ export class AttendeeRealtimeAudioHub {
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     // Continued voice extends the hold. A short acknowledgement resumes after its final transcript (or this
     // fallback); continuous speech never leaks the queued answer back into the meeting between audio frames.
-    session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session), BACKCHANNEL_PAUSE_MAX_MS);
+    session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session, 'timeout'), BACKCHANNEL_PAUSE_MAX_MS);
     session.ttsPauseTimer.unref?.();
     if (session.ttsPaused) return;
     session.ttsPaused = true;
+    session.ttsPausedAt = this.now();
     const onset = session.voiceOnsetAt ?? this.now();
     const queuedUntil = pending.lastAudioEndsAt ?? this.now();
     const remainingMs = Math.max(0, Math.round(queuedUntil - this.now()));
@@ -476,11 +483,16 @@ export class AttendeeRealtimeAudioHub {
       latencyMs: Math.max(0, Math.round(Math.max(this.now(), queuedUntil) - onset)), remainingMs });
   }
 
-  private resumeSpeech(session: RealtimeSession): void {
+  private resumeSpeech(session: RealtimeSession, cause: 'backchannel' | 'timeout'): void {
     if (!session.ttsPaused) return;
     session.ttsPaused = false;
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     session.ttsPauseTimer = undefined;
+    const pausedAt = session.ttsPausedAt ?? this.now();
+    session.ttsPausedAt = undefined;
+    if (session.ttsPending) this.options.onSpeechResume?.(session.sessionId, {
+      ...session.ttsPending.trace, cause, pausedMs: Math.max(0, Math.round(this.now() - pausedAt)),
+    });
     this.drainAttendeeAudio(session);
   }
 
@@ -691,7 +703,7 @@ export class AttendeeRealtimeAudioHub {
       headers: { Authorization: `Token ${this.options.deepgramApiKey}` }, perMessageDeflate: false,
     }), pendingAudio: [], finalSegments: [], confidences: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0, lastVoiceSignalAt: 0 };
     const deliverTurn = (turn: string) => {
-      if (this.turnTaking.pauseAndClassify && isBackchannel(turn)) this.resumeSpeech(session);
+      if (this.turnTaking.pauseAndClassify && isBackchannel(turn)) this.resumeSpeech(session, 'backchannel');
       else if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId, 'voice');
       speaker.lastTurnText = turn;
       speaker.lastTurnAt = this.now();
@@ -724,7 +736,7 @@ export class AttendeeRealtimeAudioHub {
           // Flux first emits a wordless StartOfTurn. V2 has already paused output and waits for a hypothesis so a
           // backchannel can resume; the legacy profile keeps transcript-driven immediate interruption.
           if (this.turnTaking.pauseAndClassify) {
-            if (interim && isBackchannel(interim)) this.resumeSpeech(session);
+            if (interim && isBackchannel(interim)) this.resumeSpeech(session, 'backchannel');
             else if (interim) this.interruptSpeech(sessionId, 'voice');
           } else {
             this.interruptSpeech(sessionId, 'voice');
@@ -911,6 +923,7 @@ export class AttendeeRealtimeAudioHub {
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     session.ttsPauseTimer = undefined;
     session.ttsPaused = false;
+    session.ttsPausedAt = undefined;
     session.ttsCarry = Buffer.alloc(0);
     session.ttsSocket?.close(1000, 'meeting stream ended');
     session.ttsSocket = undefined;

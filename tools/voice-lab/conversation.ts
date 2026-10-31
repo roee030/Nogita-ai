@@ -4,6 +4,7 @@
  */
 import { OVERLAP_PROGRESS, STILL_WORKING, agentProgressPhrases, progressPhrases } from '../../src/core/engine.ts';
 import { concat, msToSamples } from './audio.ts';
+import { createPerturbation } from './noise.ts';
 import type { LabEvent, VoiceRig } from './rig.ts';
 import type { Scenario, Turn } from './scenarios.ts';
 import type { Synthesize } from './tts.ts';
@@ -52,6 +53,7 @@ export interface TurnRecord {
 }
 
 export async function synthesizeTurn(turn: Turn, voice: string, synthesize: Synthesize): Promise<Float32Array> {
+  if (turn.perturbation) return createPerturbation(turn.perturbation.kind);
   const parts = Array.isArray(turn.say) ? turn.say : [turn.say];
   const audio: Float32Array[] = [];
   for (const [i, part] of parts.entries()) {
@@ -97,12 +99,13 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
       // A second question queued right behind the previous one, before Nogita answers it.
       await ends.at(-1);
       await sleep(turn.afterPreviousMs);
-    } else if (turn.bargeIn) {
+    } else if (turn.bargeIn || turn.perturbation) {
       // Talk over her once she has been audible for a while.
       const previousEnd = marks.at(-1)?.end ?? 0;
+      const afterAudioMs = turn.bargeIn?.afterAudioMs ?? turn.perturbation!.afterAudioMs;
       await until(() => {
         const start = rig.events.filter(event => event.type === 'audio_start' && event.t > previousEnd).at(-1);
-        return !!start && rig.audioActive && performance.now() - start.t >= turn.bargeIn!.afterAudioMs;
+        return !!start && rig.audioActive && performance.now() - start.t >= afterAudioMs;
       }, options.answerTimeoutMs ?? 45_000);
     } else {
       await settle(rig, 600, options.answerTimeoutMs ?? 45_000);
@@ -115,6 +118,11 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
     const next = scenario.turns[index + 1];
     if (next?.overlapPreviousMs !== undefined || next?.afterPreviousMs !== undefined) continue;
     await spoken.ended;
+    if (turn.perturbation) {
+      // Let the 1.5 s pause-classification fallback resolve so the report can pair pause and resume.
+      await sleep(1_800);
+      continue;
+    }
     // Give the pipeline time to hear the end of the turn and start (or decide not to start) an answer.
     await sleep(2_500);
     const heardBy = performance.now() + 8_000;

@@ -2,7 +2,7 @@
  * Spoken conversations for the voice lab. Each turn is spoken by a synthetic participant into a live
  * microphone stream (with background noise), and checked against what Nogita should do.
  */
-import type { NoiseSpec } from './noise.ts';
+import type { NoiseSpec, PerturbationKind } from './noise.ts';
 
 export interface Participant {
   id: string;
@@ -55,6 +55,8 @@ export interface Turn {
   gapMs?: number;
   /** Start speaking while Nogita is still answering the previous turn. Backchannels must not stop playback. */
   bargeIn?: { afterAudioMs: number; kind?: 'interrupt' | 'backchannel' };
+  /** Inject a non-speech PCM clip while Nogita is playing; never synthesized from this turn's label. */
+  perturbation?: { afterAudioMs: number; kind: PerturbationKind };
   /** Start this long after the previous speaker started, talking over them (two people at once). */
   overlapPreviousMs?: number;
   /** Start this long after the previous speaker finished, without waiting for Nogita (a second question queued). */
@@ -164,6 +166,21 @@ export const SCENARIOS: Scenario[] = [
       { speaker: 'roee', say: 'Nogita, stop. Just tell me the name of the main file.', bargeIn: { afterAudioMs: 2500 },
         expect: { respond: 'speak', mentions: [['engine', '.ts', 'server']],
           note: 'She must stop the long answer quickly and answer the new, short question.' } },
+    ],
+  },
+  {
+    name: 'false-pause', title: 'Non-speech sounds while Nogita is talking', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [roee],
+    turns: [
+      { speaker: 'roee', say: 'Nogita, explain in detail how the meeting pipeline works from audio input to an answer.',
+        expect: { respond: 'speak' } },
+      { speaker: 'roee', say: '[cough]', perturbation: { kind: 'cough', afterAudioMs: 900 }, expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, compare the responsibilities of the meeting engine and the realtime audio hub in detail.',
+        expect: { respond: 'speak' } },
+      { speaker: 'roee', say: '[typing]', perturbation: { kind: 'typing', afterAudioMs: 900 }, expect: { respond: 'any' } },
+      { speaker: 'roee', say: 'Nogita, walk through the safeguards around creating a Jira task from a meeting.',
+        expect: { respond: 'speak' } },
+      { speaker: 'roee', say: '[laughter]', perturbation: { kind: 'laughter', afterAudioMs: 900 }, expect: { respond: 'any' } },
     ],
   },
   {
