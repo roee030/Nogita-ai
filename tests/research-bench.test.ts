@@ -49,7 +49,9 @@ test('git log PR inference ignores issue references that are not merge or squash
 
 test('local git refs map to the live GitHub branch and repository mismatches stop the gate', () => {
   assert.equal(gitRefToBranch('origin/main'), 'main');
-  assert.equal(gitRefToBranch('refs/remotes/upstream/release'), 'release');
+  assert.equal(gitRefToBranch('origin/feature/research-gate'), 'feature/research-gate');
+  assert.equal(gitRefToBranch('refs/remotes/origin/release'), 'release');
+  assert.throws(() => gitRefToBranch('refs/remotes/upstream/release'), /origin/);
   assert.doesNotThrow(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'main', 'main'));
   assert.throws(() => assertRepositoryMatches('git@github.com:acme/other.git', 'acme/app', 'main', 'main'), /different repository/);
   assert.throws(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'release', 'main'), /different branch/);

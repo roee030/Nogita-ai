@@ -3,7 +3,7 @@
  *
  *   npm run research-bench
  *   npm run research-bench -- today
- *   node --experimental-transform-types tools/research-bench/run.ts --period today --branch origin/main --json research-bench.json
+ *   node --experimental-transform-types tools/research-bench/run.ts --period today --branch origin/feature/research --json research-bench.json
  */
 import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';

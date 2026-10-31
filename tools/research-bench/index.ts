@@ -49,8 +49,9 @@ export function parseGitLog(output: string, range: Pick<ResearchGroundTruth, 'br
 }
 
 export function gitRefToBranch(ref: string): string {
-  const parts = ref.replace(/^refs\/remotes\//, '').split('/').filter(Boolean);
-  return parts.length > 1 ? parts.at(-1)! : parts[0] ?? ref;
+  const match = ref.match(/^(?:refs\/remotes\/)?origin\/(.+)$/);
+  if (!match?.[1]) throw new Error('The research benchmark branch must be an origin/<branch> ref');
+  return match[1];
 }
 
 function githubRepository(remoteUrl: string): string | undefined {
