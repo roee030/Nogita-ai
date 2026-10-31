@@ -52,12 +52,13 @@ function fakeTools(log: string[]): AgentToolbox {
   };
 }
 
-function rig(rounds: Round[], store: MissionStore = new MemoryMissionStore(), prefix = 'T') {
+function rig(rounds: Round[], store: MissionStore = new MemoryMissionStore(), prefix = 'T',
+  schedule: (work: () => void, ms: number) => unknown = (work, ms) => setTimeout(work, Math.min(ms, 5))) {
   const model = new ScriptedModel(rounds);
   const calls: string[] = [];
   const notes: string[] = [];
   const runner = new MissionRunner({ model, store, toolbox: () => fakeTools(calls), notify: (_m, text) => { notes.push(text); },
-    schedule: (work, ms) => setTimeout(work, Math.min(ms, 5)), newId: (() => { let n = 0; return () => `M-${prefix}${++n}`; })() });
+    schedule, newId: (() => { let n = 0; return () => `M-${prefix}${++n}`; })() });
   return { model, runner, calls, notes, store };
 }
 const owner = { id: 'roee', displayName: 'Roee' };
@@ -136,7 +137,8 @@ test('missions survive a restart: working ones resume from disk, one awaiting ap
     const first = rig([
       [use('get_task', { key: 'KAN-20' })],
       new Error('server stopped'),
-    ], new FileMissionStore(directory));
+      // The process is gone: its retry never runs. A live retry here raced the new process for the same file.
+    ], new FileMissionStore(directory), 'T', () => undefined);
     const waiting = rig([[use('create_task', { title: 'Follow-up' })]], new FileMissionStore(directory), 'W');
     const working = await first.runner.start({ goal: 'Investigate KAN-20', owner });
     const approval = await waiting.runner.start({ goal: 'Open a follow-up', owner });
