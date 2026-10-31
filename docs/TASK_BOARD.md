@@ -104,3 +104,4 @@
 | [ ] | P3-8 | מדידת שער המחקר: "מה נכנס היום" ו-"מה נכנס השבוע" דרך לולאת ה-agent מול ריפו אמיתי, זמן עד תשובה מלאה, ובדיקה שכל commit ו-PR מ-`git log` של התקופה מופיע | Codex | `tools/research-bench/`, `tests/research-bench.test.ts`, `package.json` | - |
 | [ ] | P3-9 | trace למחקר: מקורות לכל תשובה, אילו תוצאות קוצרו וכמה פריטים נשארו בחוץ, ו-`turn-report` מראה כמה מהטענות מגובות במקור | Codex | `src/app/turn-log.ts`, `tools/turn-report.ts`, `tests/turn-trace.test.ts` | P3-3 |
 | [ ] | P3-10 | פגישה חיה #4 עם תסריט שער המחקר: "מה נכנס היום", "מה נכנס השבוע", "ה-CI על main עבר?", ושאלה שחוצה Jira ו-Slack | רועי | | P3-5, P3-8 |
+| [ ] | P3-11 | voice lab לחדר ישיבות: כמה אנשים על מיקרופון אחד, אנשים שנקטעים באמצע מילה, דיבור אחד על השני (גם על אותו מיקרופון), ועצירות ארוכות באמצע שאלה | Claude | `tools/voice-lab/`, `tests/voice-lab.test.ts`, `docs/VOICE_LAB.md` | - |
