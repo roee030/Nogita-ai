@@ -86,3 +86,21 @@
 | [ ] | P2-10 | readiness שבודק יכולת אמיתית ולא רק שקיים מפתח: קריאה קלה לכל ספק (GitHub, Jira, Slack, Anthropic, Deepgram, Attendee) עם זמן תגובה, ותוצאה ברורה לכל אחד | Codex | `src/app/readiness.ts`, `src/app/connection-probes.ts`, `tests/readiness.test.ts`, `tests/connection-probes.test.ts` | - |
 | [ ] | P2-11 | תרחישי voice lab לכמה דוברים: שתי שאלות ברצף מאנשים שונים, שיחה בין שני אנשים אחרים, ו"לא, התכוונתי ל..."; הדוח סופר שאלות שאבדו ותשובות לשיחה שלא הייתה שלה | Codex | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tools/voice-lab/report.ts`, `tests/voice-lab.test.ts` | - |
 | [ ] | P2-12 | תקציב לכל פגישה: תקרת קריאות מודל ועלות לשעת פגישה, אזהרה ב-log כשמתקרבים, ועצירה מסודרת של עבודת רקע כשעוברים; flag כבוי | Codex | `src/app/session-usage.ts`, `tests/session-usage.test.ts` | - |
+
+### שלב 3, שבועות 4–5: מנוע מחקר
+
+**שער:** דוח מלא ומבוסס מקורות על פעילות של יום ושל שבוע, תוך 60 שניות. לפחות 90% מהטענות מגובות במקור.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P3-0 | שלב 3 בלוח המשימות | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P3-1 | `ci_status`: ריצות ה-CI האחרונות ל-branch, SHA או PR (סטטוס, ה-job שנכשל, קישור), וה-SHA שרץ בפריסה; flag כבוי | Claude | `src/adapters/github.ts`, `src/core/contracts.ts`, `src/core/agent-tools.ts`, `tests/ci-status.test.ts` | - |
+| [ ] | P3-2 | תקציר מובנה של תוצאה גדולה במקום חיתוך ב-14,000 תווים: ספירות, קבוצות ופריטים מובילים, והמודל מבקש את ההמשך אם צריך; flag כבוי | Claude | `src/core/agent.ts`, `src/core/result-digest.ts`, `tests/result-digest.test.ts` | - |
+| [ ] | P3-3 | Evidence Ledger: כל תוצאת כלי נרשמת כמקור (commit, קובץ ושורות, ריצת CI, Jira issue, הודעת Slack), התשובה בצ'אט מקשרת למקורות, וה-ledger חוזר ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/evidence.ts`, `tests/evidence.test.ts` | P3-2 |
+| [ ] | P3-4 | רמות הוכחה בצ'אט: כתוב בתוכנית, קיים בקוד, עבר בדיקה, עבר voice lab, נוסה בפגישה, פועל בייצור; "עובד בייצור" רק עם ראיה, ולא נאמר בקול | Claude | `src/core/evidence.ts`, `src/core/agent-prompt.ts`, `tests/proof-levels.test.ts` | P3-3 |
+| [ ] | P3-5 | תבניות מחקר לשאלות שחוזרות: מה השתנה היום או השבוע, מצב של feature, למה תקלה קרתה, משימות פתוחות בנושא, ההבדל בין שתי גרסאות; כולל שאלות שחוצות GitHub, Jira ו-Slack | Claude | `src/core/research-templates.ts`, `src/core/agent-prompt.ts`, `tests/research-templates.test.ts` | P3-4 |
+| [ ] | P3-6 | סט ההערכה מגיע ל-70 מקרים: שאלות מחקר, שאלות שחוצות שלושה מקורות, סטטוס CI; הציון בודק שלכל טענה יש מקור ב-ledger | Claude | `tests/eval/` | P3-1, P3-3 |
+| [ ] | P3-7 | רענון אינדקס הקוד: webhook של push מ-GitHub מרענן את ה-snapshot מיד, ו-readiness מראה את ה-SHA של האינדקס מול ה-head של ה-branch | Codex | `src/app/server.ts`, `src/app/github-webhook.ts`, `src/adapters/github.ts`, `tests/github-webhook.test.ts` | P3-1 |
+| [ ] | P3-8 | מדידת שער המחקר: "מה נכנס היום" ו-"מה נכנס השבוע" דרך לולאת ה-agent מול ריפו אמיתי, זמן עד תשובה מלאה, ובדיקה שכל commit ו-PR מ-`git log` של התקופה מופיע | Codex | `tools/research-bench/`, `tests/research-bench.test.ts`, `package.json` | - |
+| [ ] | P3-9 | trace למחקר: מקורות לכל תשובה, אילו תוצאות קוצרו וכמה פריטים נשארו בחוץ, ו-`turn-report` מראה כמה מהטענות מגובות במקור | Codex | `src/app/turn-log.ts`, `tools/turn-report.ts`, `tests/turn-trace.test.ts` | P3-3 |
+| [ ] | P3-10 | פגישה חיה #4 עם תסריט שער המחקר: "מה נכנס היום", "מה נכנס השבוע", "ה-CI על main עבר?", ושאלה שחוצה Jira ו-Slack | רועי | | P3-5, P3-8 |
