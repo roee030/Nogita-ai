@@ -8,6 +8,7 @@ interface SessionTiming {
   responseStageMs: Record<ResponseStage, number[]>;
   speechMs: Record<SpeechStage, number[]>;
   budgetStatus: SessionBudgetStatus;
+  exceededBudget?: SessionBudgetReport;
   backgroundStops: Set<() => void>;
 }
 type LatencySummary = { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
@@ -187,6 +188,7 @@ export class SessionUsageRegistry implements UsagePort {
   private evaluateBudget(sessionId: string, session: SessionTiming, durationSeconds: number,
     totalEstimatedUsd: number, modelCalls: number): SessionBudgetReport | undefined {
     if (!this.budget?.enabled) return undefined;
+    if (session.exceededBudget) return session.exceededBudget;
     const estimatedUsdPerHour = durationSeconds === 0
       ? (totalEstimatedUsd === 0 ? 0 : Number.POSITIVE_INFINITY)
       : Number((totalEstimatedUsd * 3600 / durationSeconds).toFixed(6));
@@ -202,15 +204,18 @@ export class SessionUsageRegistry implements UsagePort {
     if (status !== session.budgetStatus) {
       const eventUsage = { modelCalls, maxModelCalls: this.budget.maxModelCalls, estimatedUsdPerHour,
         maxEstimatedUsdPerHour: this.budget.maxEstimatedUsdPerHour };
-      if (status === 'warning') this.budget.log?.({ type: 'session_budget_warning', sessionId, ...eventUsage });
+      session.budgetStatus = status;
+      if (status === 'warning') {
+        try { this.budget.log?.({ type: 'session_budget_warning', sessionId, ...eventUsage }); } catch { /* telemetry is best effort */ }
+      }
       if (status === 'exceeded') {
-        this.budget.log?.({ type: 'session_budget_exceeded', sessionId, reason: reason!, ...eventUsage });
+        session.exceededBudget = report;
+        try { this.budget.log?.({ type: 'session_budget_exceeded', sessionId, reason: reason!, ...eventUsage }); } catch { /* telemetry is best effort */ }
         for (const stop of session.backgroundStops) {
           try { stop(); } catch { /* one failed cleanup must not leave the other work running */ }
         }
         session.backgroundStops.clear();
       }
-      session.budgetStatus = status;
     }
     return report;
   }

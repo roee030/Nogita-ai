@@ -185,3 +185,40 @@ test('meeting budget compares estimated cost at the current hourly rate', () => 
   assert.equal(report?.budget?.status, 'exceeded');
   assert.equal(report?.budget?.reason, 'estimated_usd_per_hour');
 });
+
+test('exceeded budget stays latched when later reports omit or dilute usage', () => {
+  let now = 60 * 60_000;
+  const usage = new SessionUsageRegistry(0, () => now, 0, 0, {
+    enabled: true, maxModelCalls: 2, maxEstimatedUsdPerHour: 0.50,
+  });
+  usage.start('meeting', 'attendee');
+  usage.report('meeting', {
+    model: 'test-model', modelCalls: 3, inputTokens: 0, outputTokens: 0, estimatedUsd: 0,
+  });
+  now += 60 * 60_000;
+
+  assert.equal(usage.report('meeting')?.budget?.status, 'exceeded');
+  let stops = 0;
+  usage.registerBackgroundWork('meeting', () => { stops++; });
+  assert.equal(stops, 1);
+});
+
+test('logger failure cannot prevent or repeat budget shutdown', () => {
+  const usage = new SessionUsageRegistry(0, () => 0, 0, 0, {
+    enabled: true, maxModelCalls: 1, maxEstimatedUsdPerHour: 1,
+    log: () => { throw new Error('log unavailable'); },
+  });
+  usage.start('meeting', 'attendee');
+  let stops = 0;
+  usage.registerBackgroundWork('meeting', () => {
+    stops++;
+    usage.report('meeting', {
+      model: 'test-model', modelCalls: 2, inputTokens: 0, outputTokens: 0, estimatedUsd: 0,
+    });
+  });
+
+  assert.doesNotThrow(() => usage.report('meeting', {
+    model: 'test-model', modelCalls: 2, inputTokens: 0, outputTokens: 0, estimatedUsd: 0,
+  }));
+  assert.equal(stops, 1);
+});
