@@ -1,0 +1,2694 @@
+{
+ "repository": "roee030/Nogita-ai",
+ "branch": "main",
+ "head": "c6b95a59521a336ae170f46c64f79cdeb43d8fbc",
+ "commits": [
+  {
+   "sha": "c6b95a59521a336ae170f46c64f79cdeb43d8fbc",
+   "date": "2026-10-31T16:23:45.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #20 from roee030/claude/P1-2-repo-activity",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "5d64533a0a4735442f54cf3ef629bdeef30c5918",
+   "date": "2026-10-31T16:23:01.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #17 from roee030/codex/P1-6-meeting-readiness",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "af72c534f489e7616afe8df7fd9c6ead68b4e6e6",
+   "date": "2026-10-31T16:15:18.000Z",
+   "author": "Roee030",
+   "title": "P1-2: repo_activity and get_change; live-branch history; team time zone in every turn",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/adapters/github.ts",
+     "status": "modified",
+     "additions": 137,
+     "deletions": 2
+    },
+    {
+     "path": "src/app/tenant-config.ts",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 78,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 37,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/team-time.ts",
+     "status": "modified",
+     "additions": 70,
+     "deletions": 0
+    },
+    {
+     "path": "tests/repo-activity.test.ts",
+     "status": "modified",
+     "additions": 199,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "2c8b37bcd49e52911fd939e7a28478fa7f66c475",
+   "date": "2026-10-31T16:08:11.000Z",
+   "author": "Roee030",
+   "title": "P1-2: start",
+   "merge": false,
+   "files": []
+  },
+  {
+   "sha": "48d681c033b85bfa2079d37921973aa2d7d8a561",
+   "date": "2026-10-31T16:08:01.000Z",
+   "author": "Roee030",
+   "title": "Merge remote-tracking branch 'origin/main' into codex/P1-6-meeting-readiness",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "d2e58f79c1c8d0f24cdc2a9bb01b3ce5887506b7",
+   "date": "2026-10-31T16:06:43.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #19 from roee030/claude/P1-10-one-task-per-chat",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "4461bce2e2db4fd0dadfb988a579cfcf38ef2244",
+   "date": "2026-10-31T16:05:23.000Z",
+   "author": "Roee030",
+   "title": "P1-10: one task per chat; the agent stops with a PR link to merge",
+   "merge": false,
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "01f37fa80f8423aa8f69926f4b0a38c9acc59b54",
+   "date": "2026-10-31T16:03:18.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #18 from roee030/claude/P1-9-autopilot",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "d335d8074ba88c668a2ffc9072c400ea4ccf6db3",
+   "date": "2026-10-31T16:01:15.000Z",
+   "author": "Roee030",
+   "title": "Merge remote-tracking branch 'origin/main' into claude/P1-9-autopilot",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "36f5060afb0e10c667def0aedf2cb672d0105275",
+   "date": "2026-10-31T16:00:17.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #15 from roee030/claude/P1-1-truncated-tool-calls",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "2023f23264e03ec2a9dd94db7aa2f5a8580d499b",
+   "date": "2026-10-31T15:58:50.000Z",
+   "author": "Roee030",
+   "title": "P1-9: autopilot board computed from GitHub",
+   "merge": false,
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 12
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 12
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 56,
+     "deletions": 48
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "tests/board.test.ts",
+     "status": "modified",
+     "additions": 75,
+     "deletions": 0
+    },
+    {
+     "path": "tools/board.ts",
+     "status": "modified",
+     "additions": 184,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "3debac74eb96ab8d9976ecb2afd74942367fe680",
+   "date": "2026-10-31T15:56:46.000Z",
+   "author": "Roee030",
+   "title": "fix(agent): run whole tool calls cut off at max_tokens; bigger tool-step budget; per-request stops",
+   "merge": false,
+   "files": [
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/agent.ts",
+     "status": "modified",
+     "additions": 92,
+     "deletions": 34
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 81,
+     "deletions": 2
+    }
+   ]
+  },
+  {
+   "sha": "464dd805be5bbc102fb87396beaf7ff6fae512d1",
+   "date": "2026-10-31T15:56:40.000Z",
+   "author": "Roee030",
+   "title": "docs: update readiness from first live meet",
+   "merge": false,
+   "files": [
+    {
+     "path": "docs/MEETING_READINESS.md",
+     "status": "modified",
+     "additions": 56,
+     "deletions": 14
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "e9d3c5569b36a5375056dd6194a33aa4bea264e9",
+   "date": "2026-10-31T15:51:23.000Z",
+   "author": "Roee030",
+   "title": "docs(board): P1-1 in progress",
+   "merge": false,
+   "files": [
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "686f7f0398455dee01bcfe127f9316cb862da3d7",
+   "date": "2026-10-31T15:47:47.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #14 from roee030/claude/P1-0-work-plan-and-board",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "faca9019ca8ddd2dd61930e548228dd11ad6c42c",
+   "date": "2026-10-31T15:43:36.000Z",
+   "author": "Roee030",
+   "title": "docs: one work plan and a shared task board for Claude and Codex",
+   "merge": false,
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 0
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 0
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 59,
+     "deletions": 0
+    },
+    {
+     "path": "docs/WORK_PLAN.md",
+     "status": "modified",
+     "additions": 268,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "6fc17551cf5edcd8ba0157454acf48a89e8b8f15",
+   "date": "2026-10-31T14:45:56.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #13 from roee030/fix/live-meet-findings",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "6596586ccc522f39be13518fce7041b1cf17148f",
+   "date": "2026-10-31T14:45:49.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #12 from roee030/feat/lab-turn-taking-profile",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "0cefe2b37110b81f15c0473405b7a590e0a7bc2b",
+   "date": "2026-10-31T14:45:42.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #11 from roee030/feat/evidence-based-resume",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "5a9e2f29106fc047d432c17b85da5b68bb2accfb",
+   "date": "2026-10-31T13:24:27.000Z",
+   "author": "Roee030",
+   "title": "fix: a yes to her own offer opens the task; \"open one for me\" works without a board account",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 5
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 42,
+     "deletions": 2
+    },
+    {
+     "path": "tests/voice-addressing.test.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "5f74ccff68692b21a006cbb94ca6de8ca14d4d83",
+   "date": "2026-10-31T13:11:18.000Z",
+   "author": "Roee030",
+   "title": "fix: what the first live Meet showed (verification, stop, lookups, word-searching)",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/agent.ts",
+     "status": "modified",
+     "additions": 13,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/speech-guard.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 0
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 17,
+     "deletions": 0
+    },
+    {
+     "path": "tests/attendee-command-router.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "tests/incomplete-turn.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-guard.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-addressing.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 2
+    }
+   ]
+  },
+  {
+   "sha": "b7c3bf25828eb97391028ddda04b85dd3a9c6664",
+   "date": "2026-10-31T08:36:46.000Z",
+   "author": "Roee030",
+   "title": "feat(voice-lab): --turn-taking v2|legacy to measure the rollout profile against its rollback",
+   "merge": false,
+   "files": [
+    {
+     "path": "docs/VOICE_LAB.md",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "sha": "023ccfb3ca21c2445c43c8b89dd4752e208dbf54",
+   "date": "2026-10-31T12:52:49.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #9 from roee030/feat/early-commit",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "566ecfe8624819cce6efd8a4e0c97e127b5f1785",
+   "date": "2026-10-31T12:52:44.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #8 from roee030/fix/no-resume-over-new-question",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "5cbdbb8f0045452576b01306674329811bf7579d",
+   "date": "2026-10-31T12:52:39.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #7 from roee030/fix/no-reasoning-aloud",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "8e6062917974d2611287aead039d00554f057a73",
+   "date": "2026-10-31T12:52:35.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #6 from roee030/fix/missions-restart-test-race",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "29c9fb69ba820f2c6d04fc053721bb84a7b8c3ca",
+   "date": "2026-10-31T08:52:41.000Z",
+   "author": "Roee030",
+   "title": "feat: after a sound with no speech in it, she picks up her answer in ~350 ms, not ~2 s (turn taking v2)",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 23,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 68,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "6245726dc9530a78b865ae0ba8ca14eeff75285c",
+   "date": "2026-10-31T08:36:01.000Z",
+   "author": "Roee030",
+   "title": "fix: the asker's new question ends their cut-off answer as soon as it is heard",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 0
+    },
+    {
+     "path": "tests/conversation-flow.test.ts",
+     "status": "modified",
+     "additions": 22,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "3aecf0db9147927b494701d3e3adfbbe8b95a44d",
+   "date": "2026-10-31T08:34:38.000Z",
+   "author": "Roee030",
+   "title": "fix: after an early commit, the dropped confirmation still ends the turn; room noise does not hold her",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 16,
+     "deletions": 4
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 0
+    },
+    {
+     "path": "tests/early-commit.test.ts",
+     "status": "modified",
+     "additions": 27,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "9a5d57897738e9debd175ac3f338785173343ba6",
+   "date": "2026-10-31T08:25:38.000Z",
+   "author": "Roee030",
+   "title": "feat: end a complete question's turn on her own-voice silence, not on noisy endpointing (flag, off)",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 82,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tests/early-commit.test.ts",
+     "status": "modified",
+     "additions": 91,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "sha": "a02db86d3cb46d624f4f1a7ea8770b2e5b486583",
+   "date": "2026-10-31T08:27:13.000Z",
+   "author": "Roee030",
+   "title": "fix: also drop planning a lookup out loud (\"so I need to see where it's set\")",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/core/speech-guard.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-guard.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "e207a34868d8fd768da78e07a6cf609f3f518c48",
+   "date": "2026-10-31T08:21:03.000Z",
+   "author": "Roee030",
+   "title": "fix: she never says her reasoning out loud or answers words meant for someone else",
+   "merge": false,
+   "files": [
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 41,
+     "deletions": 10
+    },
+    {
+     "path": "src/core/speech-guard.ts",
+     "status": "modified",
+     "additions": 39,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 35,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-guard.test.ts",
+     "status": "modified",
+     "additions": 51,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "56eedcd88008bd83047b4385a4cec428d4d83003",
+   "date": "2026-10-31T07:36:57.000Z",
+   "author": "Roee030",
+   "title": "fix: stop the restart test's dead runner from racing the new one",
+   "merge": false,
+   "files": [
+    {
+     "path": "tests/missions.test.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "sha": "356ec237ee02d3fd4ae44942390c8a054b2917fa",
+   "date": "2026-10-31T07:00:59.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #5 from roee030/feat/voice-lab-false-pause",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "3bf63a9da73bd6d9cee341179dc3b52c1958fa73",
+   "date": "2026-10-31T06:59:19.000Z",
+   "author": "Roee030",
+   "title": "feat: measure false pauses with acoustic probes",
+   "merge": false,
+   "files": [
+    {
+     "path": "docs/VOICE_LAB.md",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/plans/2026-10-31-false-pause-measurement.md",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/specs/2026-10-31-false-pause-measurement-design.md",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 17,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 42,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/conversation.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/noise.ts",
+     "status": "modified",
+     "additions": 39,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/report.ts",
+     "status": "modified",
+     "additions": 25,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/scenarios.ts",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "c137dbd0260b50dde286f6f83529ee4cd7d83c5c",
+   "date": "2026-10-31T06:58:38.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #4 from roee030/fix/turn-taking-rollout",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "7c8696037ccd902257cfa0496a3c22ac97b92fa9",
+   "date": "2026-10-31T06:53:13.000Z",
+   "author": "Roee030",
+   "title": "fix: gate measured turn taking rollout",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/plans/2026-10-31-turn-taking-rollout.md",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/specs/2026-10-31-turn-taking-rollout-design.md",
+     "status": "modified",
+     "additions": 29,
+     "deletions": 0
+    },
+    {
+     "path": "package-lock.json",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 34,
+     "deletions": 15
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/speech-floor.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 8,
+     "deletions": 3
+    },
+    {
+     "path": "tests/conversation-flow.test.ts",
+     "status": "modified",
+     "additions": 15,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "tests/repository-guardrails.test.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "febd030aaee09c0952d75b76e35ae8656eae074e",
+   "date": "2026-10-31T06:50:03.000Z",
+   "author": "roee030",
+   "title": "Merge pull request #3 from roee030/fix/ci-env-control-allowlist",
+   "merge": true,
+   "files": []
+  },
+  {
+   "sha": "e83200edcccd13497de11435080a1f91ca272681",
+   "date": "2026-10-31T06:47:32.000Z",
+   "author": "Roee030",
+   "title": "fix: allow control env template in CI",
+   "merge": false,
+   "files": [
+    {
+     "path": ".github/workflows/verify.yml",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "tests/repository-guardrails.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "72988884e546b8c4d6c56765999f4f36ed7ec74d",
+   "date": "2026-10-31T06:41:46.000Z",
+   "author": "Roee030",
+   "title": "feat: add measured voice parity and turn taking",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 0
+    },
+    {
+     "path": "docs/VOICE_LAB.md",
+     "status": "modified",
+     "additions": 84,
+     "deletions": 3
+    },
+    {
+     "path": "docs/VOICE_PARITY_ACTION_PLAN.md",
+     "status": "modified",
+     "additions": 243,
+     "deletions": 0
+    },
+    {
+     "path": "docs/VOICE_PARITY_PLAN.md",
+     "status": "modified",
+     "additions": 132,
+     "deletions": 0
+    },
+    {
+     "path": "package-lock.json",
+     "status": "modified",
+     "additions": 15,
+     "deletions": 0
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/attendee.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 2
+    },
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 26,
+     "deletions": 3
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 175,
+     "deletions": 31
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 28,
+     "deletions": 9
+    },
+    {
+     "path": "src/app/turn-log.ts",
+     "status": "modified",
+     "additions": 8,
+     "deletions": 5
+    },
+    {
+     "path": "src/core/agent.ts",
+     "status": "modified",
+     "additions": 30,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 22,
+     "deletions": 7
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/speech-floor.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 0
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 130,
+     "deletions": 10
+    },
+    {
+     "path": "tests/incomplete-turn.test.ts",
+     "status": "modified",
+     "additions": 61,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 44,
+     "deletions": 0
+    },
+    {
+     "path": "tests/realtime-readiness.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "tests/repository-guardrails.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 1
+    },
+    {
+     "path": "tests/speculative-write-cancellation.test.ts",
+     "status": "modified",
+     "additions": 40,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-preparation.test.ts",
+     "status": "modified",
+     "additions": 129,
+     "deletions": 0
+    },
+    {
+     "path": "tests/tts-benchmark.test.ts",
+     "status": "modified",
+     "additions": 114,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 121,
+     "deletions": 6
+    },
+    {
+     "path": "tests/voice-parity-metrics.test.ts",
+     "status": "modified",
+     "additions": 157,
+     "deletions": 0
+    },
+    {
+     "path": "tools/turn-report.ts",
+     "status": "modified",
+     "additions": 79,
+     "deletions": 11
+    },
+    {
+     "path": "tools/voice-lab/audio.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 3
+    },
+    {
+     "path": "tools/voice-lab/benchmark-tts.ts",
+     "status": "modified",
+     "additions": 85,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/conversation-metrics.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/conversation.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 4
+    },
+    {
+     "path": "tools/voice-lab/report.ts",
+     "status": "modified",
+     "additions": 28,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 75,
+     "deletions": 16
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 11,
+     "deletions": 4
+    },
+    {
+     "path": "tools/voice-lab/scenarios.ts",
+     "status": "modified",
+     "additions": 26,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 15,
+     "deletions": 5
+    },
+    {
+     "path": "tools/voice-lab/tts-benchmark.ts",
+     "status": "modified",
+     "additions": 98,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/tts-providers.ts",
+     "status": "modified",
+     "additions": 109,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "f6cd67b73943033551b3fe29d5908de12efc48f7",
+   "date": "2026-10-30T20:36:27.000Z",
+   "author": "Roee030",
+   "title": "feat: change tasks, draft PRs, action items and decision memory from meetings",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 0
+    },
+    {
+     "path": "README.md",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 3
+    },
+    {
+     "path": "docs/SECURITY.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/adapters/github-drafts.ts",
+     "status": "modified",
+     "additions": 80,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/jira.ts",
+     "status": "modified",
+     "additions": 42,
+     "deletions": 1
+    },
+    {
+     "path": "src/adapters/memory.ts",
+     "status": "modified",
+     "additions": 17,
+     "deletions": 1
+    },
+    {
+     "path": "src/adapters/multi.ts",
+     "status": "modified",
+     "additions": 12,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/config.ts",
+     "status": "modified",
+     "additions": 11,
+     "deletions": 4
+    },
+    {
+     "path": "src/app/meeting-memory.ts",
+     "status": "modified",
+     "additions": 50,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/session-usage.ts",
+     "status": "modified",
+     "additions": 8,
+     "deletions": 8
+    },
+    {
+     "path": "src/app/tenant-config.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 128,
+     "deletions": 4
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 35,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/drafting.ts",
+     "status": "modified",
+     "additions": 124,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 36,
+     "deletions": 8
+    },
+    {
+     "path": "src/core/missions.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 2
+    },
+    {
+     "path": "tests/action-items.test.ts",
+     "status": "modified",
+     "additions": 68,
+     "deletions": 0
+    },
+    {
+     "path": "tests/conformance/jira-fake.ts",
+     "status": "modified",
+     "additions": 33,
+     "deletions": 5
+    },
+    {
+     "path": "tests/conformance/kits.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 0
+    },
+    {
+     "path": "tests/draft-pr.test.ts",
+     "status": "modified",
+     "additions": 117,
+     "deletions": 0
+    },
+    {
+     "path": "tests/drafting.test.ts",
+     "status": "modified",
+     "additions": 58,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-memory.test.ts",
+     "status": "modified",
+     "additions": 66,
+     "deletions": 0
+    },
+    {
+     "path": "tests/session-usage.test.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 4
+    },
+    {
+     "path": "tests/task-updates.test.ts",
+     "status": "modified",
+     "additions": 66,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "9ed83b88d122a8be4d9add6501d360ee7e976bbe",
+   "date": "2026-10-30T15:24:00.000Z",
+   "author": "Roee030",
+   "title": "Multi-tenant stage B: control plane with one-click connections and a cell per company",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.control.example",
+     "status": "modified",
+     "additions": 61,
+     "deletions": 0
+    },
+    {
+     "path": ".gitignore",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "docs/MULTI_TENANT_PLAN.md",
+     "status": "modified",
+     "additions": 36,
+     "deletions": 0
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/github.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 2
+    },
+    {
+     "path": "src/adapters/jira.ts",
+     "status": "modified",
+     "additions": 30,
+     "deletions": 17
+    },
+    {
+     "path": "src/adapters/token-source.ts",
+     "status": "modified",
+     "additions": 53,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/config.ts",
+     "status": "modified",
+     "additions": 27,
+     "deletions": 12
+    },
+    {
+     "path": "src/app/readiness.ts",
+     "status": "modified",
+     "additions": 11,
+     "deletions": 5
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/tenant-config.ts",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 3
+    },
+    {
+     "path": "src/control/broker.ts",
+     "status": "modified",
+     "additions": 73,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/cell.ts",
+     "status": "modified",
+     "additions": 93,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/companies.ts",
+     "status": "modified",
+     "additions": 235,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/github-app.ts",
+     "status": "modified",
+     "additions": 71,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/main.ts",
+     "status": "modified",
+     "additions": 55,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/oauth.ts",
+     "status": "modified",
+     "additions": 161,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/pages.ts",
+     "status": "modified",
+     "additions": 111,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/provisioner.ts",
+     "status": "modified",
+     "additions": 113,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/server.ts",
+     "status": "modified",
+     "additions": 258,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/slack-router.ts",
+     "status": "modified",
+     "additions": 54,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/store.ts",
+     "status": "modified",
+     "additions": 111,
+     "deletions": 0
+    },
+    {
+     "path": "src/control/vault.ts",
+     "status": "modified",
+     "additions": 39,
+     "deletions": 0
+    },
+    {
+     "path": "tests/control.test.ts",
+     "status": "modified",
+     "additions": 312,
+     "deletions": 0
+    },
+    {
+     "path": "tests/tenant-config.test.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "05147d304c00bbde8a2e88bb0bb8f250a940d9aa",
+   "date": "2026-10-30T12:30:53.000Z",
+   "author": "Roee030",
+   "title": "Multi-tenant A4-A5: people matched by email, required persistent storage per cell",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 2
+    },
+    {
+     "path": "config/tenant.example.json",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "docs/MULTI_TENANT_PLAN.md",
+     "status": "modified",
+     "additions": 12,
+     "deletions": 3
+    },
+    {
+     "path": "src/adapters/jira.ts",
+     "status": "modified",
+     "additions": 34,
+     "deletions": 5
+    },
+    {
+     "path": "src/app/config.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/readiness.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 4
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 12,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/state-storage.ts",
+     "status": "modified",
+     "additions": 60,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/identity.ts",
+     "status": "modified",
+     "additions": 37,
+     "deletions": 3
+    },
+    {
+     "path": "tests/conformance/jira-fake.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    },
+    {
+     "path": "tests/people.test.ts",
+     "status": "modified",
+     "additions": 67,
+     "deletions": 0
+    },
+    {
+     "path": "tests/state-storage.test.ts",
+     "status": "modified",
+     "additions": 52,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "f7c7ccadaa62680ad9dd08e716c6a9a126b07f1c",
+   "date": "2026-10-30T11:34:03.000Z",
+   "author": "Roee030",
+   "title": "Multi-tenant stage A: tenant config, several boards and repositories, conformance kits",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 0
+    },
+    {
+     "path": "config/tenant.example.json",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 0
+    },
+    {
+     "path": "docs/MULTI_TENANT_PLAN.md",
+     "status": "modified",
+     "additions": 152,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/jira.ts",
+     "status": "modified",
+     "additions": 16,
+     "deletions": 4
+    },
+    {
+     "path": "src/adapters/memory.ts",
+     "status": "modified",
+     "additions": 130,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/multi.ts",
+     "status": "modified",
+     "additions": 151,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/config.ts",
+     "status": "modified",
+     "additions": 52,
+     "deletions": 36
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    },
+    {
+     "path": "src/app/tenant-config.ts",
+     "status": "modified",
+     "additions": 234,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 45,
+     "deletions": 12
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 23,
+     "deletions": 2
+    },
+    {
+     "path": "tests/conformance.test.ts",
+     "status": "modified",
+     "additions": 68,
+     "deletions": 0
+    },
+    {
+     "path": "tests/conformance/jira-fake.ts",
+     "status": "modified",
+     "additions": 60,
+     "deletions": 0
+    },
+    {
+     "path": "tests/conformance/kits.ts",
+     "status": "modified",
+     "additions": 136,
+     "deletions": 0
+    },
+    {
+     "path": "tests/tenant-config.test.ts",
+     "status": "modified",
+     "additions": 110,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "sha": "b7f6e9ce427828341a98ce2e8d2d7ea0df10c2d1",
+   "date": "2026-10-30T07:34:13.000Z",
+   "author": "Roee030",
+   "title": "fix: she leaves when asked in any words; talks like a colleague, answers sooner",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 4
+    },
+    {
+     "path": "docs/HUMAN_CONVERSATION_PLAN.md",
+     "status": "modified",
+     "additions": 161,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 15,
+     "deletions": 14
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 7
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 39,
+     "deletions": 17
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 5
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 16,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 53,
+     "deletions": 43
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 14,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/speech-floor.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/spoken.ts",
+     "status": "modified",
+     "additions": 62,
+     "deletions": 0
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 2
+    },
+    {
+     "path": "tests/attendee-command-router.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 3
+    },
+    {
+     "path": "tests/conversation-flow.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 6
+    },
+    {
+     "path": "tests/engine.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 2
+    },
+    {
+     "path": "tests/leave.test.ts",
+     "status": "modified",
+     "additions": 97,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 6
+    },
+    {
+     "path": "tests/realtime-readiness.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 2
+    },
+    {
+     "path": "tests/spoken.test.ts",
+     "status": "modified",
+     "additions": 44,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/report.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 3
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 24,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "sha": "f037381cc3fd2833e17a53e38ae01aca62001446",
+   "date": "2026-10-29T23:29:23.000Z",
+   "author": "Roee030",
+   "title": "feat: reliable meeting presence and durable missions",
+   "merge": false,
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 11,
+     "deletions": 2
+    },
+    {
+     "path": "README.md",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 0
+    },
+    {
+     "path": "docs/MEETING_READINESS.md",
+     "status": "modified",
+     "additions": 148,
+     "deletions": 0
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    },
+    {
+     "path": "src/adapters/attendee.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 0
+    },
+    {
+     "path": "src/adapters/github.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 8,
+     "deletions": 2
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 83,
+     "deletions": 13
+    },
+    {
+     "path": "src/app/mission-store.ts",
+     "status": "modified",
+     "additions": 49,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/presence-page.html",
+     "status": "modified",
+     "additions": 67,
+     "deletions": 25
+    },
+    {
+     "path": "src/app/presence.ts",
+     "status": "modified",
+     "additions": 66,
+     "deletions": 8
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 138,
+     "deletions": 18
+    },
+    {
+     "path": "src/app/turn-log.ts",
+     "status": "modified",
+     "additions": 83,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 51,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 199,
+     "deletions": 28
+    },
+    {
+     "path": "src/core/missions.ts",
+     "status": "modified",
+     "additions": 431,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/speech-floor.ts",
+     "status": "modified",
+     "additions": 48,
+     "deletions": 7
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 244,
+     "deletions": 0
+    },
+    {
+     "path": "tests/missions.test.ts",
+     "status": "modified",
+     "additions": 214,
+     "deletions": 0
+    },
+    {
+     "path": "tests/presence.test.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "tests/realtime-readiness.test.ts",
+     "status": "modified",
+     "additions": 216,
+     "deletions": 0
+    },
+    {
+     "path": "tools/mission.ts",
+     "status": "modified",
+     "additions": 67,
+     "deletions": 0
+    },
+    {
+     "path": "tools/turn-report.ts",
+     "status": "modified",
+     "additions": 216,
+     "deletions": 0
+    }
+   ]
+  }
+ ],
+ "pullRequests": [
+  {
+   "number": 20,
+   "title": "P1-2: repo_activity and get_change; live-branch history; team timezone in prompt",
+   "body": "Board task P1-2.\n\n## What changed\n- **`repo_activity`** (new agent tool, `GitHubCode.repoActivity`): everything that landed on a branch in a time range, read from the **live branch** (not the code snapshot). It returns every commit (paged, up to 300), the PRs merged into that branch with their descriptions (redacted), authors, and one `compare` call for the files changed (totals plus the 15 most changed files). The output names the snapshot that `search_code`/`read_file` read, so an answer can say which version it is about. Input: `period` (`today`, `yesterday`, `this_week`, `last_week`, `last_7_days`) or `since`/`until` as ISO times, plus an optional `branch`.\n- **`get_change`** (new agent tool, `GitHubCode.getChange`): one commit (`sha`) or PR (`pr`): description, files with +/- counts and patches. Patches are redacted with the same `redactSource` the index uses, capped at 3,000 characters per file and 12,000 in total. Files on the credential-path list never show a patch. Returns `truncated` when something was cut.\n- **Team time zone in every turn:** `turnAgentPrompt` now says the team's time zone and local date and time, and what \"today\" and \"this week\" mean. `repo_activity`'s `period` is worked out in the same time zone (`src/core/team-time.ts`), and it handles the change from summer time (tested on Jerusalem, 25 Oct 2026).\n- `recent_commits` now points time-range questions to `repo_activity`. Its default still reads the snapshot, as before.\n\n## Configuration\n- `TEAM_TIME",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T16:23:45Z",
+   "mergeCommit": "c6b95a59521a336ae170f46c64f79cdeb43d8fbc",
+   "files": [
+    {
+     "path": "src/adapters/github.ts",
+     "status": "modified",
+     "additions": 137,
+     "deletions": 2
+    },
+    {
+     "path": "src/app/tenant-config.ts",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 78,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/contracts.ts",
+     "status": "modified",
+     "additions": 37,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/team-time.ts",
+     "status": "modified",
+     "additions": 70,
+     "deletions": 0
+    },
+    {
+     "path": "tests/repo-activity.test.ts",
+     "status": "modified",
+     "additions": 199,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 17,
+   "title": "P1-6: update readiness from the 31 October Meet",
+   "body": "## Summary\n- record the six findings observed in the 31 October live Meet with causes, fixes, and evidence levels\n- distinguish observed failures from fixes verified again in a real meeting\n- document the two open root failures and the stale Render GITHUB_REF\n- add a focused script for live Meet #2, including recording the deployed SHA\n- update the Codex task-board row and handoff note\n\n## Verification\n- npm test (492 passed)\n- npm run typecheck\n- git diff --check",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T16:23:01Z",
+   "mergeCommit": "5d64533a0a4735442f54cf3ef629bdeef30c5918",
+   "files": [
+    {
+     "path": "docs/MEETING_READINESS.md",
+     "status": "modified",
+     "additions": 56,
+     "deletions": 14
+    }
+   ]
+  },
+  {
+   "number": 19,
+   "title": "P1-10: one task per chat; the agent stops with a PR link to merge",
+   "body": "## What\n\nStep 5 of the loop in `AGENTS.md`, `CLAUDE.md` and `docs/TASK_BOARD.md` changed. The agent used to keep taking tasks until it was blocked. Now it does **one task per chat**:\n\n1. Run the board.\n2. Fix its own broken PRs first.\n3. Do the next task and mark its PR ready.\n4. Stop. The reply ends with the PR link to merge, one line on what it does, and the next task on the board.\n\nRoee merges and opens a new chat with \"continue\". The board gets a P1-10 row for this change.\n\n## Checks\n\nDocs only. `tools/board.ts` still parses the board and lists P1-10.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T16:06:43Z",
+   "mergeCommit": "d2e58f79c1c8d0f24cdc2a9bb01b3ce5887506b7",
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 1
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "number": 18,
+   "title": "P1-9: autopilot board computed from GitHub",
+   "body": "## What\n\n- `tools/board.ts` + `npm run board -- --agent claude|codex`: the shared state. Tasks, owners, files and dependencies come from `docs/TASK_BOARD.md`. Each task's status comes from GitHub: a merged PR means done, an open draft means taken, a ready PR means waiting for Roee, and no PR means ready or waiting on its dependencies. The output lists:\n  - **Fix first:** failing CI, conflicts, changes requested.\n  - **Next:** continue the open task or start the next one. A ready task is held back when an open PR, including one that is not on the board, touches the same files.\n  - **Waiting on Roee.**\n- `docs/TASK_BOARD.md`: no hand-kept status and no handoff section, so task PRs stop conflicting on it. It now describes the autopilot loop.\n- `AGENTS.md` / `CLAUDE.md`: what each agent does when told \"continue\". The loop runs board, fixes, then the next task, opens a draft PR at once as the lock, marks it ready, and repeats until blocked.\n\n## Merge order: merge this one first\n\nPRs #15, #16 and #17 each edit status rows and handoff notes in `docs/TASK_BOARD.md`, so they conflict with this PR and with each other. After this merges, each of them shows up under \"Fix first\" for its agent. The fix is to take main's board (`git checkout origin/main -- docs/TASK_BOARD.md`) and move the handoff note into the PR description.\n\n## Checks\n\n- `npm test`: 497/497 pass (5 new in `tests/board.test.ts`).\n- `npm run typecheck`: passes.\n- Ran `npm run board` against the live repo for both agents. I",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T16:03:18Z",
+   "mergeCommit": "01f37fa80f8423aa8f69926f4b0a38c9acc59b54",
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 12
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 12
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 56,
+     "deletions": 49
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "tests/board.test.ts",
+     "status": "modified",
+     "additions": 75,
+     "deletions": 0
+    },
+    {
+     "path": "tools/board.ts",
+     "status": "modified",
+     "additions": 184,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 15,
+   "title": "P1-1: keep tool calls truncated at max_tokens; raise tool-step budget; per-step stop reasons",
+   "body": "P1-1 from `docs/TASK_BOARD.md`.\n\n## What changed\n- **Tool calls cut off at `max_tokens` are no longer thrown away** (`src/core/agent.ts`). Before, a step that stopped on `max_tokens` dropped every tool call in it and turned the lead-in into the answer. That's failure א from the 31.10 meeting (\"open three tasks\" opened fewer or none). Now:\n  - The whole calls run. Output cut off by `max_tokens` ends inside its last block, so a `tool_use` in that position is treated as partial and dropped. Every earlier call is whole.\n  - The dropped call is removed from the assistant message sent back, and a text block after the tool results tells the model it did not run.\n  - If the cut came inside the only call, the step is retried **once** with twice the budget. A lead-in that was already spoken is not spoken again.\n  - If the retry is cut off too, nothing runs and `stoppedEarly` is `true`.\n- **Bigger budget for tool steps.** New `AgentTurn.toolStepMaxTokens`. The engine passes 2,000 for voice and 4,000 for chat. The last step, which has no tools, keeps `maxTokens` (600/1,500). The engine's `MAX_SPOKEN_WORDS` guard still limits how much is spoken. `runAgent` defaults are unchanged for other callers.\n- **`AgentResult.stops`**: one entry per model request, with `{ step, stopReason, maxTokens, droppedToolCall?, retry? }`. This is for Codex's P1-5 trace.\n- `src/core/engine.ts`: only the budget line changed.\n\n## Tested\n- `npm test`: 496/496 pass. `npm run typecheck` is clean.\n- Four new tests, p",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T16:00:18Z",
+   "mergeCommit": "36f5060afb0e10c667def0aedf2cb672d0105275",
+   "files": [
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/agent.ts",
+     "status": "modified",
+     "additions": 92,
+     "deletions": 34
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 81,
+     "deletions": 2
+    }
+   ]
+  },
+  {
+   "number": 14,
+   "title": "P1-0: work plan and shared task board for Claude and Codex",
+   "body": "## What\n\n- `docs/WORK_PLAN.md`: one 12-week plan. It merges the strategy review and the capability findings: goal, principles, root causes found in the code, eight tracks, six phases with gates, and what we are not doing.\n- `docs/TASK_BOARD.md`: phase 1 tasks with owner, files and status, plus the working rules that keep Claude and Codex apart. Each agent gets its own folder, one branch and draft PR per task (the draft PR is the lock), sensitive files one task at a time, and each agent edits only its own board rows.\n- `AGENTS.md` (read by Codex) and `CLAUDE.md` (read by Claude Code) point each agent at both documents.\n\n## Checks\n\nDocs only. `npm test`: 492/492 pass.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T15:47:48Z",
+   "mergeCommit": "686f7f0398455dee01bcfe127f9316cb862da3d7",
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 0
+    },
+    {
+     "path": "CLAUDE.md",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 0
+    },
+    {
+     "path": "docs/TASK_BOARD.md",
+     "status": "modified",
+     "additions": 59,
+     "deletions": 0
+    },
+    {
+     "path": "docs/WORK_PLAN.md",
+     "status": "modified",
+     "additions": 268,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 13,
+   "title": "Fixes from the first live Meet: verification, stop, lookups kept, word-searching",
+   "body": "What the 2026-10-31 live Meet transcript showed, and the fix for each:\n\n| Heard in the Meet | Cause | Fix |\n| --- | --- | --- |\n| \\\"Nogita verify 45-451948\\\" was rejected | the speaker restarted; recognition kept both attempts (8 digits) | accept when the 6-digit code ends the phrase (up to 12 digits, still digits only); \\\"verified\\\" also accepted |\n| \\\"Wait, wait, wait, wait!\\\" — she talked on ~10 s | \\`wait\\` was missing from the stop words (only plain \\\"wait\\\" counted) | \\`wait\\` counts, except \\\"wait for/until\\\", \\\"can't wait\\\" |\n| \\\"My last answer wasn't backed by a lookup I actually ran, so I can't open tasks\\\" | history kept only her words, so the next turn saw a claim with no evidence and retracted it | each answer keeps a short note of its lookups' results (≤1400 chars) in history |\n| She kept asking for task titles | prompt never said to derive them | prompt: look up what can be looked up, write titles yourself, set a requested status after creating |\n| \\\"All the the?\\\" answered three times | a turn ending on a dangling word counted as complete | dangling endings are incomplete (applies when \\`NOGITA_INCOMPLETE_TURN_HOLD_MS\\` > 0) |\n| \\\"All the is garbled, and I can't tell what tasks he wants. Ask him once briefly,\\\" | deliberation the guard did not cover | guard patterns for talking about the speaker and self-auditing |\n\nNot in this PR (config on Render): \\`GITHUB_REF\\` pointed at an old feature branch, so \\\"recent commits\\\" showed 10/28; it should be \\`main\\`.\n\nTe",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T14:45:57Z",
+   "mergeCommit": "6fc17551cf5edcd8ba0157454acf48a89e8b8f15",
+   "files": [
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 3
+    },
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/agent-tools.ts",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 5
+    },
+    {
+     "path": "src/core/agent.ts",
+     "status": "modified",
+     "additions": 13,
+     "deletions": 2
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 23,
+     "deletions": 4
+    },
+    {
+     "path": "src/core/policy.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/speech-guard.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 0
+    },
+    {
+     "path": "tests/agent.test.ts",
+     "status": "modified",
+     "additions": 59,
+     "deletions": 2
+    },
+    {
+     "path": "tests/attendee-command-router.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "tests/incomplete-turn.test.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-guard.test.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-addressing.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "number": 12,
+   "title": "Voice lab: --turn-taking v2|legacy to compare the rollout profile with its rollback",
+   "body": "Replaces roee030/Nogita-ai#10, which GitHub closed when its base branch (feat/early-commit) was deleted on merge. Same commit, rebased onto main.\n\n## Why\nThe lab always ran the `NOGITA_TURN_TAKING_V2` profile, while production runs legacy by default. There was no way to measure what turning the flag on actually changes.\n\n## What changed\n- `--turn-taking v2|legacy` (default `v2`, same as before). Legacy also uses the legacy 1 s floor lease.\n- The setting is recorded in the report header.\n\n## First comparison (false-pause, backchannels, barge-in; same settings)\n| | legacy (production default) | v2 |\n|---|---|---|\n| Barge-in stop | **1587 ms** | **334 ms** |\n| Backchannels kept (\"yeah\", \"right\") | 2/4 (stopped on half) | 4/4 |\n| False pauses (cough / typing / laughter) | 0/3 | **2/3, ~1.9 s each** |\n| Passed | 9/13 | 11/13 |\n\nV2 is much better on interruptions and backchannels. Its one weakness is a ~2 s silence after a cough or a laugh. A separate PR addresses that by resuming as soon as the recognizer confirms there was no speech in the sound.\n\nReports: `.voice-lab/reports/2026-10-31-turn-taking-{legacy,v2}/`. n=3–4 per measure, so these show direction, not a release gate.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T14:45:50Z",
+   "mergeCommit": "6596586ccc522f39be13518fce7041b1cf17148f",
+   "files": [
+    {
+     "path": "docs/VOICE_LAB.md",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "number": 11,
+   "title": "Turn taking v2: pick the answer up ~350 ms after a sound with no speech in it, not ~2 s",
+   "body": "## Why\nLab comparison (#10): v2 beats legacy on barge-in (334 vs 1587 ms) and backchannels (4/4 vs 2/4 kept). Its one regression: a cough or a laugh paused her answer for **1.8–2.0 s**. Flux reported no speech activity at all for those sounds. The pause ended only on the fixed 1.5 s backchannel timeout after the last loud frame.\n\n## What changed (v2 profile only; legacy is untouched)\nResuming now depends on evidence, not on a fixed timeout:\n- No recognition activity since the pause began → she resumes **350 ms** after the sound (`cause: 'quiet'`).\n- As soon as recognition hears speech in the pause → the 1.5 s window still applies, so a \"yeah\" is told apart from an interruption, as before.\n- Sustained own voice still cancels after 1.5 s from onset, unchanged.\n\n## Measured (false-pause, backchannels, barge-in; same settings)\n| | legacy | v2 | **v2 + this PR** |\n|---|---|---|---|\n| Barge-in stop | 1587 ms | 334 ms | **285 ms** |\n| Backchannels kept | 2/4 | 4/4 | **4/4** (resumed in ~450 ms) |\n| Pause after cough / laughter | none | 1792 / 1984 ms | **639 / 833 ms** |\n| Spoke over someone | 1 | 1 | **0** |\n| Passed | 9/13 | 11/13 | **12/13** |\n\nReport: `.voice-lab/reports/2026-10-31-evidence-resume/`. One run with n=3–4 per measure. This is direction, not the ≤2% release gate.\n\n## Verification\n- Two new tests: no speech → resumes in <700 ms with cause `quiet` (fails without the change); a Flux StartOfTurn → still paused at 700 ms\n- `npm test` 480/480, `npm run typecheck` clean\n\n\ud83e",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T14:45:42Z",
+   "mergeCommit": "0cefe2b37110b81f15c0473405b7a590e0a7bc2b",
+   "files": [
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 23,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 68,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 9,
+   "title": "End a complete question's turn on own-voice silence, not on noisy endpointing (flag, off)",
+   "body": "## Why\nIn the 2026-10-31 broad baselines, Flux confirmed complete questions to her **1.1–2.7 s** after its early end-of-turn whenever the room was noisy. The speaker's own microphone had already gone silent: there was no own-voice activity in any of those gaps. And every early transcript the speaker went on from had no closing punctuation, or was only her name.\n\n## What changed (`NOGITA_EARLY_COMMIT_MS`, default 0 = off)\n- At the early end-of-turn, a question to her that ends as a sentence commits after N ms of own-voice silence. To qualify it must not be only her name, not a known incomplete opener, and must not end on a word like \"the\". Short commands (\"Nogita, stop.\") qualify too.\n- Own voice cancels a pending commit. This uses the level gate, not recognition, because noise also triggers recognition. `TurnResumed` cancels it too.\n- Flux's later confirmation of the same words is dropped, and the floor is told the turn ended (`onTurnEnded`). If the speaker added words, only those go on, and the engine answers the whole question like any other continuation.\n- After a commit, recognition activity until the confirmation is treated as room noise, so it doesn't hold the answer back.\n- Lab flag: `--early-commit-ms`.\n\n## Measured (same 6 scenarios / 19 turns / settings as the broad production baseline)\n| | Baseline | 300 ms |\n|---|---|---|\n| Response gap mean | 2472 ms | **2078 ms** |\n| p50 / p90 | 2014 / 3960 ms | **1883 / 3548 ms** |\n| office-chatter, noisy | 3642 ms | **1687 ms*",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T12:52:49Z",
+   "mergeCommit": "023ccfb3ca21c2445c43c8b89dd4752e208dbf54",
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/attendee-command-router.ts",
+     "status": "modified",
+     "additions": 96,
+     "deletions": 3
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 0
+    },
+    {
+     "path": "tests/early-commit.test.ts",
+     "status": "modified",
+     "additions": 118,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 6,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "number": 8,
+   "title": "The asker's new question ends their cut-off answer as soon as it is heard",
+   "body": "## Why\nIn both 2026-10-31 lab runs (rapid-questions), Roee cut off the 503 answer by asking \"Nogita, and 504?\". When his turn ended, the floor saw a quiet room and played **\"As I was saying, Service unavailable.\"** over the new question, and he cut her off again. The engine already has a rule for this (\"the asker moved on to a new question; the rest is in chat\"), but it ran only in `onUtterance`. That's one tick after the turn-end signal had already opened the floor.\n\n## What changed\nThe same rule now also runs in `speculate`, at the early end-of-turn of the new question. It applies even if the early words are later rolled back: the asker has moved on either way. The answer is still delivered in full in chat, as before.\n\n## Verification\n- New test: a speculative start of the asker's next question, then time past `resumeAfterMs`, and nothing resumes. Fails before the change.\n- `npm test` 470/470, `npm run typecheck` clean\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T12:52:44Z",
+   "mergeCommit": "566ecfe8624819cce6efd8a4e0c97e127b5f1785",
+   "files": [
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 0
+    },
+    {
+     "path": "tests/conversation-flow.test.ts",
+     "status": "modified",
+     "additions": 22,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 7,
+   "title": "She never says her reasoning out loud or answers words meant for someone else",
+   "body": "## Why\nIn the 2026-10-31 broad voice-lab baselines she said her deliberation aloud. The prompt already forbids it, and the lab's \"sounded human\" metric still scored 12/12:\n- \"Avi is addressing Roy, not me, so I'll stay quiet on this one.\"\n- \"This is a follow-up that mentions the client leaving early, but it's a direct question to me about the code, so I'll answer it.\"\n- \"About the flaky test on main, an empty reply is the right call here, since this was meant for Roy.\" (also went to chat)\n- \"Nogita speaks only when someone addresses it by name.\"\n\nThe first case is a chain of two failures. \"Roee, did you see the build failure…\" was heard as \"Roy, …\", didn't match any teammate's name, and opened a question for her inside Avi's follow-up window. The model then announced its decision to stay quiet instead of returning an empty reply.\n\n## What changed\n- **`src/core/speech-guard.ts`**: drops deliberation sentences before speech, chat and history. A reply made only of deliberation counts as no reply. Every pattern needs a self-reference (\"me\", \"so I'll answer\"), so answers like \"Avi asked about this in the PR\" and \"It's addressed in KAN 31\" are kept. Tests cover both sides.\n- **`addressesSomeoneElse`**: vocatives match teammates by sound (\"Roy\" ≈ Roee, \"Donna\" ≈ Dana). \"Name, … you …?\" counts as addressed to that person even for a name she never heard. Interjections, adverbs (\"Honestly,\"), weekdays and wake-word variants stay hers.\n- **Prompt**: she uses \"I\" about herself. An empty ",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T12:52:40Z",
+   "mergeCommit": "5cbdbb8f0045452576b01306674329811bf7579d",
+   "files": [
+    {
+     "path": "src/core/agent-prompt.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/engine.ts",
+     "status": "modified",
+     "additions": 41,
+     "deletions": 10
+    },
+    {
+     "path": "src/core/speech-guard.ts",
+     "status": "modified",
+     "additions": 41,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 35,
+     "deletions": 0
+    },
+    {
+     "path": "tests/speech-guard.test.ts",
+     "status": "modified",
+     "additions": 54,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 6,
+   "title": "Fix flaky missions restart test",
+   "body": "The `missions survive a restart` test failed once in CI (PR #4, attempt 1): `expected 'done', actual 'blocked'` on disk.\n\n**Cause:** the \"first\" runner stands in for a process that stopped, but its model-error retry was still scheduled (5 ms in the rig). After `idle()` it kept running in the background and saving the same mission file through its own `FileMissionStore`. Saves are serialized only inside one store instance, so on a slow runner the stale write could land after the restarted runner's `done`. A probe confirmed the dead runner saves after `idle()`.\n\n**Fix (test only):** `rig()` accepts a `schedule`, and the stopped runner gets one that never fires. No production code changes.\n\n- Test passed 10 times in a row locally\n- `npm test` 469/469, `npm run typecheck` clean\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T12:52:35Z",
+   "mergeCommit": "8e6062917974d2611287aead039d00554f057a73",
+   "files": [
+    {
+     "path": "tests/missions.test.ts",
+     "status": "modified",
+     "additions": 5,
+     "deletions": 3
+    }
+   ]
+  },
+  {
+   "number": 5,
+   "title": "Measure false pauses with acoustic voice-lab probes",
+   "body": "## Summary\n- inject deterministic cough, typing, and laughter PCM through the participant microphone path while playback is active\n- emit auditable playback-resume events with reason and exact pause duration\n- report false-pause rate, Wilson 95% upper bound, and pause-duration distribution in JSON, Markdown, HTML, and console output\n- exclude acoustic probes from ordinary WER, response-latency, and pass-rate metrics\n- document the rollout acceptance target and implementation design\n\n## Verification\n- \npm test (469 passing)\n- \npm run typecheck`n- git diff --check`n- focused generator, scenario, resume-event, and summary-statistics tests",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T07:00:59Z",
+   "mergeCommit": "356ec237ee02d3fd4ae44942390c8a054b2917fa",
+   "files": [
+    {
+     "path": "docs/VOICE_LAB.md",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/plans/2026-10-31-false-pause-measurement.md",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/specs/2026-10-31-false-pause-measurement-design.md",
+     "status": "modified",
+     "additions": 19,
+     "deletions": 0
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 17,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 4,
+     "deletions": 0
+    },
+    {
+     "path": "tests/voice-lab.test.ts",
+     "status": "modified",
+     "additions": 42,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/conversation.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 2
+    },
+    {
+     "path": "tools/voice-lab/noise.ts",
+     "status": "modified",
+     "additions": 39,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/report.ts",
+     "status": "modified",
+     "additions": 25,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/run.ts",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/scenarios.ts",
+     "status": "modified",
+     "additions": 18,
+     "deletions": 1
+    },
+    {
+     "path": "tools/voice-lab/score.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 0
+    }
+   ]
+  },
+  {
+   "number": 4,
+   "title": "Gate measured turn-taking behavior behind rollout flag",
+   "body": "## Summary\n- add NOGITA_TURN_TAKING_V2=false as one coherent switch for the 80 ms/-9 dB gate, pause-and-classify flow, and 3 s speech-floor lease\n- restore the legacy profile when the flag is absent or false; keep the voice lab explicitly on v2\n- move Cartesia from production dependencies to devDependencies\n- document the design and rollout implementation\n\n## Verification\n- \npm test (466 passing)\n- \npm run typecheck`n- git diff --check`n- focused v1/v2 profile, speech-floor, dependency, and environment tests",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T06:58:39Z",
+   "mergeCommit": "c137dbd0260b50dde286f6f83529ee4cd7d83c5c",
+   "files": [
+    {
+     "path": ".env.example",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/plans/2026-10-31-turn-taking-rollout.md",
+     "status": "modified",
+     "additions": 9,
+     "deletions": 0
+    },
+    {
+     "path": "docs/superpowers/specs/2026-10-31-turn-taking-rollout-design.md",
+     "status": "modified",
+     "additions": 29,
+     "deletions": 0
+    },
+    {
+     "path": "package-lock.json",
+     "status": "modified",
+     "additions": 2,
+     "deletions": 1
+    },
+    {
+     "path": "package.json",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "src/app/attendee-realtime-audio.ts",
+     "status": "modified",
+     "additions": 34,
+     "deletions": 15
+    },
+    {
+     "path": "src/app/server.ts",
+     "status": "modified",
+     "additions": 7,
+     "deletions": 1
+    },
+    {
+     "path": "src/core/speech-floor.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 4
+    },
+    {
+     "path": "tests/attendee-realtime-audio.test.ts",
+     "status": "modified",
+     "additions": 8,
+     "deletions": 3
+    },
+    {
+     "path": "tests/conversation-flow.test.ts",
+     "status": "modified",
+     "additions": 15,
+     "deletions": 0
+    },
+    {
+     "path": "tests/meeting-readiness.test.ts",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "tests/repository-guardrails.test.ts",
+     "status": "modified",
+     "additions": 10,
+     "deletions": 0
+    },
+    {
+     "path": "tools/voice-lab/rig.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 1
+    }
+   ]
+  },
+  {
+   "number": 3,
+   "title": "Fix CI allowlist for control env template",
+   "body": "## Summary\n- allow the tracked root .env.control.example template in the CI secret guard\n- add a regression assertion keeping the CI allowlist aligned with the local repository guard\n\n## Verification\n- \npm test (463 passing)\n- \npm run typecheck`n- Docker build deferred to GitHub Actions because Docker is unavailable on this host",
+   "author": "roee030",
+   "mergedAt": "2026-10-31T06:50:04Z",
+   "mergeCommit": "febd030aaee09c0952d75b76e35ae8656eae074e",
+   "files": [
+    {
+     "path": ".github/workflows/verify.yml",
+     "status": "modified",
+     "additions": 1,
+     "deletions": 1
+    },
+    {
+     "path": "tests/repository-guardrails.test.ts",
+     "status": "modified",
+     "additions": 3,
+     "deletions": 0
+    }
+   ]
+  }
+ ]
+}
