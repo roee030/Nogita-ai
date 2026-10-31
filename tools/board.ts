@@ -5,13 +5,14 @@
  *
  * The board file says what the tasks are: owner, files and dependencies. GitHub says where each one stands, so
  * nobody has to remember to update a status: a merged PR means done, an open draft means taken, a ready PR means
- * waiting for review. Prints what this agent should do next and what is waiting on Roee.
+ * waiting for review. The board is read from origin/main, so an old branch never hides new tasks. Prints what this
+ * agent should do next and what is waiting on Roee.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 export type Owner = 'claude' | 'codex' | 'roee';
-export type Status = 'done' | 'in-progress' | 'in-review' | 'ready' | 'waiting';
+export type Status = 'done' | 'in-progress' | 'in-review' | 'ready' | 'waiting' | 'deferred';
 
 export interface Task {
   id: string;
@@ -21,6 +22,8 @@ export interface Task {
   dependsOn: string[];
   /** Ticked by hand on the board: done without a PR (Roee's own tasks). */
   checked: boolean;
+  /** Marked `[-]` by Roee: put off for now. Tasks that depend on it are put off too. */
+  deferred: boolean;
 }
 
 export interface PullRequest {
@@ -68,6 +71,7 @@ export function parseBoard(markdown: string): Task[] {
       files: [...cells[4].matchAll(/`([^`]+)`/g)].map(match => match[1]).filter(path => /[/.]/.test(path)),
       dependsOn: cells[5].split(/[,\s]+/).filter(id => TASK_ID.test(id)),
       checked: /\[x\]/i.test(cells[0]),
+      deferred: /\[-\]/.test(cells[0]),
     });
   }
   return tasks;
@@ -102,11 +106,22 @@ export function buildReport(tasks: Task[], prs: PullRequest[], agent: Owner): Bo
     if (!current || (pr.state === 'OPEN' && current.state !== 'OPEN')) prOf.set(id, pr);
   }
   const done = new Set(tasks.filter(task => task.checked || prOf.get(task.id)?.state === 'MERGED').map(task => task.id));
+  // A put-off task holds back everything that depends on it, however indirectly.
+  const deferred = new Set(tasks.filter(task => task.deferred && !done.has(task.id)).map(task => task.id));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const task of tasks) {
+      if (done.has(task.id) || deferred.has(task.id) || !task.dependsOn.some(id => deferred.has(id))) continue;
+      deferred.add(task.id);
+      grew = true;
+    }
+  }
   const states: TaskState[] = tasks.map(task => {
     const pr = prOf.get(task.id);
     const status: Status = done.has(task.id) ? 'done'
       : pr?.state === 'OPEN' ? (pr.isDraft ? 'in-progress' : 'in-review')
-        : task.dependsOn.every(id => done.has(id)) ? 'ready' : 'waiting';
+        : deferred.has(task.id) ? 'deferred'
+          : task.dependsOn.every(id => done.has(id)) ? 'ready' : 'waiting';
     return { ...task, status, pr, problems: pr?.state === 'OPEN' ? problemsOf(pr) : [] };
   });
 
@@ -160,6 +175,8 @@ export function formatReport(report: BoardReport, agent: Owner): string {
   for (const task of human) lines.push(`- Do ${task.id}: ${task.title}`);
   for (const pr of report.outside) lines.push(`- PR #${pr.number} is not on the board: close it or add a task (${pr.headRefName})`);
   if (!toMerge.length && !human.length && !report.outside.length) lines.push('- Nothing.');
+  const putOff = report.tasks.filter(task => task.status === 'deferred');
+  if (putOff.length) lines.push(`- Put off by Roee, no action now: ${putOff.map(task => task.id).join(', ')}`);
   lines.push('');
 
   lines.push('## All tasks');
@@ -175,7 +192,15 @@ function main(): void {
   const at = process.argv.indexOf('--agent');
   const agent = OWNERS[(process.argv[at + 1] ?? '').toLowerCase()];
   if (at < 0 || !agent || agent === 'roee') throw new Error('usage: npm run board -- --agent claude|codex');
-  const board = readFileSync(new URL('../docs/TASK_BOARD.md', import.meta.url), 'utf8');
+  // The board on origin/main, not this folder's copy: a branch made before the last board change still sees today's tasks.
+  let board: string;
+  try {
+    execFileSync('git', ['fetch', '-q', 'origin'], { stdio: 'ignore' });
+    board = execFileSync('git', ['show', 'origin/main:docs/TASK_BOARD.md'], { encoding: 'utf8' });
+  } catch {
+    board = readFileSync(new URL('../docs/TASK_BOARD.md', import.meta.url), 'utf8');
+    console.log('(Could not read origin/main; using the local board, which may be out of date.)\n');
+  }
   const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'all', '--limit', '200', '--json',
     'number,title,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup,files,url'], { encoding: 'utf8' })) as PullRequest[];
   console.log(formatReport(buildReport(parseBoard(board), prs, agent), agent));

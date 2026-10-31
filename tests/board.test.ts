@@ -22,7 +22,7 @@ test('the board file gives tasks, owners, files and dependencies', () => {
   const tasks = parseBoard(BOARD);
   assert.deepEqual(tasks.map(task => task.id), ['P1-1', 'P1-2', 'P1-4', 'P1-5', 'P1-6', 'P1-7', 'P1-8']);
   assert.deepEqual(tasks[1], { id: 'P1-2', title: 'Repo activity tools', owner: 'claude',
-    files: ['src/adapters/github.ts', 'src/core/engine.ts'], dependsOn: ['P1-1'], checked: false });
+    files: ['src/adapters/github.ts', 'src/core/engine.ts'], dependsOn: ['P1-1'], checked: false, deferred: false });
   assert.equal(tasks[5].owner, 'roee');
   assert.equal(tasks[5].checked, true);
   assert.deepEqual(tasks[6].dependsOn, ['P1-1', 'P1-2']);
@@ -72,4 +72,17 @@ test('a broken PR comes first, a green ready PR is listed for Roee to merge, and
   assert.match(text, /Merge PR #15 \(P1-1, claude\)/);
   assert.doesNotMatch(text, /Merge PR #21/);
   assert.equal(report.tasks.find(task => task.id === 'P1-6')!.status, 'ready');
+});
+
+test('a task Roee put off holds back what depends on it, and is not listed as something for him to do', () => {
+  const board = BOARD.replace('| [ ] | P1-8 |', '| [-] | P1-8 |') +
+    '| [ ] | P2-7 | Fix wait | Codex | `src/core/speech-floor.ts` | P1-8 |\n| [ ] | P2-8 | Meeting 3 | רועי | | P2-7 |\n';
+  const tasks = parseBoard(board);
+  assert.equal(tasks.find(task => task.id === 'P1-8')!.deferred, true);
+  const report = buildReport(tasks, [], 'codex');
+  const status = (id: string) => report.tasks.find(task => task.id === id)!.status;
+  assert.deepEqual(['P1-8', 'P2-7', 'P2-8'].map(status), ['deferred', 'deferred', 'deferred']);
+  const text = formatReport(report, 'codex');
+  assert.doesNotMatch(text, /Do P1-8/);
+  assert.match(text, /Put off by Roee, no action now: P1-8, P2-7, P2-8/);
 });
