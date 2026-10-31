@@ -58,12 +58,15 @@ test('local git refs map to the live GitHub branch and repository mismatches sto
   assert.throws(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'release', 'main'), /different branch/);
 });
 
-test('live GitHub activity must contain exactly the commits and PRs used as git ground truth', () => {
+test('live GitHub activity must match git commits and contain every PR inferred from git log', () => {
   const activity = { repository: 'acme/app', branch: 'main', since: truth.since, until: truth.until,
     commits: truth.commits.map(commit => ({ ...commit, url: '', author: '', date: '' })),
     mergedPullRequests: truth.pullRequests.map(number => ({ number, url: '', title: '', body: '', author: '', mergedAt: '' })),
     truncated: false };
   assert.doesNotThrow(() => assertActivityMatchesTruth(activity, truth));
+  assert.doesNotThrow(() => assertActivityMatchesTruth({ ...activity, mergedPullRequests: [
+    ...activity.mergedPullRequests, { number: 99, url: '', title: '', body: '', author: '', mergedAt: '' },
+  ] }, truth), 'a rebase-merged PR may have no inferable number in git log');
   assert.throws(() => assertActivityMatchesTruth({ ...activity, commits: activity.commits.slice(1) }, truth), /activity differs.*commit/i);
   assert.throws(() => assertActivityMatchesTruth({ ...activity, mergedPullRequests: [] }, truth), /activity differs.*PR/i);
   assert.throws(() => assertActivityMatchesTruth({ ...activity, truncated: true }, truth), /truncated/i);

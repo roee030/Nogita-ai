@@ -78,7 +78,7 @@ export function assertActivityMatchesTruth(activity: RepoActivity, truth: Resear
   }
   const localPulls = new Set(truth.pullRequests);
   const livePulls = new Set(activity.mergedPullRequests.map(pull => pull.number));
-  if (localPulls.size !== livePulls.size || [...localPulls].some(number => !livePulls.has(number))) {
+  if ([...localPulls].some(number => !livePulls.has(number))) {
     throw new Error('Live GitHub activity differs from local git ground truth for PRs');
   }
 }
