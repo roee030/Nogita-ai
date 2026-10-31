@@ -224,6 +224,7 @@ const attendeeCommands = new AttendeeCommandRouter(
     onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
     chatAck: !realtimeAudioEnabled,
     incompleteTurnHoldMs: Number(env.NOGITA_INCOMPLETE_TURN_HOLD_MS || 0),
+    earlyCommitMs: Number(env.NOGITA_EARLY_COMMIT_MS || 0),
     ...(fluxStt && env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
       ? { speculate: (sessionId: string, utterance: Utterance) => nogita.speculate(sessionId, utterance) } : {}),
     onLeave: sessionId => leaveMeeting(sessionId, { goodbye: true }) },
@@ -299,6 +300,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
         { type: 'eot', speaker: turnLog.person(participantUuid), ...event }),
       onVoice: (sessionId, participantUuid) => {
         nogita.noteVoice(sessionId, participantUuid);
+        attendeeCommands.noteOwnVoice(sessionId, participantUuid);
         presence.voice(sessionId, participantUuid);
       },
       onInterim: (sessionId, participantUuid, text) => {

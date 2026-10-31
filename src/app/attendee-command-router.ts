@@ -20,6 +20,10 @@ interface SessionState {
   buffers: Map<string, BufferEntry>;
   acceptedEventIds: Set<string>;
   notices: Set<string>;
+  /** Early commits waiting out the speaker's own-voice silence, by speaker. */
+  commits: Map<string, { timer: unknown }>;
+  /** The words each speaker's last early commit answered, so Flux's later confirmation is not a second question. */
+  committed: Map<string, { text: string; turnIds: string[] }>;
 }
 export interface AttendeeCommandRouterOptions {
   quietMs?: number;
@@ -33,6 +37,12 @@ export interface AttendeeCommandRouterOptions {
   nameOnlyMs?: number;
   /** Opt-in hold for an incomplete request such as "Nogita, can you check?". Zero keeps current behavior. */
   incompleteTurnHoldMs?: number;
+  /**
+   * Opt-in (0 = off, up to 1000): a complete question to her ("Nogita, which file starts the server?") is taken as
+   * the end of the turn once the speaker's own voice has been silent this long after Flux's early end-of-turn,
+   * instead of waiting for the confirmed one. Room noise held the confirmation back 1-2.7 s in the voice lab.
+   */
+  earlyCommitMs?: number;
   randomCode?: () => string;
   schedule?: (work: ScheduledWork, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
@@ -72,6 +82,7 @@ export class AttendeeCommandRouter {
   private readonly questionQuietMs: number;
   private readonly nameOnlyMs: number;
   private readonly incompleteTurnHoldMs: number;
+  private readonly earlyCommitMs: number;
   private readonly chatAck: boolean;
   private readonly randomCode: () => string;
   private readonly schedule: (work: ScheduledWork, delayMs: number) => unknown;
@@ -95,6 +106,10 @@ export class AttendeeCommandRouter {
     if (!Number.isFinite(this.incompleteTurnHoldMs) || this.incompleteTurnHoldMs < 0 || this.incompleteTurnHoldMs > 5_000) {
       throw new Error('incompleteTurnHoldMs must be between 0 and 5000');
     }
+    this.earlyCommitMs = options.earlyCommitMs ?? 0;
+    if (!Number.isFinite(this.earlyCommitMs) || this.earlyCommitMs < 0 || this.earlyCommitMs > 1_000) {
+      throw new Error('earlyCommitMs must be between 0 and 1000');
+    }
     this.chatAck = options.chatAck ?? true;
     this.randomCode = options.randomCode ?? (() => String(randomInt(100000, 1000000)));
     this.schedule = options.schedule ?? ((work, delayMs) => setTimeout(() => { void work(); }, delayMs));
@@ -112,7 +127,7 @@ export class AttendeeCommandRouter {
     const challenge = owner ? `Nogita verify ${this.randomCode()}` : undefined;
     this.sessions.set(sessionId, {
       ...(owner ? { owner, challenge } : {}), bindings: new Map(), buffers: new Map(), acceptedEventIds: new Set(),
-      notices: new Set(), speculations: new Map(),
+      notices: new Set(), speculations: new Map(), commits: new Map(), committed: new Map(),
     });
     return challenge;
   }
@@ -163,6 +178,15 @@ export class AttendeeCommandRouter {
   acceptCompletedTurn(request: AttendeeTranscriptRequest): Promise<void> {
     const state = this.sessions.get(request.sessionId);
     if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
+    const committed = state.committed.get(request.speakerUuid);
+    if (committed && (request.utterance.inputTurnIds ?? []).some(id => committed.turnIds.includes(id))) {
+      // Flux confirms a turn that was already committed early: the same words are no new question, and words
+      // added after it go on alone, so the engine answers the whole question as it does for any continuation.
+      state.committed.delete(request.speakerUuid);
+      const rest = remainderAfter(committed.text, request.utterance.text);
+      if (rest === '') { state.acceptedEventIds.add(request.utterance.eventId); return Promise.resolve(); }
+      if (rest !== undefined) request = { ...request, utterance: { ...request.utterance, text: rest } };
+    }
     const completion = this.accept(request);
     const entry = state.buffers.get(request.speakerUuid);
     if (entry) {
@@ -197,10 +221,35 @@ export class AttendeeCommandRouter {
       inputTurnIds: [...new Set([...(previous?.fragments ?? []).flatMap(f => f.inputTurnIds ?? []), ...(request.utterance.inputTurnIds ?? [])])],
       ...(request.utterance.at === undefined ? {} : { at: request.utterance.at }) });
     if (handle) state.speculations.set(request.speakerUuid, { text, handle });
+    if (handle && this.earlyCommitMs && isCommitReady(text)) {
+      const timer = this.schedule(() => this.commitEarly(request, text), this.earlyCommitMs);
+      state.commits.set(request.speakerUuid, { timer });
+    }
+  }
+
+  /** The speaker's own voice stayed silent after a complete question: their turn is over (see `earlyCommitMs`). */
+  private commitEarly(request: AttendeeTranscriptRequest, text: string): Promise<void> | undefined {
+    const state = this.sessions.get(request.sessionId);
+    if (!state?.commits.has(request.speakerUuid)) return;
+    state.commits.delete(request.speakerUuid);
+    if (state.speculations.get(request.speakerUuid)?.text !== text) return;
+    const completion = this.acceptCompletedTurn({ ...request, utterance: { ...request.utterance, eventId: `${request.utterance.eventId}-committed` } });
+    state.committed.set(request.speakerUuid, { text: request.utterance.text, turnIds: request.utterance.inputTurnIds ?? [] });
+    return completion;
+  }
+
+  /** The speaker's own microphone carries their voice again (the level gate, not recognition): no early commit. */
+  noteOwnVoice(sessionId: string, speakerUuid: string): void {
+    const state = this.sessions.get(sessionId);
+    const pending = state?.commits.get(speakerUuid);
+    if (!state || !pending) return;
+    this.cancel(pending.timer);
+    state.commits.delete(speakerUuid);
   }
 
   /** The speaker kept talking after an early end-of-turn: drop the early start. */
   resumeTurn(sessionId: string, speakerUuid: string): void {
+    this.noteOwnVoice(sessionId, speakerUuid);
     const state = this.sessions.get(sessionId);
     const early = state?.speculations.get(speakerUuid);
     if (!state || !early) return;
@@ -300,6 +349,8 @@ export class AttendeeCommandRouter {
     if (!state) return;
     for (const early of state.speculations.values()) early.handle.cancel();
     state.speculations.clear();
+    for (const pending of state.commits.values()) this.cancel(pending.timer);
+    state.commits.clear();
     for (const entry of state.buffers.values()) {
       this.cancel(entry.timer);
       for (const waiter of entry.waiters) waiter.resolve();
@@ -312,6 +363,36 @@ export class AttendeeCommandRouter {
 }
 
 const NAME_ONLY = /^(?:(?:hey|hi|hello|okay|ok|um|uh|so|and),?\s+)?nogita[\s,.:!?-]*$/i;
+
+/** Closing words that leave a sentence unfinished even with a question mark ("what about the?"). */
+const DANGLING = new Set(['the', 'a', 'an', 'my', 'your', 'our', 'their', 'his', 'her', 'its', 'this', 'these', 'those',
+  'and', 'or', 'but', 'because', 'if', 'than', 'so', 'um', 'uh']);
+
+/**
+ * Words that can end her listening early: addressed to her, finished with sentence punctuation, more than her name,
+ * not a known incomplete opener, nothing dangling. In the voice lab every early transcript the speaker went on from
+ * failed this (no closing punctuation, or only her name).
+ */
+export function isCommitReady(raw: string): boolean {
+  const text = normalizeWakeWord(raw.trim());
+  if (!directlyAddressesNogita(text) || NAME_ONLY.test(text) || incompleteRequest(text) || !/[.?!]$/.test(text)) return false;
+  const words = removeAddress(text).toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  return words.length >= 3 && !DANGLING.has(words.at(-1)!);
+}
+
+/** What `text` says after `prefix` (same words, ignoring case and punctuation); undefined when it does not start so. */
+function remainderAfter(prefix: string, text: string): string | undefined {
+  const norm = (word: string) => word.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const expected = prefix.split(/\s+/).map(norm).filter(Boolean);
+  const words = text.trim().split(/\s+/);
+  let index = 0;
+  for (const word of expected) {
+    while (index < words.length && !norm(words[index]!)) index++;
+    if (index >= words.length || norm(words[index]!) !== word) return undefined;
+    index++;
+  }
+  return words.slice(index).join(' ').trim();
+}
 
 /** Narrow incomplete prefixes observed in the lab; complete questions still take the fast path. */
 function incompleteRequest(text: string): boolean {
