@@ -16,6 +16,12 @@ const DEEPGRAM_IDLE_MS = 10_000;
 /** In v2, output is paused at the acoustic gate; abandon it if continuous speech outlives STT's backchannel window. */
 const BARGE_IN_CANCEL_MS = 1_500;
 const BACKCHANNEL_PAUSE_MAX_MS = 1_500;
+/**
+ * A pause the recognizer heard no speech in (a cough, a laugh, a chair) ends this long after the sound does. In the
+ * voice lab Flux reported no activity at all for coughs and laughter, and the 1.5 s backchannel window left her silent
+ * for about 2 s each time; once recognition hears speech, the longer window applies so a "yeah" can be told apart.
+ */
+const QUIET_RESUME_MS = 350;
 /** Preserve onset through short unvoiced phonemes, but not across separate utterances. */
 const VOICE_RUN_GRACE_MS = 180;
 /** Flux early end-of-turn confidence for speculative starts (DEEPGRAM_EAGER_EOT_THRESHOLD; "off" disables them). */
@@ -170,7 +176,7 @@ export interface RealtimeAudioOptions {
   onSpeechPause?: (sessionId: string, pause: SpeechTrace & { latencyMs: number; playedMs: number; remainingMs: number }) => void;
   /** A classified backchannel or timeout released paused output; duration is measured on the hub clock. */
   onSpeechResume?: (sessionId: string, resume: SpeechTrace & {
-    cause: 'backchannel' | 'timeout'; pausedMs: number;
+    cause: 'backchannel' | 'quiet' | 'timeout'; pausedMs: number;
   }) => void;
   /** Flux EagerEndOfTurn: the speaker is probably done with these words. */
   onEagerTranscript?: (sessionId: string, participantUuid: string, transcript: string,
@@ -250,6 +256,8 @@ interface RealtimeSession {
   ttsTimer?: ReturnType<typeof setTimeout>;
   ttsPaused: boolean;
   ttsPausedAt?: number;
+  /** Recognition reported speech since this pause began (see QUIET_RESUME_MS). */
+  pauseHeardSpeech?: boolean;
   ttsPauseTimer?: ReturnType<typeof setTimeout>;
   closed: boolean;
 }
@@ -471,8 +479,8 @@ export class AttendeeRealtimeAudioHub {
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     // Continued voice extends the hold. A short acknowledgement resumes after its final transcript (or this
     // fallback); continuous speech never leaks the queued answer back into the meeting between audio frames.
-    session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session, 'timeout'), BACKCHANNEL_PAUSE_MAX_MS);
-    session.ttsPauseTimer.unref?.();
+    if (!session.ttsPaused) session.pauseHeardSpeech = false;
+    this.armResume(session);
     if (session.ttsPaused) return;
     session.ttsPaused = true;
     session.ttsPausedAt = this.now();
@@ -483,7 +491,16 @@ export class AttendeeRealtimeAudioHub {
       latencyMs: Math.max(0, Math.round(Math.max(this.now(), queuedUntil) - onset)), remainingMs });
   }
 
-  private resumeSpeech(session: RealtimeSession, cause: 'backchannel' | 'timeout'): void {
+  /** Resume after the sound: quickly when recognition heard no speech in it, else after the backchannel window. */
+  private armResume(session: RealtimeSession): void {
+    if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
+    const heard = session.pauseHeardSpeech === true;
+    session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session, heard ? 'timeout' : 'quiet'),
+      heard ? BACKCHANNEL_PAUSE_MAX_MS : QUIET_RESUME_MS);
+    session.ttsPauseTimer.unref?.();
+  }
+
+  private resumeSpeech(session: RealtimeSession, cause: 'backchannel' | 'quiet' | 'timeout'): void {
     if (!session.ttsPaused) return;
     session.ttsPaused = false;
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
@@ -732,6 +749,8 @@ export class AttendeeRealtimeAudioHub {
       if (flux ? hasFluxSpeechActivity(message) : hasNova3SpeechActivity(message)) {
         const interim = liveTranscript(message);
         if (interim) this.options.onInterim?.(sessionId, participantUuid, interim);
+        // Recognition hears speech in the pause: wait for its words before resuming ("yeah" or an interruption).
+        if (session.ttsPaused && !session.pauseHeardSpeech) { session.pauseHeardSpeech = true; this.armResume(session); }
         if (ownVoice) {
           // Flux first emits a wordless StartOfTurn. V2 has already paused output and waits for a hypothesis so a
           // backchannel can resume; the legacy profile keeps transcript-driven immediate interruption.

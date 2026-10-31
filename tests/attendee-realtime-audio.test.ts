@@ -528,6 +528,74 @@ test('a short recognized backchannel does not interrupt an in-progress answer', 
   }
 });
 
+for (const [title, recognitionHearsSpeech] of [
+  ['a sound the recognizer hears no speech in (a cough, a laugh) resumes about 350 ms after it, not after the 1.5 s window', false],
+  ['once recognition hears speech in the pause, she waits for its words instead of resuming early', true],
+] as const) test(title, async () => {
+  class FakeProviderSocket extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void { /* Accept audio and speech requests. */ }
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const server = createServer();
+  let stt!: FakeProviderSocket;
+  let tts!: FakeProviderSocket;
+  const frames: unknown[] = [];
+  const resumes: Array<{ cause: string; pausedMs: number }> = [];
+  const hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio',
+    signingSecret: 'test-secret', deepgramApiKey: 'test-key', sttMode: 'flux-english', turnTakingV2: true, onTranscript: () => {},
+    onSpeechResume: (_sessionId, event) => resumes.push(event),
+    createWebSocket: url => {
+      const socket = new FakeProviderSocket();
+      if (url.includes('/listen')) stt = socket;
+      if (url.includes('/speak')) tts = socket;
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('quiet-resume');
+  hub.bindBot('quiet-resume', 'bot_quiet');
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const signed = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 'test-secret', 'quiet-resume'));
+  signed.protocol = 'ws:';
+  signed.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(signed);
+  client.on('message', raw => frames.push(JSON.parse(raw.toString())));
+  await once(client, 'open');
+  try {
+    client.send(JSON.stringify({ bot_id: 'bot_quiet', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(0),
+    } }));
+    while (!stt) await new Promise<void>(resolve => setImmediate(resolve));
+    const speaking = hub.speak('quiet-resume', 'A long answer.');
+    void speaking.catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    tts.emit('message', Buffer.alloc(6_400, 1), true);
+    tts.emit('message', Buffer.from(JSON.stringify({ type: 'Flushed' })), false);
+    await wait(20);
+    client.send(JSON.stringify({ bot_id: 'bot_quiet', trigger: 'realtime_audio.per_participant', data: {
+      participant_uuid: 'human_one', sample_rate: 16000, chunk: voiceChunk(),
+    } }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (recognitionHearsSpeech) {
+      stt.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'StartOfTurn', transcript: '' })), false);
+    }
+    await wait(700);
+    if (recognitionHearsSpeech) {
+      assert.equal(resumes.length, 0, 'still waiting to tell a "yeah" from an interruption');
+      assert.equal(frames.length, 1);
+    } else {
+      assert.equal(resumes[0]?.cause, 'quiet');
+      assert.ok(resumes[0]!.pausedMs < 700, `paused ${resumes[0]!.pausedMs} ms`);
+      await speaking;
+      assert.equal(frames.length, 2, 'the rest of the answer played');
+    }
+  } finally {
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test('own voice pauses output within 300 ms, then sustained speech cancels if recognition never arrives', async () => {
   class FakeProviderSocket extends EventEmitter {
     readyState: number = WebSocket.CONNECTING;
