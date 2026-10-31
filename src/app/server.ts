@@ -26,7 +26,7 @@ import { SlackConversationRegistry } from './slack-conversations.ts';
 import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 import { PresenceHub } from './presence.ts';
-import { TurnLog, parseTurnLogMode } from './turn-log.ts';
+import { buildTurnTrace, TurnLog, parseTurnLogMode } from './turn-log.ts';
 import { FileMissionStore } from './mission-store.ts';
 import { MissionRunner, OPEN_MISSION, type Mission } from '../core/missions.ts';
 import { buildToolbox } from '../core/agent-tools.ts';
@@ -152,6 +152,10 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
       } else if (activity.kind === 'model_first_text') {
         turnLog.record(sessionId, { type: 'model_first_text',
           ...(activity.questionId !== undefined ? { id: activity.questionId } : {}), step: activity.step, ms: activity.ms });
+      } else if (activity.kind === 'agent_trace') {
+        turnLog.record(sessionId, buildTurnTrace({ ...(activity.questionId !== undefined ? { id: activity.questionId } : {}),
+          model: activity.model, ms: activity.ms, result: activity.result, toolUses: activity.toolUses, stepMs: activity.stepMs,
+          ...(activity.error ? { error: activity.error } : {}) }));
       } else presence.waiting(sessionId, activity.waiting);
     },
     onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, playbackId: event.playbackId, phase: event.phase,

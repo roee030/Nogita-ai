@@ -49,9 +49,11 @@ export interface AgentTurn {
    *  lead-in once its step ends and the final answer once it is complete. `step` is the model step (0 first). */
   onSpeech?: (text: string, step: number) => void;
   /** Called before tools run; text already spoken in this step was a lead-in. */
-  onToolUse?: (names: string[], step: number) => void;
+  onToolUse?: (names: string[], step: number, uses: ReadonlyArray<{ name: string; input: Record<string, unknown> }>) => void;
   /** Time from each model request to its first nonempty text delta (not tool/thinking tokens). */
   onFirstText?: (step: number, ms: number) => void;
+  /** Wall-clock time for each completed model request, including retries. */
+  onStepComplete?: (step: number, ms: number) => void;
   /** Awaited before any write tool runs (a speculative start may not change anything until it is confirmed). */
   beforeWrite?: () => Promise<void>;
   signal?: AbortSignal;
@@ -200,6 +202,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
         .map(block => (block as { text: string }).text).join('').trim();
       if (chunker) spoken = text;
       const calls = wholeToolCalls(response);
+      turn.onStepComplete?.(step, Math.max(0, now() - requestStarted));
       stops.push({ step, stopReason: response.stopReason, maxTokens,
         ...(calls.dropped ? { droppedToolCall: calls.dropped.name } : {}), ...(retry ? { retry: true } : {}) });
       return { response, text, ...calls };
@@ -222,7 +225,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
       return result(dropped !== undefined);
     }
     if (text) prefaces.push(text);
-    turn.onToolUse?.(uses.map(use => use.name), step);
+    turn.onToolUse?.(uses.map(use => use.name), step, uses.map(use => ({ name: use.name, input: use.input ?? {} })));
     turn.signal?.throwIfAborted();
     messages.push({ role: 'assistant', content: dropped ? response.content.filter(block => block !== dropped) : response.content });
     const results = new Map<string, ToolOutcome>();

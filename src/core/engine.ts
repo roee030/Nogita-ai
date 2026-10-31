@@ -1,6 +1,6 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type MeetingMemoryPort, type PolicyPort, type PullRequestPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
-import { runAgent, type ChatModel } from './agent.ts';
+import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
 import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
 import { OPEN_MISSION, type MissionRunner } from './missions.ts';
@@ -114,7 +114,9 @@ export interface NogitaEngineOptions {
   /** Puts a card on the meeting's presence screen (undefined clears it); enables the show_on_screen tool. */
   onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
   onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }
-    | { kind: 'model_first_text'; questionId?: number; step: number; ms: number }) => void;
+    | { kind: 'model_first_text'; questionId?: number; step: number; ms: number }
+    | { kind: 'agent_trace'; questionId?: number; model: string; ms: number; result?: AgentResult;
+      toolUses: Array<{ name: string; input: Record<string, unknown> }>; stepMs: number[]; error?: 'aborted' | 'model_error' }) => void;
   /** A piece of a voice answer starts or ends playing (with how it ended), for per-turn diagnostics. */
   onSpeech?: (sessionId: string, event: { questionId: number; playbackId: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }) => void;
   /** Who can see the shared screen (participants not mapped to a team member); gates show_on_screen. */
@@ -947,7 +949,10 @@ export class NogitaEngine {
         }, 6_000);
       }
     };
-    const onToolUse = (names: string[], step: number) => {
+    const toolUses: Array<{ name: string; input: Record<string, unknown> }> = [];
+    const stepMs: number[] = [];
+    const onToolUse = (names: string[], step: number, uses: ReadonlyArray<{ name: string; input: Record<string, unknown> }>) => {
+      toolUses.push(...uses);
       leadInSteps.add(step);
       this.onActivity?.(sessionId, { kind: 'tool', ...(q ? { questionId: q.id } : {}), tools: names });
       if (!floor || !q) return;
@@ -963,6 +968,7 @@ export class NogitaEngine {
     };
     let result;
     s.lastModelCallAt = this.now();
+    const agentStartedAt = this.now();
     try {
       result = await this.modelCall(sessionId, () => runAgent(agent, {
         stableSystem: stableAgentPrompt({ voice,
@@ -978,8 +984,11 @@ export class NogitaEngine {
         onToolUse, signal: q?.abort.signal, beforeWrite: q ? () => q.gate : undefined,
         onFirstText: (step, ms) => this.onActivity?.(sessionId, { kind: 'model_first_text',
           ...(q ? { questionId: q.id } : {}), step, ms }),
+        onStepComplete: (_step, ms) => stepMs.push(ms),
       }));
     } catch {
+      this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}), model: agent.agentModel,
+        ms: Math.max(0, this.now() - agentStartedAt), toolUses, stepMs, error: q?.abort.signal.aborted ? 'aborted' : 'model_error' });
       if (stillWorking !== undefined) this.cancel(stillWorking);
       if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await speech;
@@ -999,6 +1008,8 @@ export class NogitaEngine {
       await this.speakOrChat(sessionId, s.meeting, 'Sorry, something broke on my end and I couldn’t finish that.');
       return report.wroteSomething ? 'completed' : 'answered';
     }
+    this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}),
+      model: agent.agentModel, ms: Math.max(0, this.now() - agentStartedAt), result, toolUses, stepMs });
     if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
     stillWorkingUsed = true;
     // A speculative answer waits here until the turn is confirmed (or rolled back).
