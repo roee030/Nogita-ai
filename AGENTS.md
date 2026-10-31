@@ -13,7 +13,10 @@ Run the loop in `docs/TASK_BOARD.md` without asking:
    `codex/<ID>-<slug>` from `origin/main`, an empty "<ID>: start" commit, push, and a draft PR titled "<ID>: ..." at
    once: the draft PR is the lock Claude sees.
 4. Done with a task: `npm test` and `npm run typecheck` pass, a **Handoff** section in the PR description, `gh pr ready`.
-5. Back to step 1. Stop only when the board says "Nothing to start"; then report what is under "Waiting on Roee".
+5. **One task per chat.** After `gh pr ready`, stop. End your reply with the PR link for Roee to merge, one line on
+   what it does, and what the board shows as your next task (or that it waits on a merge). Roee merges and opens a new
+   chat with "continue". Fixes from step 2 do not count as the task: fix them, then go on to "Next".
+   If the board says "Nothing to start", stop and report what is under "Waiting on Roee", with links.
 
 ## Rules
 
