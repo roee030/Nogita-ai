@@ -8,6 +8,7 @@
  */
 
 import { checkCompletion, type CompletionReport, type GateCall } from './completion-gate.ts';
+import { digestResult, MORE_OF_RESULT, MORE_OF_RESULT_SPEC, resultPage } from './result-digest.ts';
 
 export type AgentContent =
   | { type: 'text'; text: string }
@@ -75,6 +76,10 @@ export interface AgentTurn {
   /** Say honestly what is missing: the model is told after a write step what is still not done, and a turn cut short
    *  (deadline, a tool call cut off) ends with a line saying so and offering to continue. Off by default. */
   honestShortfall?: boolean;
+  /** A tool result too large to pass whole reaches the model as a structured digest (counts, groups, top items),
+   *  and the model reads the rest with `more_of_result`, instead of the result being cut at 14,000 characters.
+   *  Off by default. */
+  digestResults?: boolean;
 }
 export interface AgentResult {
   /** Text of the final model step: the answer itself. */
@@ -166,6 +171,23 @@ function truncate(text: string): string {
     : text;
 }
 
+/** The turn's toolbox plus `more_of_result`, which pages through the large results kept in `stored`. */
+function withResultPaging(toolbox: AgentToolbox, stored: Map<string, string>): AgentToolbox {
+  return {
+    specs: [...toolbox.specs, MORE_OF_RESULT_SPEC],
+    isWrite: name => name !== MORE_OF_RESULT && toolbox.isWrite(name),
+    run: async (name, input) => {
+      if (name !== MORE_OF_RESULT) return toolbox.run(name, input);
+      const id = typeof input.id === 'string' ? input.id : '';
+      const text = stored.get(id);
+      if (text === undefined) {
+        return { content: `No large result ${JSON.stringify(id)} in this turn${stored.size ? `; there is ${[...stored.keys()].join(', ')}` : ''}.`, isError: true };
+      }
+      return { content: resultPage(text, id, typeof input.offset === 'number' ? input.offset : 0) };
+    },
+  };
+}
+
 export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<AgentResult> {
   const now = turn.now ?? Date.now;
   const started = now();
@@ -179,6 +201,17 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const lookups: string[] = [];
   const stops: AgentStepStop[] = [];
   const gateCalls: GateCall[] = [];
+  const stored = new Map<string, string>();
+  const toolbox = turn.digestResults ? withResultPaging(turn.toolbox, stored) : turn.toolbox;
+  const resultContent = (name: string, outcome: ToolOutcome): string => {
+    const content = outcome.content || '(empty)';
+    if (!turn.digestResults || outcome.isError || name === MORE_OF_RESULT || content.length <= MAX_TOOL_RESULT_CHARS) {
+      return truncate(content);
+    }
+    const id = `r${stored.size + 1}`;
+    stored.set(id, content);
+    return digestResult(content, id);
+  };
   let answer = '';
   let steps = 0;
   const result = (stoppedEarly: boolean): AgentResult =>
@@ -208,7 +241,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
           ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.` +
             (turn.honestShortfall ? ' If something they asked for is not done, say what, and offer to finish it.' : '')
           : turn.turnSystem,
-        messages, tools: lastStep ? [] : turn.toolbox.specs, maxTokens,
+        messages, tools: lastStep ? [] : toolbox.specs, maxTokens,
         usageContext: turn.usageContext, timeoutMs: Math.min(30_000, deadline - (now() - started)), signal: turn.signal,
       }, delta => {
         if (turn.signal?.aborted) return;
@@ -250,19 +283,19 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     turn.signal?.throwIfAborted();
     messages.push({ role: 'assistant', content: dropped ? response.content.filter(block => block !== dropped) : response.content });
     const results = new Map<string, ToolOutcome>();
-    const reads = uses.filter(use => !turn.toolbox.isWrite(use.name));
-    const writes = uses.filter(use => turn.toolbox.isWrite(use.name));
-    await Promise.all(reads.map(async use => { results.set(use.id, await safeRun(turn.toolbox, use)); }));
+    const reads = uses.filter(use => !toolbox.isWrite(use.name));
+    const writes = uses.filter(use => toolbox.isWrite(use.name));
+    await Promise.all(reads.map(async use => { results.set(use.id, await safeRun(toolbox, use)); }));
     if (writes.length && turn.beforeWrite) await waitForGate(turn.beforeWrite(), turn.signal);
     turn.signal?.throwIfAborted();
     for (const use of writes) {
       turn.signal?.throwIfAborted();
-      results.set(use.id, await safeRun(turn.toolbox, use));
+      results.set(use.id, await safeRun(toolbox, use));
     }
     toolCalls.push(...uses.map(use => use.name));
     for (const use of uses) {
       const outcome = results.get(use.id)!;
-      gateCalls.push({ name: use.name, input: use.input ?? {}, outcome, write: turn.toolbox.isWrite(use.name) });
+      gateCalls.push({ name: use.name, input: use.input ?? {}, outcome, write: toolbox.isWrite(use.name) });
       const content = (outcome.content || '(empty)').replace(/\s+/g, ' ');
       lookups.push(`${use.name} ${JSON.stringify(use.input ?? {}).slice(0, 160)}${outcome.isError ? ' failed' : ''}: ` +
         (content.length > MAX_LOOKUP_NOTE_CHARS ? `${content.slice(0, MAX_LOOKUP_NOTE_CHARS)}...` : content));
@@ -271,7 +304,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     messages.push({ role: 'user', content: [
       ...uses.map(use => {
         const outcome = results.get(use.id)!;
-        return { type: 'tool_result' as const, tool_use_id: use.id, content: truncate(outcome.content || '(empty)'),
+        return { type: 'tool_result' as const, tool_use_id: use.id, content: resultContent(use.name, outcome),
           ...(outcome.isError ? { is_error: true } : {}) };
       }),
       ...(dropped ? [{ type: 'text' as const, text: `Your ${dropped.name} call was cut off by the output limit and did not run. ` +
