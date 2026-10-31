@@ -115,3 +115,73 @@ test('realtime voice cost uses submitted PCM bytes and TTS characters as a clear
   assert.equal(report.speechPipeline, 'deepgram_aura_stream');
   assert.equal(report.totalEstimatedUsd, report.meetingEstimatedUsd + report.deepgramEstimatedUsd);
 });
+
+test('meeting budget is inert by default and does not stop background work', () => {
+  const usage = new SessionUsageRegistry();
+  usage.start('meeting', 'attendee');
+  let stops = 0;
+  usage.registerBackgroundWork('meeting', () => { stops++; });
+
+  const report = usage.report('meeting', {
+    model: 'test-model', modelCalls: 10_000, inputTokens: 0, outputTokens: 0, estimatedUsd: 100,
+  });
+
+  assert.equal(report?.budget, undefined);
+  assert.equal(stops, 0);
+});
+
+test('meeting budget logs one warning when either limit approaches', () => {
+  const events: unknown[] = [];
+  const usage = new SessionUsageRegistry(0, () => 0, 0, 0, {
+    enabled: true, maxModelCalls: 10, maxEstimatedUsdPerHour: 1, warningRatio: 0.8,
+    log: event => events.push(event),
+  });
+  usage.start('meeting', 'attendee');
+
+  const ai = { model: 'test-model', modelCalls: 8, inputTokens: 0, outputTokens: 0, estimatedUsd: 0 };
+  assert.equal(usage.report('meeting', ai)?.budget?.status, 'warning');
+  usage.report('meeting', ai);
+
+  assert.deepEqual(events, [{ type: 'session_budget_warning', sessionId: 'meeting',
+    modelCalls: 8, maxModelCalls: 10, estimatedUsdPerHour: 0, maxEstimatedUsdPerHour: 1 }]);
+});
+
+test('exceeding the model-call budget stops registered and newly registered background work', () => {
+  const events: unknown[] = [];
+  const usage = new SessionUsageRegistry(0, () => 0, 0, 0, {
+    enabled: true, maxModelCalls: 2, maxEstimatedUsdPerHour: 1, log: event => events.push(event),
+  });
+  usage.start('meeting', 'attendee');
+  let firstStops = 0;
+  usage.registerBackgroundWork('meeting', () => { firstStops++; });
+
+  const ai = { model: 'test-model', modelCalls: 3, inputTokens: 0, outputTokens: 0, estimatedUsd: 0 };
+  const report = usage.report('meeting', ai);
+  let lateStops = 0;
+  usage.registerBackgroundWork('meeting', () => { lateStops++; });
+  usage.report('meeting', ai);
+
+  assert.equal(report?.budget?.status, 'exceeded');
+  assert.equal(report?.budget?.reason, 'model_calls');
+  assert.equal(firstStops, 1);
+  assert.equal(lateStops, 1);
+  assert.deepEqual(events, [{ type: 'session_budget_exceeded', sessionId: 'meeting', reason: 'model_calls',
+    modelCalls: 3, maxModelCalls: 2, estimatedUsdPerHour: 0, maxEstimatedUsdPerHour: 1 }]);
+});
+
+test('meeting budget compares estimated cost at the current hourly rate', () => {
+  let now = 0;
+  const usage = new SessionUsageRegistry(0, () => now, 0, 0, {
+    enabled: true, maxModelCalls: 100, maxEstimatedUsdPerHour: 0.50,
+  });
+  usage.start('meeting', 'attendee');
+  now = 30 * 60_000;
+
+  const report = usage.report('meeting', {
+    model: 'test-model', modelCalls: 1, inputTokens: 0, outputTokens: 0, estimatedUsd: 0.30,
+  });
+
+  assert.equal(report?.budget?.estimatedUsdPerHour, 0.60);
+  assert.equal(report?.budget?.status, 'exceeded');
+  assert.equal(report?.budget?.reason, 'estimated_usd_per_hour');
+});
