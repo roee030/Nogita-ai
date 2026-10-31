@@ -67,9 +67,16 @@ if (dependencies.code.prepare) {
   void dependencies.code.prepare().catch(() => console.error('repository_index_warmup_failed'));
 }
 const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
+const sessionBudgetEnabled = env.NOGITA_SESSION_BUDGET === 'true';
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
-  Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'));
+  Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'), {
+    enabled: sessionBudgetEnabled,
+    maxModelCalls: Number(env.NOGITA_SESSION_MAX_MODEL_CALLS ?? '100'),
+    maxEstimatedUsdPerHour: Number(env.NOGITA_SESSION_MAX_USD_PER_HOUR ?? '1'),
+    warningRatio: Number(env.NOGITA_SESSION_BUDGET_WARNING_RATIO ?? '0.8'),
+    log: event => console.warn(event.type, JSON.stringify(event)),
+  });
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
 // A company cell does not start without persistent storage of its own; a .env setup only warns, as before.
 // With an invalid config the demo stand-in runs to report the problem, so it claims nothing.
@@ -161,6 +168,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
         turnLog.record(sessionId, buildTurnTrace({ ...(activity.questionId !== undefined ? { id: activity.questionId } : {}),
           model: activity.model, ms: activity.ms, result: activity.result, toolUses: activity.toolUses, stepMs: activity.stepMs,
           ...(activity.error ? { error: activity.error } : {}) }));
+        sessionUsage.report(sessionId, dependencies.brain.usageFor?.(sessionId));
       } else presence.waiting(sessionId, activity.waiting);
     },
     onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, playbackId: event.playbackId, phase: event.phase,
