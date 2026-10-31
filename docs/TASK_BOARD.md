@@ -44,7 +44,7 @@
 | [ ] | P1-1 | לא לזרוק קריאות כלי שנקטעו ב-`max_tokens`; להגדיל את התקרה לצעדים עם כלים; להחזיר את סיבת העצירה של כל צעד ב-`AgentResult` | Claude | `src/core/agent.ts`, `src/core/engine.ts` (שורת התקציב), `tests/agent.test.ts` | פתוח |
 | [ ] | P1-2 | `repo_activity` ו-`get_change`; היסטוריה מה-branch החי; אזור הזמן של הצוות ב-prompt של כל תורה | Claude | `src/adapters/github.ts`, `src/core/contracts.ts`, `src/core/agent-tools.ts`, `src/core/agent-prompt.ts`, `tests/` חדשים | ממתין ל-P1-1 |
 | [ ] | P1-3 | סט הערכה: 15 מקרים ראשונים, כולל שני הכשלים החיים, וסקריפט `npm run eval` | Claude | `tests/eval/` חדש, `package.json` (סקריפט אחד) | ממתין ל-P1-2 |
-| [ ] | P1-4 | `/version` שמחזיר את ה-SHA של הפריסה (ב-Render: `RENDER_GIT_COMMIT`) | Codex | `src/app/server.ts`, `tests/` | פתוח |
+| [ ] | P1-4 | `/version` שמחזיר את ה-SHA של הפריסה (ב-Render: `RENDER_GIT_COMMIT`) | Codex | `src/app/server.ts`, `tests/` | בבדיקה |
 | [ ] | P1-5 | trace לכל תורה: כלים, קלטים מקוצרים, סיבות עצירה, קיטועים, צעדים, זמן לכל צעד ומודל, בלי טקסט תמלול | Codex | `src/app/turn-log.ts`, `tools/turn-report.ts`, `tests/` | ממתין ל-P1-1 (צריך את סיבות העצירה) |
 | [ ] | P1-6 | עדכון `MEETING_READINESS.md` לפי הפגישה של 31.10 | Codex | `docs/MEETING_READINESS.md` | פתוח |
 | [ ] | P1-7 | דיסק קבוע ב-Render, ו-readiness ירוק בלי עקיפות | רועי | (הגדרות Render) | פתוח |
@@ -57,3 +57,4 @@
 כל סוכן מוסיף כאן שורה כשמשימה שלו עוברת לבדיקה: מה נעשה, מה הסוכן השני צריך לדעת, ומה נשאר פתוח.
 
 - P1-0 (Claude): נוצרו תוכנית העבודה, הלוח הזה, `AGENTS.md` ו-`CLAUDE.md`.
+- P1-4 (Codex): נוסף `GET /version` ציבורי שמחזיר את `RENDER_GIT_COMMIT` כ-`sha` (או `null` מחוץ ל-Render), עם בדיקת HTTP מול השרת האמיתי.

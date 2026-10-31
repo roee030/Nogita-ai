@@ -603,6 +603,9 @@ if (slackSocketClient) {
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
   try {
+    if (req.method === 'GET' && pathname === '/version') {
+      respond(res, 200, { sha: env.RENDER_GIT_COMMIT ?? null }); return;
+    }
     if (req.method === 'GET' && pathname === '/health') {
       respond(res, 200, { ok: true, service: 'nogita', sessions: nogita.sessionCount() }); return;
     }
