@@ -34,13 +34,21 @@ test('turn trace keeps operational metadata but no transcript text', async () =>
   assert.equal(event.type, 'agent_trace');
   assert.deepEqual(event, {
     at: 123, type: 'agent_trace', id: 7, model: 'claude-sonnet', ms: 321, steps: 2, stoppedEarly: true,
-    tools: [{ name: 'search_code', input: '{"query":"' + 'x'.repeat(150) + '…' }],
+    tools: [{ name: 'search_code', input: '{"query":"[string:300]","path":"[string:8]"}' }],
     stops: [
       { step: 0, stopReason: 'max_tokens', maxTokens: 2_000, droppedToolCall: 'read_file', ms: 111 },
       { step: 1, stopReason: 'end_turn', maxTokens: 600, ms: 210 },
     ],
   });
   assert.doesNotMatch(line, /secret final answer|secret lead-in|secret tool output/);
+  assert.doesNotMatch(line, /xxxxxxxx|src\/core/);
+});
+
+test('failed agent turn still produces an operational trace', () => {
+  assert.deepEqual(buildTurnTrace({ model: 'claude-sonnet', ms: 900, toolUses: [], stepMs: [400], error: 'aborted' }), {
+    type: 'agent_trace', model: 'claude-sonnet', ms: 900, steps: 1, stoppedEarly: true,
+    tools: [], stops: [], error: 'aborted', stepMs: [400],
+  });
 });
 
 test('release report summarizes traced turns and truncations', () => {

@@ -154,7 +154,8 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
           ...(activity.questionId !== undefined ? { id: activity.questionId } : {}), step: activity.step, ms: activity.ms });
       } else if (activity.kind === 'agent_trace') {
         turnLog.record(sessionId, buildTurnTrace({ ...(activity.questionId !== undefined ? { id: activity.questionId } : {}),
-          model: activity.model, ms: activity.ms, result: activity.result, toolUses: activity.toolUses, stepMs: activity.stepMs }));
+          model: activity.model, ms: activity.ms, result: activity.result, toolUses: activity.toolUses, stepMs: activity.stepMs,
+          ...(activity.error ? { error: activity.error } : {}) }));
       } else presence.waiting(sessionId, activity.waiting);
     },
     onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, playbackId: event.playbackId, phase: event.phase,

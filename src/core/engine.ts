@@ -115,8 +115,8 @@ export interface NogitaEngineOptions {
   onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
   onActivity?: (sessionId: string, activity: { kind: 'tool'; questionId?: number; tools: string[] } | { kind: 'waiting'; waiting: boolean }
     | { kind: 'model_first_text'; questionId?: number; step: number; ms: number }
-    | { kind: 'agent_trace'; questionId?: number; model: string; ms: number; result: AgentResult;
-      toolUses: Array<{ name: string; input: Record<string, unknown> }>; stepMs: number[] }) => void;
+    | { kind: 'agent_trace'; questionId?: number; model: string; ms: number; result?: AgentResult;
+      toolUses: Array<{ name: string; input: Record<string, unknown> }>; stepMs: number[]; error?: 'aborted' | 'model_error' }) => void;
   /** A piece of a voice answer starts or ends playing (with how it ended), for per-turn diagnostics. */
   onSpeech?: (sessionId: string, event: { questionId: number; playbackId: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }) => void;
   /** Who can see the shared screen (participants not mapped to a team member); gates show_on_screen. */
@@ -986,9 +986,9 @@ export class NogitaEngine {
           ...(q ? { questionId: q.id } : {}), step, ms }),
         onStepComplete: (_step, ms) => stepMs.push(ms),
       }));
-      this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}),
-        model: agent.agentModel, ms: Math.max(0, this.now() - agentStartedAt), result, toolUses, stepMs });
     } catch {
+      this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}), model: agent.agentModel,
+        ms: Math.max(0, this.now() - agentStartedAt), toolUses, stepMs, error: q?.abort.signal.aborted ? 'aborted' : 'model_error' });
       if (stillWorking !== undefined) this.cancel(stillWorking);
       if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await speech;
@@ -1008,6 +1008,8 @@ export class NogitaEngine {
       await this.speakOrChat(sessionId, s.meeting, 'Sorry, something broke on my end and I couldn’t finish that.');
       return report.wroteSomething ? 'completed' : 'answered';
     }
+    this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}),
+      model: agent.agentModel, ms: Math.max(0, this.now() - agentStartedAt), result, toolUses, stepMs });
     if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
     stillWorkingUsed = true;
     // A speculative answer waits here until the turn is confirmed (or rolled back).

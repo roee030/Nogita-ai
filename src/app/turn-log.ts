@@ -40,26 +40,39 @@ export interface AgentTraceEvent {
   stoppedEarly: boolean;
   tools: Array<{ name: string; input: string }>;
   stops: Array<AgentStepStop & { ms?: number }>;
+  error?: 'aborted' | 'model_error';
+  stepMs?: number[];
 }
 
 const MAX_TOOL_INPUT_CHARS = 160;
 
 /** Builds an operational trace without copying answer, preface, lookup output, or transcript text. */
-export function buildTurnTrace(input: { id?: number; model: string; ms: number; result: AgentResult;
-  toolUses: ReadonlyArray<{ name: string; input: Record<string, unknown> }>; stepMs: readonly number[] }): AgentTraceEvent {
+export function buildTurnTrace(input: { id?: number; model: string; ms: number; result?: AgentResult;
+  toolUses: ReadonlyArray<{ name: string; input: Record<string, unknown> }>; stepMs: readonly number[];
+  error?: 'aborted' | 'model_error' }): AgentTraceEvent {
+  const stops = input.result?.stops.map((stop, index) => ({ ...stop,
+    ...(input.stepMs[index] !== undefined ? { ms: input.stepMs[index] } : {}) })) ?? [];
   return {
     type: 'agent_trace', ...(input.id !== undefined ? { id: input.id } : {}), model: input.model,
-    ms: input.ms, steps: input.result.steps, stoppedEarly: input.result.stoppedEarly,
+    ms: input.ms, steps: input.result?.steps ?? input.stepMs.length, stoppedEarly: input.result?.stoppedEarly ?? true,
     tools: input.toolUses.map(use => ({ name: use.name, input: shortenInput(use.input) })),
-    stops: input.result.stops.map((stop, index) => ({ ...stop,
-      ...(input.stepMs[index] !== undefined ? { ms: input.stepMs[index] } : {}) })),
+    stops, ...(input.error ? { error: input.error, stepMs: [...input.stepMs] } : {}),
   };
 }
 
 function shortenInput(value: Record<string, unknown>): string {
   let serialized: string;
-  try { serialized = JSON.stringify(value); } catch { serialized = '[unserializable]'; }
+  try { serialized = JSON.stringify(redactStrings(value, new WeakSet<object>())); } catch { serialized = '[unserializable]'; }
   return serialized.length > MAX_TOOL_INPUT_CHARS ? `${serialized.slice(0, MAX_TOOL_INPUT_CHARS)}…` : serialized;
+}
+
+function redactStrings(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return `[string:${value.length}]`;
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map(item => redactStrings(item, seen));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactStrings(item, seen)]));
 }
 
 /** Text fields dropped unless the log is in full mode. */
