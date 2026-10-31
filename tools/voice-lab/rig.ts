@@ -52,6 +52,8 @@ export interface RigOptions {
   /** Router quiet window; production uses 1200 ms. */
   routerQuietMs?: number;
   incompleteTurnHoldMs?: number;
+  /** Commit a complete question after this much own-voice silence past Flux's early end-of-turn (0 = off). */
+  earlyCommitMs?: number;
   /** Microphone frame length sent to the hub. */
   frameMs?: number;
   /** For offline tests: replaces the Deepgram sockets. */
@@ -226,6 +228,7 @@ export class VoiceRig {
       onVoice: (sessionId, participantUuid) => {
         this.log('voice_activity', { participant: participantUuid });
         this.engine.noteVoice(sessionId, participantUuid);
+        this.router.noteOwnVoice(sessionId, participantUuid);
       },
       onTurnResumed: (sessionId, participantUuid) => {
         this.log('stt_resumed', { participant: participantUuid });
@@ -277,9 +280,11 @@ export class VoiceRig {
         } finally { this.pendingEngine--; }
       },
       async (_sessionId, message) => this.meeting.sendStatus(message),
-      { quietMs: this.options.routerQuietMs, incompleteTurnHoldMs: this.options.incompleteTurnHoldMs, onError: error => this.log('error',
+      { quietMs: this.options.routerQuietMs, incompleteTurnHoldMs: this.options.incompleteTurnHoldMs,
+        earlyCommitMs: this.options.earlyCommitMs, onError: error => this.log('error',
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
       onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),
+      onTurnEnded: (sessionId, speakerUuid) => this.engine.noteTurnEnded(sessionId, speakerUuid),
       chatAck: false,
       ...(this.options.eagerThreshold !== undefined ? { speculate: (sessionId: string, utterance: Utterance) => {
         const handle = this.engine.speculate(sessionId, utterance);
