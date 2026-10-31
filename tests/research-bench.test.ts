@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatResearchReport, parseGitLog, readGitGroundTruth, scoreCoverage, runResearchScenario,
+import { assertRepositoryMatches, formatResearchReport, gitRefToBranch, parseGitLog, readGitGroundTruth, scoreCoverage, runResearchScenario,
   type ResearchGroundTruth, type ResearchScenarioResult } from '../tools/research-bench/index.ts';
 import type { AgentToolbox, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
 
@@ -18,7 +18,8 @@ class ScriptedModel implements ChatModel {
 }
 
 const truth: ResearchGroundTruth = {
-  branch: 'origin/main', since: '2026-10-25T00:00:00.000Z', until: '2026-10-31T12:00:00.000Z',
+  branch: 'origin/main', remoteUrl: 'https://github.com/acme/app.git',
+  since: '2026-10-25T00:00:00.000Z', until: '2026-10-31T12:00:00.000Z',
   commits: [
     { sha: '1234567890abcdef1234567890abcdef12345678', title: 'P3-1: add CI status (#34)' },
     { sha: 'abcdef0123456789abcdef0123456789abcdef01', title: 'Merge pull request #35 from team/p3-2' },
@@ -38,6 +39,22 @@ test('git log parsing keeps every commit and finds squash and merge pull request
   assert.deepEqual(parsed.pullRequests, [34, 35]);
 });
 
+test('git log PR inference ignores issue references that are not merge or squash subjects', () => {
+  const parsed = parseGitLog([
+    '1234567890abcdef1234567890abcdef12345678\u001fFix parser; refs #123',
+    'abcdef0123456789abcdef0123456789abcdef01\u001fAdd retries (#34)',
+  ].join('\n'), { branch: 'origin/main', since: truth.since, until: truth.until });
+  assert.deepEqual(parsed.pullRequests, [34]);
+});
+
+test('local git refs map to the live GitHub branch and repository mismatches stop the gate', () => {
+  assert.equal(gitRefToBranch('origin/main'), 'main');
+  assert.equal(gitRefToBranch('refs/remotes/upstream/release'), 'release');
+  assert.doesNotThrow(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'main', 'main'));
+  assert.throws(() => assertRepositoryMatches('git@github.com:acme/other.git', 'acme/app', 'main', 'main'), /different repository/);
+  assert.throws(() => assertRepositoryMatches('https://github.com/acme/app.git', 'acme/app', 'release', 'main'), /different branch/);
+});
+
 test('coverage requires every short commit SHA and every PR number in the complete answer', () => {
   const complete = scoreCoverage('Landed: 1234567 in #34, then abcdef0 in PR #35.', truth);
   assert.equal(complete.passed, true);
@@ -54,7 +71,7 @@ test('research scenario runs through the agent loop, times the complete answer a
   const model = new ScriptedModel([
     { stopReason: 'tool_use', content: [
       { type: 'text', text: 'Checking.' },
-      { type: 'tool_use', id: 'activity', name: 'repo_activity', input: { period: 'this_week' } },
+      { type: 'tool_use', id: 'activity', name: 'repo_activity', input: { period: 'this_week', branch: 'main' } },
     ] },
     { stopReason: 'end_turn', content: [{ type: 'text', text: 'Landed 1234567 (#34) and abcdef0 (#35).' }] },
   ]);
@@ -69,14 +86,14 @@ test('research scenario runs through the agent loop, times the complete answer a
   };
   const ticks = [1_000, 1_020, 1_040, 1_080, 1_120];
   const result = await runResearchScenario({ period: 'this_week', groundTruth: truth, model, toolbox,
-    now: () => ticks.shift() ?? 1_120, nowIso: '2026-10-31T12:00:00.000Z' });
+    branch: 'main', now: () => ticks.shift() ?? 1_120, nowIso: '2026-10-31T12:00:00.000Z' });
 
-  assert.deepEqual(calls, [{ name: 'repo_activity', input: { period: 'this_week' } }]);
+  assert.deepEqual(calls, [{ name: 'repo_activity', input: { period: 'this_week', branch: 'main' } }]);
   assert.equal(result.answer, 'Landed 1234567 (#34) and abcdef0 (#35).');
   assert.equal(result.coverage.passed, true);
   assert.ok(result.ms >= 0);
   assert.deepEqual(result.toolCalls, ['repo_activity']);
-  assert.match(String(model.requests[0]!.messages[0]!.content), /every commit.*short SHA.*every merged pull request.*PR number/i);
+  assert.match(String(model.requests[0]!.messages[0]!.content), /branch main.*every commit.*short SHA.*every merged pull request.*PR number/i);
 });
 
 test('ground truth reads the requested live branch with team-calendar period bounds', async () => {
@@ -86,14 +103,16 @@ test('ground truth reads the requested live branch with team-calendar period bou
     team: { timeZone: 'Asia/Jerusalem', weekStartsOn: 'sunday' },
     git: async args => {
       calls.push(args);
-      return '1234567890abcdef1234567890abcdef12345678\u001fP3-1 (#34)\n';
+      return args[0] === 'remote' ? 'https://github.com/acme/app.git\n'
+        : '1234567890abcdef1234567890abcdef12345678\u001fP3-1 (#34)\n';
     },
   });
 
-  assert.deepEqual(calls, [[
+  assert.deepEqual(calls, [['remote', 'get-url', 'origin'], [
     'log', 'origin/main', '--since=2026-10-30T22:00:00.000Z', '--until=2026-10-31T15:00:00.000Z',
     '--format=%H%x1f%s', '--no-decorate',
   ]]);
+  assert.equal(result.remoteUrl, 'https://github.com/acme/app.git');
   assert.equal(result.commits.length, 1);
   assert.deepEqual(result.pullRequests, [34]);
 });

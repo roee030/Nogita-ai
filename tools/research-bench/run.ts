@@ -9,7 +9,8 @@ import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { loadDotEnv, createDependencies } from '../../src/app/config.ts';
 import { buildToolbox } from '../../src/core/agent-tools.ts';
-import { formatResearchReport, readGitGroundTruth, runResearchScenario, type ResearchPeriod } from './index.ts';
+import { assertRepositoryMatches, formatResearchReport, gitRefToBranch, readGitGroundTruth, runResearchScenario,
+  type ResearchPeriod } from './index.ts';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   period: { type: 'string', multiple: true },
@@ -33,15 +34,22 @@ const actor = { id: actorId, displayName: dependencies.identities.fromId(actorId
 const team = { timeZone: dependencies.tenant.timeZone ?? 'UTC', weekStartsOn: dependencies.tenant.weekStartsOn ?? 'monday' } as const;
 
 if (dependencies.code.prepare) await dependencies.code.prepare();
+const benchmarkNow = Date.now();
+const nowIso = new Date(benchmarkNow).toISOString();
+const liveBranch = gitRefToBranch(values.branch!);
 const runs = [];
 for (const period of periods) {
-  const truth = await readGitGroundTruth(period, { branch: values.branch!, team });
-  const request = `Nogita, what landed in the repository ${period === 'today' ? 'today' : 'this week'}? ` +
+  const truth = await readGitGroundTruth(period, { branch: values.branch!, team, now: benchmarkNow });
+  const liveActivity = await dependencies.code.repoActivity({ since: truth.since, until: truth.until, branch: liveBranch });
+  assertRepositoryMatches(truth.remoteUrl, liveActivity.repository, liveBranch, liveActivity.branch);
+  const request = `Nogita, what landed in the repository on branch ${liveBranch} ${period === 'today' ? 'today' : 'this week'}? ` +
     'Include every commit with its short SHA and every merged pull request with its PR number.';
   const { toolbox } = buildToolbox({ actor, request, sessionId: 'research-bench', eventId: `research-${period}`,
     policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat,
-    people: dependencies.people, drafts: undefined, completed: new Map(), onReceipt: async () => {}, team });
-  const result = await runResearchScenario({ period, groundTruth: truth, model: dependencies.agent, toolbox, team });
+    people: dependencies.people, drafts: undefined, completed: new Map(), onReceipt: async () => {}, team,
+    now: () => benchmarkNow });
+  const result = await runResearchScenario({ period, groundTruth: truth, branch: liveBranch,
+    model: dependencies.agent, toolbox, team, nowIso });
   runs.push({ truth, result });
   process.stdout.write(`${formatResearchReport(result, truth)}\n`);
 }

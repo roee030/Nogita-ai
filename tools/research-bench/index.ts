@@ -10,6 +10,7 @@ export type ResearchPeriod = 'today' | 'this_week';
 
 export interface ResearchGroundTruth {
   branch: string;
+  remoteUrl: string;
   since: string;
   until: string;
   commits: Array<{ sha: string; title: string }>;
@@ -40,12 +41,30 @@ export function parseGitLog(output: string, range: Pick<ResearchGroundTruth, 'br
     return { sha: line.slice(0, separator), title: line.slice(separator + 1) };
   });
   const pullRequests = [...new Set(commits.flatMap(commit => {
-    const numbers: number[] = [];
-    const pattern = /(?:merge pull request\s+|\bPR\s*)?#(\d+)/gi;
-    for (let match = pattern.exec(commit.title); match; match = pattern.exec(commit.title)) numbers.push(Number(match[1]));
-    return numbers;
+    const merge = commit.title.match(/^Merge pull request #(\d+)\b/i);
+    const squash = commit.title.match(/\(#(\d+)\)$/);
+    return [merge?.[1], squash?.[1]].filter((number): number is string => number !== undefined).map(Number);
   }))].sort((a, b) => a - b);
-  return { ...range, commits, pullRequests };
+  return { ...range, remoteUrl: '', commits, pullRequests };
+}
+
+export function gitRefToBranch(ref: string): string {
+  const parts = ref.replace(/^refs\/remotes\//, '').split('/').filter(Boolean);
+  return parts.length > 1 ? parts.at(-1)! : parts[0] ?? ref;
+}
+
+function githubRepository(remoteUrl: string): string | undefined {
+  return remoteUrl.trim().match(/github\.com(?::|\/)([^/]+\/[^/]+?)(?:\.git)?$/i)?.[1]?.replace(/\.git$/i, '').toLowerCase();
+}
+
+export function assertRepositoryMatches(remoteUrl: string, repository: string, expectedBranch: string, liveBranch: string): void {
+  const local = githubRepository(remoteUrl);
+  if (!local || local !== repository.toLowerCase()) {
+    throw new Error(`Ground truth and agent use a different repository (${local ?? remoteUrl} versus ${repository})`);
+  }
+  if (expectedBranch !== liveBranch) {
+    throw new Error(`Ground truth and agent use a different branch (${expectedBranch} versus ${liveBranch})`);
+  }
 }
 
 export function scoreCoverage(answer: string, truth: ResearchGroundTruth): ResearchCoverage {
@@ -67,8 +86,9 @@ export async function readGitGroundTruth(period: ResearchPeriod, options: {
   const range = teamPeriod(period, now, options.team ?? UTC_TEAM);
   const args = ['log', options.branch, `--since=${range.since}`, `--until=${range.until}`, '--format=%H%x1f%s', '--no-decorate'];
   const git = options.git ?? (async command => (await execFileAsync('git', command, { encoding: 'utf8' })).stdout);
+  const remoteUrl = (await git(['remote', 'get-url', 'origin'])).trim();
   const output = await git(args);
-  return parseGitLog(output, { branch: options.branch, since: range.since, until: range.until });
+  return { ...parseGitLog(output, { branch: options.branch, since: range.since, until: range.until }), remoteUrl };
 }
 
 export function formatResearchReport(result: ResearchScenarioResult, truth: ResearchGroundTruth): string {
@@ -87,6 +107,7 @@ export function formatResearchReport(result: ResearchScenarioResult, truth: Rese
 export async function runResearchScenario(input: {
   period: ResearchPeriod;
   groundTruth: ResearchGroundTruth;
+  branch?: string;
   model: ChatModel;
   toolbox: AgentToolbox;
   now?: () => number;
@@ -96,7 +117,8 @@ export async function runResearchScenario(input: {
   const clock = input.now ?? Date.now;
   const started = clock();
   const periodWords = input.period === 'today' ? 'today' : 'this week';
-  const request = `Nogita, what landed in the repository ${periodWords}? Include every commit with its short SHA and every merged pull request with its PR number.`;
+  const branchWords = input.branch ? ` on branch ${input.branch}` : '';
+  const request = `Nogita, what landed in the repository${branchWords} ${periodWords}? Include every commit with its short SHA and every merged pull request with its PR number.`;
   const result = await runAgent(input.model, {
     stableSystem: stableAgentPrompt({ voice: false }),
     turnSystem: turnAgentPrompt({ speaker: 'Research benchmark', authorized: true,
