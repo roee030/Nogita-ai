@@ -270,6 +270,28 @@ test('the asker cuts off their own answer with a new question: the old one is no
   assert.ok(f.meeting.events.some(event => event.type === 'chat' && /usually temporary/.test(event.text ?? '')));
 });
 
+test('the asker\'s new question, heard early, already ends the old answer: it is not resumed before the turn is confirmed', async () => {
+  // Voice lab, rapid-questions: the room went quiet before the confirmed utterance could drop the old answer, and
+  // "As I was saying, ..." played over "and 504?".
+  const model = new RoutedModel([
+    { match: /503/, steps: [{ text: 'HTTP 503 means the service is unavailable. It is usually temporary.' }] },
+    { match: /504/, steps: [{ text: '504 means a gateway timed out.', delayMs: 200 }] },
+  ]);
+  const f = fixture(model);
+  f.meeting.interruptAt = 1;
+  await f.engine.startSession('s', f.meeting);
+  const first = f.engine.onUtterance('s', { text: 'Nogita, what does 503 mean?', eventId: '1', actor: roee });
+  await until(() => f.meeting.spoken.length === 1 && f.meeting.speaking === 0);
+  const next = { text: 'Nogita, and 504?', eventId: '2', actor: roee };
+  const speculation = f.engine.speculate('s', next)!;
+  await sleep(120);
+  assert.deepEqual(f.meeting.spoken, ['HTTP 503 means the service is unavailable.'], 'nothing resumed over the new question');
+  await f.engine.onUtterance('s', { ...next, eventId: '2-final' }, { speculation });
+  await first;
+  assert.deepEqual(f.meeting.spoken, ['HTTP 503 means the service is unavailable.', '504 means a gateway timed out.']);
+  assert.equal(f.statuses(1).at(-1), 'chat_only');
+});
+
 test('only her name: no answer yet, and the same speaker\'s next words are the question', async () => {
   const model = new RoutedModel([{ match: /last commit/, steps: [{ text: 'It added the speech floor.' }] }]);
   const f = fixture(model);
