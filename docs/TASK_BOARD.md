@@ -49,7 +49,7 @@
 
 ## משימות
 
-הטבלה נקראת על ידי `tools/board.ts`: בעמודת הקבצים רק נתיבים בתוך backticks נספרים, ובעמודת התלויות רק IDs. את `[x]` מסמן רועי ביד, רק למשימות שנעשו בלי PR, כמו המשימות שלו.
+הטבלה נקראת על ידי `tools/board.ts`: בעמודת הקבצים רק נתיבים בתוך backticks נספרים, ובעמודת התלויות רק IDs. את `[x]` מסמן רועי ביד, רק למשימות שנעשו בלי PR, כמו המשימות שלו. `[-]` אומר שרועי דחה את המשימה: היא וכל מה שתלוי בה מסומנים "deferred", ולא מופיעים כמשהו שמחכה לו. כשהוא חוזר אליה, מחזירים ל-`[ ]`.
 
 ### שלב 1, שבוע 1
 
@@ -62,8 +62,8 @@
 | [ ] | P1-4 | `/version` שמחזיר את ה-SHA של הפריסה (ב-Render: `RENDER_GIT_COMMIT`) | Codex | `src/app/server.ts`, `tests/server-version.test.ts` | - |
 | [ ] | P1-5 | trace לכל תורה: כלים, קלטים מקוצרים, סיבות עצירה (`AgentResult.stops`), קיטועים, צעדים, זמן לכל צעד ומודל, בלי טקסט תמלול | Codex | `src/app/turn-log.ts`, `tools/turn-report.ts`, `tests/turn-trace.test.ts` | P1-1 |
 | [ ] | P1-6 | עדכון `MEETING_READINESS.md` לפי הפגישה של 31.10 | Codex | `docs/MEETING_READINESS.md` | - |
-| [ ] | P1-7 | דיסק קבוע ב-Render, ו-readiness ירוק בלי עקיפות | רועי | (הגדרות Render) | - |
-| [ ] | P1-8 | פגישה חיה #2 עם תסריט קבוע: שני הכשלים וששת הממצאים | רועי | | P1-1, P1-2 |
+| [-] | P1-7 | דיסק קבוע ב-Render, ו-readiness ירוק בלי עקיפות | רועי | (הגדרות Render) | - |
+| [-] | P1-8 | פגישה חיה #2 עם תסריט קבוע: שני הכשלים וששת הממצאים | רועי | | P1-1, P1-2 |
 | [ ] | P1-9 | טייס אוטומטי: `npm run board` מחשב סטטוס מ-GitHub, והלוח בלי סטטוסים ידניים | Claude | `tools/board.ts`, `tests/board.test.ts`, `docs/TASK_BOARD.md`, `package.json` | - |
 | [ ] | P1-10 | משימה אחת לכל צ'אט: הסוכן עוצר אחרי PR מוכן ומחזיר לינק למיזוג | Claude | `AGENTS.md`, `CLAUDE.md`, `docs/TASK_BOARD.md` | - |
 
@@ -82,3 +82,7 @@
 | [ ] | P2-6 | מדידה בצד המאזין: הקלטה ממשתתף שני ב-Meet, זמן משאלה עד צליל ומ-"wait" עד שקט, ודוח שאפשר להשוות בין פגישות | Codex | `tools/listener-probe/`, `tests/listener-probe.test.ts` | - |
 | [ ] | P2-7 | תיקון "wait" ועצירה כשמישהו מתחיל לדבר, לפי מה שפגישה #2 והמדידה בצד המאזין חשפו | Codex | `src/core/speech-floor.ts`, `src/core/speech-guard.ts`, `src/app/attendee-realtime-audio.ts` | P1-8, P2-6 |
 | [ ] | P2-8 | פגישה חיה #3 עם תסריט השער: "פתחי חמש משימות" 10 פעמים, בעלים שלא קיים, ו-"wait" באמצע תשובה | רועי | | P2-2, P2-4, P2-7 |
+| [ ] | P2-9 | הלוח נקרא מ-`origin/main` ולא מהעותק המקומי; סטטוס `[-]` למשימה שרועי דחה, שמעכב גם את מה שתלוי בה; משימות ל-Codex בזמן שהפגישה והדיסק נדחו | Claude | `tools/board.ts`, `tests/board.test.ts`, `docs/TASK_BOARD.md` | - |
+| [ ] | P2-10 | readiness שבודק יכולת אמיתית ולא רק שקיים מפתח: קריאה קלה לכל ספק (GitHub, Jira, Slack, Anthropic, Deepgram, Attendee) עם זמן תגובה, ותוצאה ברורה לכל אחד | Codex | `src/app/readiness.ts`, `src/app/connection-probes.ts`, `tests/readiness.test.ts`, `tests/connection-probes.test.ts` | - |
+| [ ] | P2-11 | תרחישי voice lab לכמה דוברים: שתי שאלות ברצף מאנשים שונים, שיחה בין שני אנשים אחרים, ו"לא, התכוונתי ל..."; הדוח סופר שאלות שאבדו ותשובות לשיחה שלא הייתה שלה | Codex | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tools/voice-lab/report.ts`, `tests/voice-lab.test.ts` | - |
+| [ ] | P2-12 | תקציב לכל פגישה: תקרת קריאות מודל ועלות לשעת פגישה, אזהרה ב-log כשמתקרבים, ועצירה מסודרת של עבודת רקע כשעוברים; flag כבוי | Codex | `src/app/session-usage.ts`, `tests/session-usage.test.ts` | - |
