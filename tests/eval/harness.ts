@@ -13,7 +13,8 @@ import { NOW, SPEAKERS, TEAM, evalWorld, isWrite } from './world.ts';
 
 /** Spoken words in one answer above which it is no longer short (the voice prompt asks for about 20). */
 const MAX_SPOKEN_WORDS = 75;
-const REASONING_ALOUD = /\b(?:I should|I need to (?:check|look|find)|let me think|this is a question about|the user (?:is|wants|asked))\b/i;
+// "I should" inside a question to them ("a different spelling I should try?") is not reasoning.
+const REASONING_ALOUD = /\b(?:I should\b(?![^.!?]*\?)|I need to (?:check|look|find)|let me think|this is a question about|the user (?:is|wants|asked))\b/i;
 
 class TracedModel implements ChatModel {
   readonly tools: string[] = [];

@@ -108,8 +108,15 @@ function openTasks(id: string, count: number, request: string, topics: RegExp[],
     { dimension: 'completeness', name: `${word} tasks were created`, pass: run => newTasks(run).length === count },
     { dimension: 'accuracy', name: 'one task per topic', pass: run => eachMatchedOnce(titles(run), topics) },
     { dimension: 'sources', name: 'every new task key reached the chat', pass: run => newTasks(run).length > 0 && keysInChat(run) },
-    { dimension: 'no_fabrication', name: `does not claim ${word} when fewer exist`,
-      pass: run => newTasks(run).length === count || !new RegExp(`\\b(?:${word}|${count}|all|every)\\b`).test(said(run)) },
+    // "Five of the six are open, the sixth was rejected" is honest; "all six are open" with five is not.
+    { dimension: 'no_fabrication', name: `does not claim ${word} when fewer exist`, pass: run => {
+      const made = newTasks(run).length;
+      if (made === count) return true;
+      const text = said(run);
+      const madeSaid = new RegExp(`\\b(?:${NUMBER_WORDS[made] ?? made}|${made})\\b`).test(text);
+      return (madeSaid && /\bnot\b|n'?t\b|reject|fail|limit|rest|remaining|other/.test(text))
+        || !new RegExp(`\\b(?:${word}|${count}|all|every)\\b`).test(text);
+    } },
     { dimension: 'accuracy', name: 'no owner was guessed', pass: run => newTasks(run).every(task => !task.assigneeId) },
   ] };
 }
@@ -392,7 +399,8 @@ export const CASES: EvalCase[] = [
   },
   {
     id: 'duplicate-delivery', group: 'retry', retry: 'redeliver',
-    turns: ['Nogita, open a task for the webhook timeout.'],
+    // Detailed enough that she opens it without asking: the case is about the second delivery.
+    turns: ['Nogita, open a task for adding a 10 second timeout to the Attendee webhook handler, so a slow call does not block the meeting.'],
     writes: { createTask: 1 },
     checks: [
       { dimension: 'completeness', name: 'one task', pass: run => newTasks(run).length === 1 },
@@ -440,7 +448,7 @@ export const CASES: EvalCase[] = [
     turns: ['Nogita, did we decide whether the Jira client should stop retrying 409s?'],
     checks: [
       { dimension: 'sources', name: 'checked Slack or the board', pass: run => looked(run, 'searchMessages', 'readChannel', 'getTask', 'searchTasks') },
-      { dimension: 'no_fabrication', name: 'says it is not decided', pass: run => /not (?:yet |been )?decided|no decision|undecided|open question|still open|hasn'?t been (?:decided|settled)|not settled|didn'?t (?:see|find) a decision|no (?:clear )?answer|only a question|just a question|asked/.test(said(run)) },
+      { dimension: 'no_fabrication', name: 'says it is not decided', pass: run => /not (?:yet |been )?decided|no decision|nothing[^.?!]{0,40}(?:decided|decision)|undecided|open question|still open|hasn'?t been (?:decided|settled)|not settled|(?:didn'?t|couldn'?t|could not) (?:see|find) (?:a|any) decision|no (?:clear )?answer|only a question|just a question|asked/.test(said(run)) },
       { dimension: 'accuracy', name: 'points to the question or the task', pass: run => /yossi|kan-?2\b/.test(said(run)) },
     ],
   },
