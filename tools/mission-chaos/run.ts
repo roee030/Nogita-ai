@@ -119,7 +119,7 @@ export async function runChaos(options: ChaosOptions = {}): Promise<ChaosResult>
         const count = writes.filter(write => write.mission === id && write.title === title).length;
         if (count > 1) duplicates.push(`${id}: ${title} x${count}`);
         if (count > 0) continue;
-        const says = report && report.status !== 'done' && report.open.length > 0;
+        const says = report && report.status !== 'done' && (report.open.length > 0 || report.unknown.length > 0);
         (says ? reported : lostUnreported).push(`${id}: ${title}`);
       }
     }

@@ -764,7 +764,8 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         }
         const content = (found ? [`${found.id} [${found.status}] ${found.goal}`,
           ...section('Done', found.done), ...section('Failed', found.failed), ...section('Still open', found.open),
-          ...(found.done.length || found.failed.length || found.open.length ? [] : ['Nothing done or failed yet.']),
+          ...section('Not known whether it happened (the service restarted during it; check before trying again)', found.unknown),
+          ...(found.done.length || found.failed.length || found.open.length || found.unknown.length ? [] : ['Nothing done or failed yet.']),
           ...section('Found', found.findings),
           ...section('Sources', found.sources.map(source => `${source.label}${source.title ? ` (${source.title.slice(0, 80)})` : ''}${source.url ? `: ${source.url}` : ''}`)),
           ...direct] : direct).join('\n');
