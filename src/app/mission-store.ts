@@ -16,6 +16,31 @@ type RecoveryReporter = (issue: MissionRecoveryIssue) => Promise<void> | void;
 
 const MISSION_ID = /^M-[A-Z0-9]{1,20}$/;
 const MISSION_STATUSES = new Set(['investigating', 'executing', 'awaiting_approval', 'blocked', 'done', 'failed', 'cancelled']);
+const STEP_KINDS = new Set(['started', 'tool', 'finding', 'approval_requested', 'approved', 'rejected', 'write_started',
+  'write_done', 'verification_failed', 'finished', 'blocked', 'error', 'resumed', 'cancelled']);
+
+function record(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isContent(value: unknown): boolean {
+  if (!record(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'text') return typeof value.text === 'string';
+  if (value.type === 'tool_use') return typeof value.id === 'string' && typeof value.name === 'string' && record(value.input);
+  return value.type === 'tool_result' && typeof value.tool_use_id === 'string' && typeof value.content === 'string' &&
+    (value.is_error === undefined || typeof value.is_error === 'boolean');
+}
+
+function isMessage(value: unknown): boolean {
+  return record(value) && (value.role === 'user' || value.role === 'assistant') &&
+    (typeof value.content === 'string' || (Array.isArray(value.content) && value.content.every(isContent)));
+}
+
+function isStep(value: unknown): boolean {
+  return record(value) && typeof value.at === 'number' && typeof value.kind === 'string' && STEP_KINDS.has(value.kind) &&
+    typeof value.text === 'string' && (value.tool === undefined || typeof value.tool === 'string') &&
+    (value.ok === undefined || typeof value.ok === 'boolean');
+}
 
 function isMission(value: unknown, id: string): value is Mission {
   if (!value || typeof value !== 'object') return false;
@@ -25,7 +50,8 @@ function isMission(value: unknown, id: string): value is Mission {
     typeof mission.status === 'string' && MISSION_STATUSES.has(mission.status) &&
     typeof mission.createdAt === 'number' && typeof mission.updatedAt === 'number' &&
     typeof mission.attempts === 'number' && typeof mission.rounds === 'number' &&
-    Array.isArray(mission.steps) && Array.isArray(mission.messages);
+    Array.isArray(mission.steps) && mission.steps.every(isStep) &&
+    Array.isArray(mission.messages) && mission.messages.every(isMessage);
 }
 
 export class FileMissionStore implements MissionStore {
@@ -86,14 +112,14 @@ export class FileMissionStore implements MissionStore {
     try { names = await readdir(this.directory); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      await this.report({ reason: 'directory_unreadable' });
+      void this.report({ reason: 'directory_unreadable' });
       return [];
     }
     const missions: Mission[] = [];
     for (const name of names.filter(n => MISSION_ID.test(n.slice(0, -5)) && n.endsWith('.json'))) {
       const mission = await this.load(name.slice(0, -5));
       if (mission) missions.push(mission);
-      else await this.report({ missionId: name.slice(0, -5), reason: 'snapshot_unreadable' });
+      else void this.report({ missionId: name.slice(0, -5), reason: 'snapshot_unreadable' });
     }
     return missions;
   }

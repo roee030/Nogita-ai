@@ -91,6 +91,38 @@ test('valid JSON with no mission shape is reported as a lost snapshot', async ()
   }
 });
 
+test('a snapshot with malformed message elements is reported while its healthy sibling still loads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nogita-mission-store-'));
+  try {
+    await new FileMissionStore(directory).save(openMission('M-HEALTHY'));
+    await writeFile(join(directory, 'missions', 'M-BADMSG.json'),
+      JSON.stringify({ ...openMission('M-BADMSG'), messages: [null] }), 'utf8');
+    const issues: string[] = [];
+
+    const recovered = await new FileMissionStore(directory, issue => { issues.push(issue.missionId ?? 'directory'); }).list();
+
+    assert.deepEqual(recovered.map(mission => mission.id), ['M-HEALTHY']);
+    assert.deepEqual(issues, ['M-BADMSG']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a recovery reporter that never settles cannot block healthy missions', { timeout: 200 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nogita-mission-store-'));
+  try {
+    await new FileMissionStore(directory).save(openMission('M-HEALTHY'));
+    await writeFile(join(directory, 'missions', 'M-BROKEN.json'), '{', 'utf8');
+    const never = new Promise<void>(() => undefined);
+
+    const recovered = await new FileMissionStore(directory, () => never).list();
+
+    assert.deepEqual(recovered.map(mission => mission.id), ['M-HEALTHY']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('mission recovery issues are posted to the configured team chat', async () => {
   const posts: Array<{ channel: string; text: string }> = [];
   const report = FileMissionStore.reportToChat({
