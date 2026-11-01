@@ -156,6 +156,103 @@ test('missions survive a restart: working ones resume from disk, one awaiting ap
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('verified owner guidance from a handoff thread is persisted into the same active mission before resume', async () => {
+  const store = new MemoryMissionStore();
+  const mission: Mission = { id: 'M-GUIDE', goal: 'Investigate KAN-20', doneWhen: 'Find the blocker', owner,
+    sessionId: 'meet:daily', status: 'investigating', createdAt: 1, updatedAt: 1, attempts: 0, rounds: 0,
+    steps: [{ at: 1, kind: 'started', text: 'Started' }], messages: [{ role: 'user', content: 'Mission' }] };
+  await store.save(mission);
+  const f = rig([[use('report_blocked', { reason: 'done reading guidance' })]], store);
+  await f.runner.loadAll();
+
+  assert.equal((await f.runner.guide('M-GUIDE', 'other', 'ignore this')).ok, false);
+  assert.equal((await f.runner.guide('M-GUIDE', 'roee', 'also check the Slack reconnect logs')).ok, true);
+  assert.equal(await f.runner.resumeAll(), 1);
+  await f.runner.idle();
+
+  assert.match(JSON.stringify(f.model.missionRequests[0]!.messages), /also check the Slack reconnect logs/);
+  assert.match(JSON.stringify((await store.load('M-GUIDE'))!.messages), /also check the Slack reconnect logs/);
+});
+
+test('guidance arriving during a model round preempts that stale round before it can block the mission', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const requests: ChatModelRequest[] = [];
+  const model: ChatModel = { agentModel: 'deferred', async streamChat(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) { entered(); await gate; }
+    return { content: [use('report_blocked', { reason: 'stale blocker' })], stopReason: 'tool_use' };
+  } };
+  const runner = new MissionRunner({ model, store: new MemoryMissionStore(), toolbox: () => fakeTools([]), newId: () => 'M-RACE' });
+  await runner.start({ goal: 'Investigate KAN-20', owner });
+  await started;
+
+  assert.equal((await runner.guide('M-RACE', 'roee', 'check the reconnect log first')).ok, true);
+  release();
+  await runner.idle();
+
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests[0]!.messages), /reconnect log/);
+  assert.match(JSON.stringify(requests[1]!.messages), /check the reconnect log first/);
+});
+
+test('guidance arriving during a slow read preempts the rest of that tool round', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let reading!: () => void;
+  const readStarted = new Promise<void>(resolve => { reading = resolve; });
+  const requests: ChatModelRequest[] = [];
+  const model: ChatModel = { agentModel: 'slow-read', async streamChat(request) {
+    requests.push(structuredClone(request));
+    return requests.length === 1
+      ? { content: [use('get_task', { key: 'KAN-20' }, 'read'), use('report_blocked', { reason: 'stale blocker' }, 'block')], stopReason: 'tool_use' }
+      : { content: [use('report_blocked', { reason: 'new blocker' })], stopReason: 'tool_use' };
+  } };
+  const toolbox: AgentToolbox = { specs: [{ name: 'get_task', description: '', input_schema: { type: 'object', properties: {} } }],
+    isWrite: () => false, async run() { reading(); await gate; return { content: 'KAN-20 exists' }; } };
+  const runner = new MissionRunner({ model, store: new MemoryMissionStore(), toolbox: () => toolbox, newId: () => 'M-SLOW' });
+  await runner.start({ goal: 'Investigate KAN-20', owner });
+  await readStarted;
+
+  assert.equal((await runner.guide('M-SLOW', 'roee', 'check Slack first')).ok, true);
+  release();
+  await runner.idle();
+
+  assert.equal(requests.length, 2);
+  assert.match(JSON.stringify(requests[1]!.messages), /check Slack first/);
+  assert.equal(runner.get('M-SLOW')!.blockedReason, 'new blocker');
+});
+
+test('superseding a round cancels a deferred write that appeared before its slow read', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let reading!: () => void;
+  const readStarted = new Promise<void>(resolve => { reading = resolve; });
+  const requests: ChatModelRequest[] = [];
+  const model: ChatModel = { agentModel: 'write-read', async streamChat(request) {
+    requests.push(structuredClone(request));
+    return requests.length === 1
+      ? { content: [use('create_task', { title: 'stale' }, 'write-first'), use('get_task', { key: 'KAN-20' }, 'read-second')], stopReason: 'tool_use' }
+      : { content: [use('report_blocked', { reason: 'new blocker' })], stopReason: 'tool_use' };
+  } };
+  const toolbox: AgentToolbox = { specs: [
+    { name: 'create_task', description: '', input_schema: { type: 'object', properties: {} } },
+    { name: 'get_task', description: '', input_schema: { type: 'object', properties: {} } }],
+    isWrite: name => name === 'create_task', async run() { reading(); await gate; return { content: 'KAN-20 exists' }; } };
+  const runner = new MissionRunner({ model, store: new MemoryMissionStore(), toolbox: () => toolbox, newId: () => 'M-WRITE' });
+  await runner.start({ goal: 'Investigate KAN-20', owner });
+  await readStarted;
+  await runner.guide('M-WRITE', 'roee', 'do not create the stale task');
+  release();
+  await runner.idle();
+
+  const next = JSON.stringify(requests[1]!.messages);
+  assert.match(next, /write-first/);
+  assert.match(next, /Not run: the owner sent new guidance/);
+});
+
 test('a write interrupted by a restart is never repeated blindly', async () => {
   const store = new MemoryMissionStore();
   const mission: Mission = { id: 'M-CRASH', goal: 'g', doneWhen: 'd', owner, status: 'executing', createdAt: 0, updatedAt: 0, attempts: 0,

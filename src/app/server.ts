@@ -8,7 +8,7 @@ import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv, researchFeatures, roomNoiseGuard } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
-import { registerSlackEventHandlers } from './slack-socket-events.ts';
+import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
@@ -22,7 +22,7 @@ import { EventWorker } from './event-worker.ts';
 import type { Utterance } from '../core/contracts.ts';
 import { synthesizeLocalMp3 } from './local-tts.ts';
 import { probeConnections } from './connection-probes.ts';
-import { SlackConversationRegistry } from './slack-conversations.ts';
+import { SlackConversationRegistry, SlackMissionHandoffs } from './slack-conversations.ts';
 import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 import { PresenceHub } from './presence.ts';
@@ -116,8 +116,11 @@ const presence = new PresenceHub({ boardName: dependencies.board.name, chatName:
 const actionReceipts: Map<string, ActionReceipt> = env.NOGITA_DURABLE_RECEIPTS === 'true'
   ? new FileActionReceipts(stateDirectory) : new Map();
 const missionCompleted = actionReceipts;
+const missionStore = new FileMissionStore(stateDirectory,
+  FileMissionStore.reportToChat(dependencies.chat, env.NOGITA_MISSION_CHANNEL));
+const slackMissionHandoffs = await SlackMissionHandoffs.restore(env.NOGITA_SLACK_MISSION_HANDOFF === 'true', missionStore);
 const missionRunner = dependencies.agent ? new MissionRunner({ model: dependencies.agent,
-  store: new FileMissionStore(stateDirectory, FileMissionStore.reportToChat(dependencies.chat, env.NOGITA_MISSION_CHANNEL)),
+  store: missionStore,
   toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
     request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
     policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat, people: dependencies.people,
@@ -133,6 +136,9 @@ const missionRunner = dependencies.agent ? new MissionRunner({ model: dependenci
 
 /** Progress goes to the meeting or thread it came from while that is open, else to NOGITA_MISSION_CHANNEL if set. */
 async function notifyMission(mission: Mission, text: string): Promise<void> {
+  if (env.SLACK_BOT_TOKEN && await slackMissionHandoffs.deliver(mission.id, text, async (channel, threadTs, message) => {
+    await new SlackThreadMeeting(`mission-${mission.id}`, env.SLACK_BOT_TOKEN!, channel, threadTs).sendStatus(message);
+  })) return;
   if (mission.sessionId && await nogita.announce(mission.sessionId, text)) return;
   const channel = env.NOGITA_MISSION_CHANNEL;
   if (channel && dependencies.chat) { await dependencies.chat.postMessage(channel, text); return; }
@@ -195,6 +201,11 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
       const participants = participantsBySession.get(sessionId);
       return participants ? { unverified: [...participants.values()].filter(verified => !verified).length } : undefined;
     } });
+// Restore and start missions before Slack consumers open, so no acknowledged thread reply can race an empty runner.
+let resumedMissions = 0;
+try { resumedMissions = await missionRunner?.resumeAll() ?? 0; }
+catch { console.error('missions_resume_failed'); }
+if (resumedMissions) console.log('missions_resumed', resumedMissions);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const MAX_SLACK_CONVERSATIONS = 500;
@@ -452,7 +463,8 @@ async function processSlack(raw: string): Promise<void> {
   const payload = JSON.parse(raw) as Record<string, unknown>;
   if (payload.type !== 'event_callback') return;
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
-    env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
+    env.SLACK_BOT_USER_ID, dependencies.identities,
+    id => nogita.hasSession(id) || Boolean(slackMissionHandoffs.missionForThread(id)));
   if (!request || !env.SLACK_BOT_TOKEN) return;
   const lease = slackConversations.enter(request.sessionId);
   try {
@@ -460,6 +472,7 @@ async function processSlack(raw: string): Promise<void> {
     const ledger = await slackLedger.begin('slack', request.utterance.eventId);
     if (ledger.status !== 'started') return;
     const work = finishEventClaim(ledger.claim, async () => {
+      await bindSlackMissionHandoff(request, slackMissionHandoffs, id => missionRunner?.get(id));
       if (!nogita.hasSession(request.sessionId)) {
         await reapSlackConversations();
         if (slackConversations.size > MAX_SLACK_CONVERSATIONS) {
@@ -470,7 +483,13 @@ async function processSlack(raw: string): Promise<void> {
         await nogita.startSession(request.sessionId,
           new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs, fetch, slackThreadReader));
       }
-      await nogita.onUtterance(request.sessionId, request.utterance);
+      const routed = await dispatchSlackMissionReply(request, slackMissionHandoffs, async (missionId, utterance) => {
+        const guided = isMissionDecision(utterance.text) ? undefined : await missionRunner?.guide(missionId, utterance.actor.id, utterance.text);
+        if (!guided?.ok) {
+          await nogita.onUtterance(request.sessionId, { ...utterance, text: `Regarding mission ${missionId}: ${utterance.text}` });
+        }
+      });
+      if (!routed) await nogita.onUtterance(request.sessionId, request.utterance);
     });
     slackWork.track(work);
     await work;
@@ -584,7 +603,8 @@ async function acceptSlack(raw: string): Promise<{ status: number; response: unk
   }
   if (payload.type !== 'event_callback') return { status: 200, response: { ok: true } };
   const request = parseSlackRequest(payload as SlackEnvelope, allowedSlackTeams,
-    env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
+    env.SLACK_BOT_USER_ID, dependencies.identities,
+    id => nogita.hasSession(id) || Boolean(slackMissionHandoffs.missionForThread(id)));
   if (!request || !env.SLACK_BOT_TOKEN) return { status: 200, response: { ok: true } };
   if (providerQueue) await providerQueue.enqueue('slack', request.utterance.eventId, raw);
   else await processSlack(raw);
@@ -608,7 +628,8 @@ if (slackSocketClient) {
   type SocketPayload = { body: unknown; ack: () => Promise<void> };
   registerSlackEventHandlers<SocketPayload>(slackSocketClient, async ({ body, ack }) => {
     const request = parseSlackRequest(body as SlackEnvelope, allowedSlackTeams,
-      env.SLACK_BOT_USER_ID, dependencies.identities, id => nogita.hasSession(id));
+      env.SLACK_BOT_USER_ID, dependencies.identities,
+      id => nogita.hasSession(id) || Boolean(slackMissionHandoffs.missionForThread(id)));
     if (!request || !providerConfigValid || !slackWork.accepting) { await ack(); return; }
     try {
       const raw = JSON.stringify(body);
@@ -833,9 +854,6 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 const host = env.HOST ?? '127.0.0.1';
-// Missions that were working when the server stopped go on from their last saved step.
-void missionRunner?.resumeAll().then(count => { if (count) console.log('missions_resumed', count); })
-  .catch(() => console.error('missions_resume_failed'));
 const port = Number(env.PORT ?? '8787');
 server.listen(port, host, () => console.log(`Nogita dev server listening on http://${host}:${port}`));
 

@@ -42,6 +42,8 @@ export interface Mission {
   steps: MissionStep[];
   /** The mission's own conversation with the model, so it resumes where it was after a restart. */
   messages: AgentMessage[];
+  /** Owner guidance queued while a round is running or before restart recovery starts it. */
+  guidance?: Array<{ at: number; text: string }>;
   /** A write waiting for the owner: the tool call, a plain description, and the other results of the same round. */
   pending?: { toolUseId: string; tool: string; input: Record<string, unknown>; summary: string; results: AgentContent[]; requestedAt: number };
   result?: { summary: string; evidence: string[]; verified: boolean };
@@ -244,6 +246,18 @@ ${note}` : [...last.content, { type: 'text', text: note }];
     return { ok: true, message: `Cancelled ${mission.id}.` };
   }
 
+  /** Adds owner guidance to an active mission without creating a separate conversation mission. */
+  async guide(id: string, actorId: string, text: string): Promise<{ ok: boolean; message: string }> {
+    const mission = this.get(id);
+    if (!mission || !ACTIVE_MISSION.has(mission.status)) return { ok: false, message: `${id} is not actively working.` };
+    if (mission.owner.id !== actorId) return { ok: false, message: `Only ${mission.owner.displayName} can guide ${mission.id}.` };
+    const guidance = text.trim().slice(0, 600);
+    if (!guidance) return { ok: false, message: 'Guidance is empty.' };
+    (mission.guidance ??= []).push({ at: this.now(), text: guidance });
+    await this.persist(mission);
+    return { ok: true, message: `Guidance added to ${mission.id}.` };
+  }
+
   /** After a restart: load every saved mission and continue the ones that were working. */
   async resumeAll(): Promise<number> {
     let resumed = 0;
@@ -294,6 +308,11 @@ ${note}` : [...last.content, { type: 'text', text: note }];
     const maxRounds = this.options.maxRounds ?? 24;
     let idleRounds = 0;
     while (ACTIVE_MISSION.has(mission.status)) {
+      if (mission.guidance?.length) {
+        for (const item of mission.guidance) mission.messages.push({ role: 'user', content: `${mission.owner.displayName}: ${item.text}` });
+        mission.guidance = undefined;
+        await this.persist(mission);
+      }
       if (mission.rounds >= maxRounds) {
         await this.block(mission, 'I used my step budget without finishing.', 'a narrower goal or guidance on the next step');
         return;
@@ -325,6 +344,17 @@ ${note}` : [...last.content, { type: 'text', text: note }];
       mission.rounds++;
       mission.messages.push({ role: 'assistant', content: response.content });
       const uses = response.content.filter((block): block is Extract<AgentContent, { type: 'tool_use' }> => block.type === 'tool_use');
+      // Guidance received while the model was thinking invalidates that stale plan before any action or terminal state.
+      if (mission.guidance?.length) {
+        const notes = mission.guidance.map(item => ({ type: 'text' as const, text: `${mission.owner.displayName}: ${item.text}` }));
+        mission.guidance = undefined;
+        mission.messages.push({ role: 'user', content: uses.length
+          ? [...uses.map(use => ({ type: 'tool_result' as const, tool_use_id: use.id, is_error: true,
+            content: 'Not run: the owner sent new guidance while this round was in progress.' })), ...notes]
+          : notes });
+        await this.persist(mission);
+        continue;
+      }
       if (!uses.length) {
         const said = response.content.filter(block => block.type === 'text').map(block => (block as { text: string }).text).join(' ').trim();
         if (++idleRounds >= 2) { await this.block(mission, said.slice(0, 400) || 'I am not sure how to go on.', 'direction from the owner'); return; }
@@ -336,8 +366,10 @@ ${note}` : [...last.content, { type: 'text', text: note }];
       const results: AgentContent[] = [];
       let waitFor: Extract<AgentContent, { type: 'tool_use' }> | undefined;
       let ended = false;
+      let superseded = false;
       let blocked: { reason: string; needs?: string } | undefined;
-      for (const use of uses) {
+      for (let index = 0; index < uses.length; index++) {
+        const use = uses[index]!;
         const input = use.input ?? {};
         if (blocked || ended) {
           results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Not run: the mission stopped first.' });
@@ -377,6 +409,21 @@ ${note}` : [...last.content, { type: 'text', text: note }];
           results.push({ type: 'tool_result', tool_use_id: use.id, content: outcome.content.slice(0, 6_000), ...(outcome.isError ? { is_error: true } : {}) });
         }
         if (this.cancelled(mission)) return;
+        if (mission.guidance?.length) {
+          if (waitFor) results.push({ type: 'tool_result', tool_use_id: waitFor.id, is_error: true,
+            content: 'Not run: the owner sent new guidance while this round was in progress.' });
+          for (const remaining of uses.slice(index + 1)) results.push({ type: 'tool_result', tool_use_id: remaining.id,
+            is_error: true, content: 'Not run: the owner sent new guidance while this round was in progress.' });
+          superseded = true;
+          break;
+        }
+      }
+      if (superseded) {
+        const notes = mission.guidance!.map(item => ({ type: 'text' as const, text: `${mission.owner.displayName}: ${item.text}` }));
+        mission.guidance = undefined;
+        mission.messages.push({ role: 'user', content: [...results, ...notes] });
+        await this.persist(mission);
+        continue;
       }
       if (blocked) {
         // A pending write in the same round is dropped with the rest: the owner decides how to go on.
