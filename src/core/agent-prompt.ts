@@ -1,4 +1,5 @@
 /** System prompts for the conversational agent. The stable part is cache-friendly; the turn part is small. */
+import { researchPlan } from './research-templates.ts';
 import { describeTeamTime, UTC_TEAM, type TeamTime } from './team-time.ts';
 
 export interface StablePromptInput {
@@ -80,7 +81,10 @@ ${input.partialSuccess ? `- When only part of what they asked for worked, say ex
 }
 
 export function turnAgentPrompt(input: { speaker: string; authorized: boolean; nowIso: string; team?: TeamTime; followUp: boolean;
-  raisedHandReason?: string; otherQuestions?: string[] }): string {
+  raisedHandReason?: string; otherQuestions?: string[];
+  /** A recurring research question (what changed, feature status, why it broke, open tasks, version diff) gets a short
+   *  plan naming the sources to read among these tools and what the answer must cover. Off when absent. */
+  research?: { request: string; tools: readonly string[]; voice?: boolean } }): string {
   return [
     `Current time: ${input.nowIso}. ${describeTeamTime(Date.parse(input.nowIso), input.team ?? UTC_TEAM)}`,
     `You are talking with ${input.speaker}.`,
@@ -88,6 +92,7 @@ export function turnAgentPrompt(input: { speaker: string; authorized: boolean; n
     input.followUp ? 'This message came right after your previous answer or question, without your name. If it does not answer you (the team moving on, small talk, thanks, or words you cannot make sense of), reply with an empty message: never ask them to repeat, they were not talking to you.' : '',
     input.raisedHandReason ? `You raised your hand earlier because: ${input.raisedHandReason}\nIf they are giving you the floor ("go ahead", "what did you want to add"), make that point briefly; check the code or tasks first if it depends on them.` : '',
     input.otherQuestions?.length ? `Other questions to you are being answered separately; do not answer them here:\n${input.otherQuestions.map(question => `- ${question}`).join('\n')}\nBegin your answer by naming what it is about ("About Yossi's PR, ..."), so everyone knows which question it answers. A lead-in before a lookup stays short ("Checking that too.").` : '',
+    input.research ? researchPlan(input.research.request, input.research.tools, { voice: input.research.voice }) ?? '' : '',
   ].filter(Boolean).join('\n');
 }
 
