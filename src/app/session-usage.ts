@@ -9,6 +9,8 @@ interface SessionTiming {
   speechMs: Record<SpeechStage, number[]>;
   budgetStatus: SessionBudgetStatus;
   exceededBudget?: SessionBudgetReport;
+  /** Writes and model calls a rate limit refused in this session. */
+  rateLimited: { writes: number; modelCalls: number };
   backgroundStops: Set<() => void>;
 }
 type LatencySummary = { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
@@ -54,6 +56,8 @@ export interface SessionUsageReport {
   externalActions: Record<ExternalAction, number>;
   ai?: AiUsage;
   budget?: SessionBudgetReport;
+  /** With NOGITA_RATE_LIMITS: what a limit refused in this session. */
+  rateLimited?: { writes: number; modelCalls: number };
   totalEstimatedUsd: number;
   processingLatency: { samples: number; p50Ms: number; p95Ms: number; maxMs: number };
   responseStages: Record<ResponseStage, LatencySummary>;
@@ -81,7 +85,7 @@ export class SessionUsageRegistry implements UsagePort {
       actions: { create_task: 0, update_task: 0, draft_pr: 0, code_lookup: 0 }, responseMs: [], speechMs: {
         chat_mirror: [], tts_synthesis: [], audio_submission: [], speech_submission: [],
       }, responseStageMs: { transcript_to_chat_ack: [], model_roundtrip: [], turn_to_first_speech_attempt: [] },
-      budgetStatus: 'ok', backgroundStops: new Set() });
+      budgetStatus: 'ok', backgroundStops: new Set(), rateLimited: { writes: 0, modelCalls: 0 } });
     if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value!);
     if (realtimeAudio) this.sessions.get(sessionId)!.realtimeAudio = true;
   }
@@ -112,6 +116,10 @@ export class SessionUsageRegistry implements UsagePort {
   recordExternalAction(sessionId: string, action: ExternalAction): void {
     const session = this.sessions.get(sessionId); if (!session || !(action in session.actions)) return;
     session.actions[action]++;
+  }
+  recordRateLimited(sessionId: string, kind: 'write' | 'model_call'): void {
+    const session = this.sessions.get(sessionId); if (!session) return;
+    if (kind === 'write') session.rateLimited.writes++; else session.rateLimited.modelCalls++;
   }
   recordDeepgramSttBytes(sessionId: string, bytes: number): void {
     const session = this.sessions.get(sessionId);
@@ -175,7 +183,8 @@ export class SessionUsageRegistry implements UsagePort {
       } } : {}),
       tts: { requests: session.ttsRequests, failures: session.ttsFailures },
       externalActions: { ...session.actions },
-      ...(ai ? { ai } : {}), ...(budget ? { budget } : {}), totalEstimatedUsd,
+      ...(ai ? { ai } : {}), ...(budget ? { budget } : {}),
+      ...(session.rateLimited.writes || session.rateLimited.modelCalls ? { rateLimited: { ...session.rateLimited } } : {}), totalEstimatedUsd,
       processingLatency: summarize(durations),
       responseStages: {
         transcript_to_chat_ack: summarize(session.responseStageMs.transcript_to_chat_ack),
