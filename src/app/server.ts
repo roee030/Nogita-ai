@@ -116,7 +116,8 @@ const presence = new PresenceHub({ boardName: dependencies.board.name, chatName:
 const actionReceipts: Map<string, ActionReceipt> = env.NOGITA_DURABLE_RECEIPTS === 'true'
   ? new FileActionReceipts(stateDirectory) : new Map();
 const missionCompleted = actionReceipts;
-const missionRunner = dependencies.agent ? new MissionRunner({ model: dependencies.agent, store: new FileMissionStore(stateDirectory),
+const missionRunner = dependencies.agent ? new MissionRunner({ model: dependencies.agent,
+  store: new FileMissionStore(stateDirectory, FileMissionStore.reportToChat(dependencies.chat, env.NOGITA_MISSION_CHANNEL)),
   toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
     request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
     policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat, people: dependencies.people,
