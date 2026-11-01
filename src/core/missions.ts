@@ -146,6 +146,17 @@ export function verifiedEvidence(messages: readonly AgentMessage[], evidence: re
 }
 
 /** What a mission did, what went wrong and what is still open: the answer to "what's left of what I asked?". */
+/** With NOGITA_WHATS_LEFT_DIRECT: a request she handled in the turn itself, not as a mission, kept so "what's left?" sees it. */
+export interface DirectRequest {
+  at: number;
+  /** The request, shortened. */
+  request: string;
+  /** What it changed: one line per receipt, with its link. */
+  done: string[];
+  /** What was asked for or attempted and did not happen (the completion gate's lines). */
+  failed: string[];
+}
+
 export interface MissionReport {
   id: string;
   goal: string;

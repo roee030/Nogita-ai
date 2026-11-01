@@ -147,3 +147,45 @@ test('someone else does not get another person\'s mission from another meeting',
   assert.match(result, /no mission I am working on/);
   assert.equal(missions.list().length, 1);
 });
+
+/** No mission at all: Roee asks for two tasks directly and only one gets opened in the turn. */
+async function directTurn(whatsLeftDirect: boolean) {
+  const model = new ScriptedModel([], request => {
+    const said = String(request.messages[0]?.content ?? '').split('says to you now:').at(-1) ?? '';
+    const answered = request.messages.some(message => message.role === 'assistant');
+    if (answered) return [say('Okay.')];
+    if (/what's left/i.test(said)) return [use('mission_status', {})];
+    if (/open two tasks/i.test(said)) return [use('create_task', { title: 'Cache headers', description: 'Asked by Roee in the meeting.' })];
+    return [say('Okay.')];
+  });
+  const missions = runner(model);
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['roee', 'dana'])), agent: model },
+  { missions, missionStatus: true, whatsLeftDirect, schedule: () => 0, cancel: () => undefined });
+  await engine.startSession('s', new DemoMeeting('m'));
+  const roee = { id: 'roee', displayName: 'Roee', verified: true };
+  await engine.onUtterance('s', { text: 'Nogita, open two tasks: Cache headers and Price tests.', eventId: '1', actor: roee });
+  return { model, engine, roee };
+}
+
+test('"what\'s left?" also sees a request done directly in the turn, with what was opened and what was not', async () => {
+  const { model, engine, roee } = await directTurn(true);
+  // Later, in another thread: same person.
+  await engine.startSession('thread', new DemoMeeting('t'));
+  await engine.onUtterance('thread', { text: "Nogita, what's left from what I asked?", eventId: '2', actor: roee });
+  const result = JSON.stringify(model.conversationRequests.at(-1)!.messages.at(-1)!.content);
+  assert.match(result, /Asked directly 1 min ago and handled in that turn: \\"open two tasks: Cache headers and Price tests.\\"/);
+  assert.match(result, /Done:\\n- \S/);
+  assert.match(result, /Not done:\\n- \S/);
+  assert.doesNotMatch(result, /no mission I am working on/);
+
+  // Dana sees none of it.
+  await engine.onUtterance('thread', { text: "Nogita, what's left from what I asked?", eventId: '3', actor: { id: 'dana', displayName: 'Dana', verified: true } });
+  assert.match(JSON.stringify(model.conversationRequests.at(-1)!.messages.at(-1)!.content), /no mission I am working on/);
+});
+
+test('without NOGITA_WHATS_LEFT_DIRECT a direct request is not remembered, as before', async () => {
+  const { model, engine, roee } = await directTurn(false);
+  await engine.onUtterance('s', { text: "Nogita, what's left from what I asked?", eventId: '2', actor: roee });
+  assert.match(JSON.stringify(model.conversationRequests.at(-1)!.messages.at(-1)!.content), /no mission I am working on/);
+});
