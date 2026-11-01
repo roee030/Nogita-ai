@@ -6,6 +6,7 @@ import type { ResearchFeatures } from '../core/engine.ts';
 import { SlackWorkspace } from '../adapters/slack-workspace.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
 import { IdentityDirectory } from '../core/identity.ts';
+import { guardPort, type ProviderHealth } from '../core/provider-health.ts';
 import { DemoBoard, DemoBrain, DemoCode } from '../adapters/demo.ts';
 import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
 import { JiraBoard } from '../adapters/jira.ts';
@@ -58,6 +59,39 @@ export function twoSpeed(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.NOGITA_TWO_SPEED?.trim() ?? '';
   if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_TWO_SPEED must be true or false');
   return value === 'true';
+}
+
+/** NOGITA_MISSION_STATUS: 'true' offers mission_status ("what's left of what I asked?"); blank or 'false' leaves it off. */
+export function missionStatus(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_MISSION_STATUS?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_MISSION_STATUS must be true or false');
+  return value === 'true';
+}
+
+/** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
+ *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
+export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_PROVIDER_BREAKER?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_PROVIDER_BREAKER must be true or false');
+  return value === 'true';
+}
+
+/** The providers' calls through their breakers: the board, the repository and draft PRs, chat, and the model. */
+export function guardProviders(deps: Dependencies, health: ProviderHealth): Dependencies {
+  const boardName = deps.connections.boards[0] === 'monday' ? 'Monday' : deps.board.name || 'Jira';
+  const github = health.breaker('github', 'GitHub');
+  const anthropic = health.breaker('anthropic', 'my AI service');
+  // The agent is the same Anthropic client as the brain (streamChat is its agent call): one breaker and one proxy for both.
+  const brain = guardPort(deps.brain as BrainPort & Partial<ChatModel>, anthropic,
+    ['plan', 'answerWithEvidence', 'suggestContribution', 'assessContribution', 'streamChat']);
+  return { ...deps,
+    board: guardPort(deps.board, health.breaker('jira', boardName), ['createTask', 'updateTask', 'searchTasks', 'getTask', 'findAssignees']),
+    code: guardPort(deps.code, github, ['findEvidence', 'readFile', 'listFiles', 'recentCommits', 'overview', 'repoActivity', 'getChange', 'ciStatus']),
+    brain,
+    ...(deps.agent ? { agent: Object.is(deps.agent, deps.brain) ? brain as ChatModel : guardPort(deps.agent, anthropic, ['streamChat']) } : {}),
+    ...(deps.chat ? { chat: guardPort(deps.chat, health.breaker('slack', 'Slack'), ['listChannels', 'readChannel', 'searchMessages', 'readThread', 'postMessage']) } : {}),
+    ...(deps.drafts ? { drafts: guardPort(deps.drafts, github, ['openDraft']) } : {}),
+  };
 }
 
 /** Every research feature on, for `npm run eval -- --research` and `npm run voice-lab -- --research`. */

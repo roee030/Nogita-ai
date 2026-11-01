@@ -2,6 +2,7 @@ import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, C
 import { isExplicitPRRequest } from './policy.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
+import type { MissionReport } from './missions.ts';
 import { TEAM_PERIODS, UTC_TEAM, teamPeriod, type TeamPeriod, type TeamTime } from './team-time.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
@@ -53,6 +54,58 @@ export interface ToolboxContext {
   batchTasks?: boolean;
   /** Offers ci_status (CI runs and the deployed commit). Off unless the team turned it on. */
   ciStatus?: boolean;
+  /** Offers mission_status (what a mission did, what failed and what is still open, with sources). Off unless set. */
+  missionStatus?: boolean;
+  /** Told of every write this toolbox makes, after it succeeded or failed (the audit log). */
+  audit?: (write: WriteAudit) => void;
+}
+
+/** One write to Jira, Slack or GitHub: who asked, where, what was sent, and what came of it. */
+export interface WriteAudit {
+  action: 'create_task' | 'update_task' | 'post_message' | 'open_draft';
+  actor: { id: string; displayName: string };
+  /** The meeting, Slack thread or mission ("mission-M-...") the request came from. */
+  sessionId: string;
+  eventId: string;
+  sent: Record<string, unknown>;
+  ok: boolean;
+  receipt?: ActionReceipt;
+  error?: string;
+}
+
+/** The write ports with each write reported to `audit`; reads pass through untouched. */
+export function auditedPorts(context: Pick<ToolboxContext, 'actor' | 'sessionId' | 'eventId' | 'board' | 'chat' | 'drafts'>,
+  audit: (write: WriteAudit) => void): { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort } {
+  const report = async <T extends ActionReceipt>(action: WriteAudit['action'], sent: Record<string, unknown>, work: () => Promise<T>) => {
+    const base = { action, actor: { id: context.actor.id, displayName: context.actor.displayName }, sessionId: context.sessionId, eventId: context.eventId, sent };
+    try {
+      const receipt = await work();
+      try { audit({ ...base, ok: true, receipt }); } catch { /* The log never fails a write that happened. */ }
+      return receipt;
+    } catch (error) {
+      try { audit({ ...base, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : 'unknown error' }); } catch { /* as above */ }
+      throw error;
+    }
+  };
+  const wrap = <P extends object>(port: P, writes: Partial<Record<keyof P, (port: P, ...args: never[]) => Promise<ActionReceipt>>>) =>
+    new Proxy(port, { get(target, name, receiver) {
+      const write = writes[name as keyof P];
+      if (write) return (...args: never[]) => write(target, ...args);
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  const board = wrap<BoardPort>(context.board, {
+    createTask: (port, input: Parameters<BoardPort['createTask']>[0]) => report('create_task', { ...input }, () => port.createTask(input)),
+    ...(context.board.updateTask ? { updateTask: (port: BoardPort, input: Parameters<NonNullable<BoardPort['updateTask']>>[0]) =>
+      report('update_task', { ...input }, () => port.updateTask!(input)) } : {}),
+  });
+  const chat = context.chat && wrap<ChatPort>(context.chat, {
+    postMessage: (port, channel: string, text: string) => report('post_message', { channel, text }, () => port.postMessage(channel, text)),
+  });
+  const drafts = context.drafts && wrap<PullRequestPort>(context.drafts, {
+    openDraft: (port, input: Parameters<PullRequestPort['openDraft']>[0]) => report('open_draft', { ...input }, () => port.openDraft(input)),
+  });
+  return { board, ...(chat ? { chat } : {}), ...(drafts ? { drafts } : {}) };
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -63,6 +116,8 @@ export interface MissionPort {
   start(goal: string, doneWhen?: string): Promise<{ id: string }>;
   list(): Array<{ id: string; goal: string; status: string; activity?: string; pending?: string; lastFinding?: string; result?: string; owner: string }>;
   decide(decision: 'approve' | 'decline' | 'resume' | 'cancel', id?: string, note?: string): Promise<{ ok: boolean; message: string }>;
+  /** One mission in full, or the latest one this person asked for; undefined when none fits. */
+  report?(id?: string): MissionReport | undefined;
 }
 
 /** Things the engine needs after the turn: the best source link and the receipts that were posted. */
@@ -216,7 +271,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const report: ToolboxReport = { codeReferences: [], receipts: [], wroteSomething: false };
   const mayRead = context.policy.mayReadCode(context.actor);
   const mayWrite = context.policy.mayWriteTask(context.actor);
-  const { code, board, chat } = context;
+  const ports = context.audit ? auditedPorts(context, context.audit) : context;
+  const { code } = context;
+  const { board, chat } = ports;
   let writes = 0;
   let taskIndex = 0;
   const specs: AgentToolSpec[] = [];
@@ -602,7 +659,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   }
 
   if (context.drafts && context.policy.mayDraftPR(context.actor)) {
-    const drafts = context.drafts;
+    const drafts = ports.drafts ?? context.drafts;
     let prIndex = 0;
     add({ name: 'open_draft_pr', description: `Open a draft pull request on ${drafts.name}: a new branch with a note describing the change, for a developer to build on. Only when the person explicitly asked for a PR or pull request in this request. You do not write the code. Title it like a commit; in the description say what should change, why, where in the code (files you found), and how to know it works, from the conversation.`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'description'] } },
@@ -649,6 +706,23 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         (m.activity ? `; now: ${m.activity}` : '') + (m.lastFinding ? `; found: ${m.lastFinding}` : '') +
         (m.pending ? `; waiting for approval to ${m.pending}` : '') + (m.result ? `; result: ${m.result}` : '')).join('\n') };
     });
+    if (context.missionStatus && missions.report) {
+      const missionReport = missions.report.bind(missions);
+      add({ name: 'mission_status', description: 'What is left of a request you are working on in the background: what was done, what failed, what is still running or waiting for approval, with the sources it rests on. Use for "what\x27s left from what I asked?", "did all of it get done?", "what happened with the tasks I asked for?". Leave mission_id out for their latest one. Answer from this result only; say what failed and what is still open first.',
+        input_schema: { type: 'object', properties: { mission_id: { type: 'string' } } } },
+      async input => {
+        const id = str(input.mission_id, 30)?.toUpperCase();
+        const found = missionReport(id);
+        if (!found) return { content: id ? `No mission ${id} of yours.` : 'You have no mission I am working on or finished lately.' };
+        const section = (title: string, items: string[]) => items.length ? [`${title}:`, ...items.map(item => `- ${item}`)] : [];
+        return { content: [`${found.id} [${found.status}] ${found.goal}`,
+          ...section('Done', found.done), ...section('Failed', found.failed), ...section('Still open', found.open),
+          ...(found.done.length || found.failed.length || found.open.length ? [] : ['Nothing done or failed yet.']),
+          ...section('Found', found.findings),
+          ...section('Sources', found.sources.map(source => `${source.label}${source.title ? ` (${source.title.slice(0, 80)})` : ''}${source.url ? `: ${source.url}` : ''}`)),
+        ].join('\n') };
+      });
+    }
     add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one. Only when they clearly said so. mission_id may be left out when only one mission fits.',
       input_schema: { type: 'object', properties: { decision: { type: 'string', enum: ['approve', 'decline', 'resume', 'cancel'] },
         mission_id: { type: 'string' }, note: { type: 'string' } }, required: ['decision'] } },

@@ -148,6 +148,19 @@ export function scoreTurn(record: TurnRecord): TurnScore {
     checks.push({ name: `answer within ${expect.contentWithinMs / 1000} s`, ok: gap !== undefined && gap <= expect.contentWithinMs,
       detail: gap === undefined ? 'no answer' : `${(gap / 1000).toFixed(2)} s` });
   }
+  if (expect.fullAnswerWithinMs !== undefined) {
+    const at = record.fullAnswer?.at;
+    checks.push({ name: `full answer within ${expect.fullAnswerWithinMs / 1000} s`, ok: at !== undefined && at <= expect.fullAnswerWithinMs,
+      detail: at === undefined ? 'no full answer' : `${(at / 1000).toFixed(1)} s` });
+  }
+  if (expect.fullAnswerSpoken) {
+    const full = record.fullAnswer;
+    if (expect.fullAnswerSpoken === 'spoken') {
+      checks.push({ name: 'full answer spoken', ok: full?.spokenAt !== undefined,
+        detail: !full ? 'no full answer' : full.spokenAt === undefined ? 'stayed in chat' : `${(full.spokenAt / 1000).toFixed(1)} s` });
+    }
+    checks.push({ name: 'full answer not over people', ok: !full?.overPeople, detail: full?.overPeople ? 'started while someone was talking' : undefined });
+  }
   if (spoke) {
     const speaker = record.turn.speaker.charAt(0).toUpperCase() + record.turn.speaker.slice(1);
     const tells = machineTells(record.spoken, speaker);

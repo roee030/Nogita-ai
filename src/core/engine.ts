@@ -1,9 +1,10 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type MeetingMemoryPort, type PolicyPort, type PullRequestPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
-import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
+import { auditedPorts, buildToolbox, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
-import { OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
+import { ProviderUnavailableError } from './provider-health.ts';
+import { missionReport, OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
@@ -157,6 +158,9 @@ export interface NogitaEngineOptions {
    * spoken when the room has an opening, or stays in chat when none comes. Needs `missions`. Off unless set.
    */
   twoSpeed?: boolean;
+  /** mission_status (NOGITA_MISSION_STATUS): "what's left of what I asked?" answered from the mission store, with what
+   *  was done, what failed and what is still open, and its sources. Needs `missions`. Off unless set. */
+  missionStatus?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -393,6 +397,7 @@ export class NogitaEngine {
   private readonly roomNoiseGuard: boolean;
   private readonly swallowedQuestion: boolean;
   private readonly twoSpeed: boolean;
+  private readonly missionStatus: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -414,6 +419,8 @@ export class NogitaEngine {
     people?: PeopleDirectory;
     /** The team's calendar, for "today" and "this week". */
     tenant?: { timeZone?: string; weekStartsOn?: TeamTime['weekStartsOn'] };
+    /** Told of every write (who asked, where, what was sent, the outcome): the audit log. */
+    audit?: (write: WriteAudit) => void;
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
     this.agentProgressDelayMs = options.agentProgressDelayMs ?? 2_000;
@@ -438,6 +445,7 @@ export class NogitaEngine {
     this.roomNoiseGuard = options.roomNoiseGuard === true;
     this.swallowedQuestion = options.swallowedQuestion === true;
     this.twoSpeed = options.twoSpeed === true && options.missions !== undefined;
+    this.missionStatus = options.missionStatus === true && options.missions !== undefined;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -946,7 +954,8 @@ export class NogitaEngine {
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
-      ciStatus: this.research.ciStatus,
+      ciStatus: this.research.ciStatus, missionStatus: this.missionStatus,
+      ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       onReceipt: receipt => {
         if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
         return s.meeting.sendCompletion(receipt);
@@ -1079,7 +1088,7 @@ export class NogitaEngine {
           ...(q ? { questionId: q.id } : {}), step, ms }),
         onStepComplete: (_step, ms) => stepMs.push(ms),
       }));
-    } catch {
+    } catch (error) {
       this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}), model: agent.agentModel,
         ms: Math.max(0, this.now() - agentStartedAt), toolUses, stepMs, error: q?.abort.signal.aborted ? 'aborted' : 'model_error' });
       if (stillWorking !== undefined) this.cancel(stillWorking);
@@ -1088,6 +1097,13 @@ export class NogitaEngine {
       if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
       if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await settleSpeech();
+      // The model is down (its breaker is open): one short line, and no planner, which asks the same model.
+      if (!spoke && !report.wroteSomething && error instanceof ProviderUnavailableError) {
+        this.clearProgressTimer(s);
+        if (floor && q) await floor.say(q.id, error.spoken); else await this.speakOrChat(sessionId, s.meeting, error.spoken);
+        if (q) this.reportQuestion(sessionId, q, 'failed', `${error.providerName} is down`);
+        return 'answered';
+      }
       if (!spoke && !report.wroteSomething) {
         if (q) this.reportQuestion(sessionId, q, 'failed', 'model error; the planner answers instead');
         return undefined;
@@ -1247,6 +1263,11 @@ export class NogitaEngine {
           ...(m.pending ? { pending: m.pending.summary } : {}),
           ...(m.steps.filter(step => step.kind === 'finding').at(-1) ? { lastFinding: m.steps.filter(step => step.kind === 'finding').at(-1)!.text } : {}),
           ...(m.result ? { result: m.result.summary } : m.blockedReason ? { result: `blocked: ${m.blockedReason}` } : {}) })),
+      report: id => {
+        const visible = (m: Mission) => m.owner.id === actor.id || m.sessionId === sessionId;
+        const mission = id ? runner.get(id) : runner.list().find(visible);
+        return mission && visible(mission) ? missionReport(mission) : undefined;
+      },
       decide: async (decision, id, note) => {
         const fits = { approve: ['awaiting_approval'], decline: ['awaiting_approval'], resume: ['blocked', 'failed'],
           cancel: ['investigating', 'executing', 'awaiting_approval', 'blocked'] }[decision];
@@ -1650,7 +1671,9 @@ export class NogitaEngine {
       const id = `${sessionId}:${utterance.eventId}`;
       let receipt = this.completed.get(id);
       if (!receipt) {
-        receipt = await this.dependencies.board.createTask({
+        const board = this.dependencies.audit ? auditedPorts({ actor: utterance.actor, sessionId, eventId: utterance.eventId,
+          board: this.dependencies.board }, this.dependencies.audit).board : this.dependencies.board;
+        receipt = await board.createTask({
           title: plan.title, description: plan.description, assigneeId: plan.assigneeId, requestId: id,
         });
         this.completed.set(id, receipt);
