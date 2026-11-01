@@ -146,6 +146,17 @@ export function verifiedEvidence(messages: readonly AgentMessage[], evidence: re
 }
 
 /** What a mission did, what went wrong and what is still open: the answer to "what's left of what I asked?". */
+/** With NOGITA_WHATS_LEFT_DIRECT: a request she handled in the turn itself, not as a mission, kept so "what's left?" sees it. */
+export interface DirectRequest {
+  at: number;
+  /** The request, shortened. */
+  request: string;
+  /** What it changed: one line per receipt, with its link. */
+  done: string[];
+  /** What was asked for or attempted and did not happen (the completion gate's lines). */
+  failed: string[];
+}
+
 export interface MissionReport {
   id: string;
   goal: string;
@@ -188,6 +199,19 @@ export function missionReport(mission: Mission, maxSources = 8): MissionReport {
     : ACTIVE_MISSION.has(mission.status) ? [`Still working: ${mission.activity ?? 'in progress'}`] : [];
   return { id: mission.id, goal: mission.goal, status: mission.status, done, failed, open, findings: findings.slice(-3),
     sources: missionSources(mission, maxSources) };
+}
+
+/**
+ * With NOGITA_PENDING_APPROVALS: the writes this person's missions wait on, for the turn's prompt. After a restart or in a
+ * new chat thread the conversation does not show the question, so without this "approve it" finds nothing to approve.
+ */
+export function pendingApprovalsPrompt(missions: readonly Mission[], speaker: string): string {
+  const waiting = missions.filter(mission => mission.status === 'awaiting_approval' && mission.pending).slice(0, 5);
+  if (!waiting.length) return '';
+  return [`Waiting for ${speaker}'s approval (asked earlier, maybe in another meeting or chat, or before a restart):`,
+    ...waiting.map(mission => `- ${mission.id}: ${mission.pending!.summary.slice(0, 200)} (mission: ${mission.goal.slice(0, 160)})`),
+    `If ${speaker} approves ("approve it", "yes, go ahead", "do it") or declines, call decide_mission with that mission_id` +
+      `${waiting.length > 1 ? ', asking which one when it is unclear' : ''}. Do not say nothing is waiting.`].join('\n');
 }
 
 function missionSources(mission: Mission, max: number): EvidenceSource[] {
