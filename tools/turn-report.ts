@@ -33,7 +33,9 @@ export interface SessionReport {
   eotSinceVoiceMs: number[];
   speculation: { started: number; adopted: number; rolledBack: number; unresolved: number };
   traces: { turns: number; steps: number; truncated: number; turnMs: number[]; stepMs: number[];
-    models: Record<string, number>; tools: Record<string, number>; stops: Record<string, number>; errors: Record<string, number> };
+    models: Record<string, number>; tools: Record<string, number>; stops: Record<string, number>; errors: Record<string, number>;
+    research: { sources: number; citedSources: number; claims: number; sourcedClaims: number; truncatedResults: number;
+      omittedItems: number; omittedLines: number } };
 }
 
 const OPEN = new Set(['speculative', 'working', 'answering', 'interrupted']);
@@ -51,7 +53,8 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0,
     missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
     firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 },
-    traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {}, errors: {} } };
+    traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {}, errors: {},
+      research: { sources: 0, citedSources: 0, claims: 0, sourcedClaims: 0, truncatedResults: 0, omittedItems: 0, omittedLines: 0 } } };
   if (events.length) report.minutes = Math.round((events.at(-1)!.at - events[0]!.at) / 600) / 100;
   const questions = new Map<number, { opened: number; speaker: string; final?: string; firstSpeechAt?: number; firstAudio?: number;
     speculative?: boolean; confirmedAt?: number; inputTurnIds?: string[] }>();
@@ -183,6 +186,22 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
           if (typeof item.ms === 'number' && Number.isFinite(item.ms) && item.ms >= 0) report.traces.stepMs.push(item.ms);
         }
         if (truncated) report.traces.truncated++;
+        const research = event.research as Record<string, unknown> | undefined;
+        if (research) {
+          const sources = Array.isArray(research.sources) ? research.sources as Array<Record<string, unknown>> : [];
+          report.traces.research.sources += sources.length;
+          report.traces.research.citedSources += sources.filter(source => source.cited === true).length;
+          const claims = research.claims as Record<string, unknown> | undefined;
+          report.traces.research.claims += Number(claims?.total) || 0;
+          report.traces.research.sourcedClaims += Number(claims?.sourced) || 0;
+          const shortened = Array.isArray(research.truncatedResults)
+            ? research.truncatedResults as Array<Record<string, unknown>> : [];
+          report.traces.research.truncatedResults += shortened.length;
+          for (const item of shortened) {
+            report.traces.research.omittedItems += Number(item.omittedItems) || 0;
+            report.traces.research.omittedLines += Number(item.omittedLines) || 0;
+          }
+        }
         break;
       }
       case 'turn':
@@ -252,6 +271,15 @@ export function render(reports: readonly SessionReport[]): string {
   const stale = reports.reduce((sum, r) => sum + r.staleSpeech, 0);
   const stuck = reports.flatMap(r => r.stuckScreens);
   const p50 = percentile(firstAudio, 50); const p95 = percentile(firstAudio, 95); const i95 = percentile(interrupts, 95);
+  const research = reports.reduce((sum, report) => ({
+    sources: sum.sources + report.traces.research.sources,
+    citedSources: sum.citedSources + report.traces.research.citedSources,
+    claims: sum.claims + report.traces.research.claims,
+    sourcedClaims: sum.sourcedClaims + report.traces.research.sourcedClaims,
+    truncatedResults: sum.truncatedResults + report.traces.research.truncatedResults,
+    omittedItems: sum.omittedItems + report.traces.research.omittedItems,
+    omittedLines: sum.omittedLines + report.traces.research.omittedLines,
+  }), { sources: 0, citedSources: 0, claims: 0, sourcedClaims: 0, truncatedResults: 0, omittedItems: 0, omittedLines: 0 });
   const lines = [
     '# Nogita release report (from real-meeting turn logs)', '',
     `Sessions: ${reports.length} · minutes: ${reports.reduce((s, r) => s + r.minutes, 0).toFixed(1)} · questions: ${counted + Object.entries(finals).filter(([k]) => WITHDRAWN.has(k)).reduce((s, [, v]) => s + v, 0)}`, '',
@@ -280,6 +308,9 @@ export function render(reports: readonly SessionReport[]): string {
     `| Agent tools | ${counts(reports.map(r => r.traces.tools))} | diagnostic | — |`,
     `| Agent stop reasons | ${counts(reports.map(r => r.traces.stops))} | diagnostic | — |`,
     `| Agent errors | ${counts(reports.map(r => r.traces.errors))} | diagnostic | — |`,
+    `| Research sources cited / found | ${research.citedSources} / ${research.sources} | diagnostic | — |`,
+    `| Research claims backed by a source | ${research.sourcedClaims} / ${research.claims}${research.claims ? ` (${Math.round(research.sourcedClaims / research.claims * 100)}%)` : ''} | diagnostic | — |`,
+    `| Research results shortened / omitted items | ${research.truncatedResults} / ${research.omittedItems}${research.omittedLines ? ` (+ ${research.omittedLines} lines)` : ''} | diagnostic | — |`,
     '', `Final statuses: ${Object.entries(finals).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`, '',
   ];
   if (missed.length) {
