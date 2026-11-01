@@ -5,14 +5,14 @@
  *
  *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
  *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5]
- *                        [--warmup production|cold] [--list]
+ *                        [--warmup production|cold] [--research] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
  * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
  */
 import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
-import { createDependencies, loadDotEnv } from '../../src/app/config.ts';
+import { ALL_RESEARCH_FEATURES, createDependencies, loadDotEnv, researchFeatures } from '../../src/app/config.ts';
 import { DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from '../../src/app/attendee-realtime-audio.ts';
 import { AllowlistPolicy } from '../../src/core/policy.ts';
 import type { ActionReceipt, ChatPort } from '../../src/core/contracts.ts';
@@ -30,6 +30,7 @@ const { values } = parseArgs({ options: {
   'router-quiet-ms': { type: 'string' }, 'frame-ms': { type: 'string' }, out: { type: 'string' },
   'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' }, eager: { type: 'string' },
   'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
+  research: { type: 'boolean', default: false },
 } });
 
 if (values.list) {
@@ -71,6 +72,8 @@ const earlyCommitMs = Number(values['early-commit-ms'] ?? env.NOGITA_EARLY_COMMI
 const turnTaking = values['turn-taking'] ?? 'v2';
 if (turnTaking !== 'v2' && turnTaking !== 'legacy') throw new Error('--turn-taking must be v2 or legacy');
 const warmup = parseWarmupMode(values.warmup);
+// --research turns on every phase 3 research feature; without it each follows its NOGITA_* flag, as in production.
+const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(env);
 
 // Writes are logged on the running rig. By default they never leave the lab and get a placeholder receipt;
 // with --live-writes they really create the task or post the message.
@@ -145,7 +148,7 @@ for (const scenario of scenarios) {
     warmup,
     eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
-    engineOptions: { handRaiseFallback: 'chat' } });
+    engineOptions: { handRaiseFallback: 'chat', research } });
   const errors: string[] = [];
   let records: Awaited<ReturnType<typeof playScenario>> = [];
   try {

@@ -175,19 +175,34 @@ function formatCiStatus(ci: CiStatus): string {
   const lines = [`${ci.repository}, CI for ${what}, read live.`];
   if (!ci.runs.length) lines.push('No CI runs found for it.');
   else lines.push('', 'Runs (newest first):');
+  const deployed = ci.deployment;
+  // On a branch whose undeployed commits are all listed, every other commit of that branch is deployed.
+  const listedAll = deployed?.undeployed && deployed.undeployed.length === deployed.notDeployed;
+  const notLive = new Set(deployed?.undeployed?.map(commit => commit.sha));
+  const where = (run: CiStatus['runs'][number]) => !deployed?.undeployed || run.branch !== target.branch ? ''
+    : notLive.has(run.sha) ? ', not deployed' : listedAll || run.sha === deployed.sha ? ', deployed' : '';
   for (const run of ci.runs) {
-    lines.push(`- ${run.workflow}: ${run.conclusion ?? run.status} on ${run.sha.slice(0, 7)}${run.branch ? ` (${run.branch})` : ''}` +
+    lines.push(`- ${run.workflow}: ${run.conclusion ?? run.status} on ${run.sha.slice(0, 7)}${run.title ? ` "${run.title}"` : ''}` +
+      `${run.branch ? ` (${run.branch}${where(run)})` : ''}` +
       `${run.event ? `, ${run.event}` : ''}${run.startedAt ? `, started ${run.startedAt}` : ''} ${run.url}`);
     for (const job of run.failedJobs ?? []) lines.push(`  failed job: ${job.name}${job.step ? `, at step "${job.step}"` : ''} ${job.url}`);
   }
-  const deployed = ci.deployment;
   if (!deployed) lines.push('', 'No deployment is recorded on GitHub, so what is deployed is unknown.');
   else {
     lines.push('', `Deployed: ${deployed.sha.slice(0, 7)} to ${deployed.environment} (${deployed.state}, ${deployed.createdAt})` +
       `${deployed.url ? ` ${deployed.url}` : ''}.`);
+    if (deployed.includesTarget !== undefined) {
+      lines.push(deployed.includesTarget ? `So ${what} is deployed: ${deployed.sha.slice(0, 7)} contains it.`
+        : `So ${what} is not deployed yet: ${deployed.sha.slice(0, 7)} does not contain it.`);
+    }
     if (deployed.notDeployed !== undefined) {
       lines.push(deployed.notDeployed ? `${deployed.notDeployed} commit(s) on ${target.branch} are not deployed yet.`
         : `The deployment is the head of ${target.branch}.`);
+      if (deployed.undeployed?.length) {
+        lines.push(`Not deployed yet (newest first${deployed.undeployed.length < deployed.notDeployed ? `, the latest ${deployed.undeployed.length}` : ''}):`,
+          ...deployed.undeployed.map(commit => `- ${commit.sha.slice(0, 7)} ${commit.title}`),
+          `A change in one of these is not deployed; a change in ${deployed.sha.slice(0, 7)} or an older commit on ${target.branch} is.`);
+      }
     }
   }
   return lines.join('\n');
@@ -288,7 +303,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       remember([{ path: change.kind === 'commit' ? `commit ${change.id.slice(0, 7)}` : `PR ${change.id}`, url: change.url, excerpt: change.title }]);
       return { content: formatChange(change) };
     });
-    if (code.ciStatus && context.ciStatus) add({ name: 'ci_status', description: 'CI runs for a branch, commit or pull request, read live: the result of each workflow, the jobs and steps that failed with links, and which commit is deployed (and how many commits are not deployed yet). Use for "did CI pass on main?", "why is the build red?", "is the fix deployed?". Give one of branch, sha or pr; none means the main branch.',
+    if (code.ciStatus && context.ciStatus) add({ name: 'ci_status', description: 'CI runs for a branch, commit or pull request, read live: the result of each workflow, the jobs and steps that failed with links, and which commit is deployed (and how many commits are not deployed yet). Use for "did CI pass on main?", "why is the build red?", "is the fix deployed?". For "is X deployed?", find the pull request or commit of X in the same round (repo_activity for the last days lists merged pull requests; recent_commits only the latest few), then check it against the commits listed as not deployed: never guess which commit it is. Give one of branch, sha or pr; none means the main branch.',
       input_schema: { type: 'object', properties: { branch: { type: 'string' },
         sha: { type: 'string', description: 'Commit sha (7-40 hex characters).' },
         pr: { type: 'integer', description: 'Pull request number.' } } } },

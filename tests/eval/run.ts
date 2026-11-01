@@ -6,18 +6,21 @@
  *   npm run eval                          all cases once
  *   npm run eval -- --case live-repo-today --repeat 5
  *   npm run eval -- --json out.json       also write every run and score
+ *   npm run eval -- --research            phase 3 research on (ci_status, digests, ledger, proof levels, templates);
+ *                                         without it each follows its NOGITA_* flag in .env, off by default
  *
  * Needs ANTHROPIC_API_KEY (from .env or the environment); ANTHROPIC_AGENT_MODEL picks the model as in production.
  */
 import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { loadDotEnv } from '../../src/app/config.ts';
+import { ALL_RESEARCH_FEATURES, loadDotEnv, researchFeatures } from '../../src/app/config.ts';
 import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../../src/adapters/anthropic.ts';
 import { CASES, DIMENSIONS } from './cases.ts';
 import { runCase, scoreCase, summarize, type CaseScore } from './harness.ts';
 
 const { values } = parseArgs({ options: {
   case: { type: 'string', multiple: true }, repeat: { type: 'string', default: '1' }, json: { type: 'string' },
+  research: { type: 'boolean', default: false },
 } });
 loadDotEnv();
 const key = process.env.ANTHROPIC_API_KEY?.trim();
@@ -33,13 +36,15 @@ if (!cases.length) {
 }
 const model = new AnthropicBrain(key, process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL, fetch, {}, {},
   { model: process.env.ANTHROPIC_AGENT_MODEL, thinking: process.env.ANTHROPIC_AGENT_THINKING === 'on' ? 'default' : 'off' });
-process.stdout.write(`Eval: ${cases.length} case(s) x ${repeat} on ${model.agentModel}\n\n`);
+const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(process.env);
+const researchOn = Object.entries(research).filter(([, on]) => on).map(([feature]) => feature);
+process.stdout.write(`Eval: ${cases.length} case(s) x ${repeat} on ${model.agentModel}; research ${researchOn.join(', ') || 'off'}\n\n`);
 
 const scores: CaseScore[] = [];
 const runs: unknown[] = [];
 for (const item of cases) {
   for (let attempt = 0; attempt < repeat; attempt++) {
-    const run = await runCase(model, item);
+    const run = await runCase(model, item, { research });
     const score = scoreCase(item, run);
     scores.push(score);
     runs.push({ id: item.id, turns: run.turns, tools: run.tools, stops: run.stops, writes: run.calls.filter(call =>
@@ -65,6 +70,6 @@ for (const dimension of DIMENSIONS) {
 const { claims } = summary;
 process.stdout.write(`  claims with a source ${(100 * claims.share).toFixed(0)}%  (${claims.backed}/${claims.total}; the phase 3 gate is 90%)\n`);
 if (values.json) {
-  writeFileSync(values.json, `${JSON.stringify({ model: model.agentModel, at: new Date().toISOString(), summary, runs }, null, 1)}\n`);
+  writeFileSync(values.json, `${JSON.stringify({ model: model.agentModel, research, at: new Date().toISOString(), summary, runs }, null, 1)}\n`);
   process.stdout.write(`wrote ${values.json}\n`);
 }

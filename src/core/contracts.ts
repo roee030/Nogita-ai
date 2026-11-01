@@ -207,6 +207,8 @@ export interface CiRun {
   /** success, failure, cancelled, ... once completed. */
   conclusion?: string;
   sha: string;
+  /** First line of the commit message, so "the retry fix" can be matched to its run. */
+  title?: string;
   branch?: string;
   event?: string;
   url: string;
@@ -223,7 +225,11 @@ export interface CiStatus {
   /** The commit running in the newest successful deployment, or the newest deployment and its state when none succeeded. */
   deployment?: { sha: string; environment: string; state: string; createdAt: string; url?: string;
     /** Commits on the target branch that are not deployed yet. Set only for a branch target that contains the deployed commit. */
-    notDeployed?: number };
+    notDeployed?: number;
+    /** With `notDeployed`: those commits, newest first (at most 20), so "is X deployed?" is "is X among them?". */
+    undeployed?: Array<{ sha: string; title: string }>;
+    /** For a commit or pull request target: whether the deployed commit contains it. Unset when GitHub could not tell. */
+    includesTarget?: boolean };
 }
 export interface RepoActivity {
   repository: string;

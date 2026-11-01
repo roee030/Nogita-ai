@@ -60,7 +60,9 @@ const github = `https://github.com/${history.repository}`;
  */
 const run = (id: number, sha: string, branch: string, conclusion: string, startedAt: string, event = 'push',
   failedJobs?: CiRun['failedJobs']): CiRun => ({ workflow: 'verify', status: 'completed', conclusion, sha, branch, event,
-  url: `${github}/actions/runs/${id}`, startedAt, ...(failedJobs ? { failedJobs } : {}) });
+  url: `${github}/actions/runs/${id}`, startedAt, ...(failedJobs ? { failedJobs } : {}),
+  ...(titleOf(sha) ? { title: titleOf(sha) } : {}) });
+const titleOf = (sha: string) => history.commits.find(commit => commit.sha === sha)?.title;
 export const CI = {
   runs: [
     run(18800012, 'c6b95a59521a336ae170f46c64f79cdeb43d8fbc', 'main', 'success', '2026-10-31T16:24:10Z'),
@@ -135,11 +137,16 @@ export class EvalCode extends MemoryCode implements CodePort {
       const sha = target.sha.toLowerCase();
       const runs = CI.runs.filter(run => run.sha.startsWith(sha));
       if (!runs.length && !history.commits.some(commit => commit.sha.startsWith(sha))) return undefined;
-      return { repository: history.repository, target: { sha: runs[0]?.sha ?? sha }, runs, deployment: CI.deployment };
+      // History is newest first: a commit at or after the deployed one in that list is deployed.
+      const at = (prefix: string) => history.commits.findIndex(commit => commit.sha.startsWith(prefix));
+      const includesTarget = at(sha) >= 0 ? at(sha) >= at(CI.deployment.sha) : undefined;
+      return { repository: history.repository, target: { sha: runs[0]?.sha ?? sha }, runs,
+        deployment: { ...CI.deployment, ...(includesTarget !== undefined ? { includesTarget } : {}) } };
     }
     const branch = target.branch ?? history.branch;
     return { repository: history.repository, target: { branch }, runs: CI.runs.filter(run => run.branch === branch),
-      deployment: { ...CI.deployment, ...(branch === history.branch ? { notDeployed: CI.notDeployed } : {}) } };
+      deployment: { ...CI.deployment, ...(branch === history.branch ? { notDeployed: CI.notDeployed,
+        undeployed: history.commits.slice(0, CI.notDeployed).map(commit => ({ sha: commit.sha, title: commit.title })) } : {}) } };
   }
 }
 
