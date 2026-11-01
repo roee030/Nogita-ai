@@ -126,6 +126,23 @@ Claude הוא הסוכן היחיד בריפו. צ'אט אחד רץ על כל ה
 | [ ] | P4-8 | תרחישי voice lab לשתי מהירויות: זמן עד התשובה הקצרה, זמן עד התשובה המלאה, ותשובה מלאה שלא נאמרת מעל אנשים | Claude | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tests/voice-lab.test.ts` | P4-2 |
 | [ ] | P4-9 | פגישה חיה #5 עם תסריט שער שלב 4: מחקר ארוך באמצע פגישה, "מה נשאר?", המשך ב-Slack | רועי | | P4-7, P4-8 |
 
+### שלב 5, שבועות 8–10: פגישות אמיתיות בהיקף
+
+**שערים:** פחות מ-2% שאלות שהולכות לאיבוד; לפחות 95% מהבקשות מקבלות תשובה או כישלון ברור; p95 של interruption-to-silence מתחת ל-500ms בצד המשתתף; אפס פעולות לא מורשות או כפולות; לפחות 4 מתוך 5 בבהירות. המשימות של Claude כאן סוגרות את הפערים שהרצת ה-missions הראשונה ב-eval חשפה (2 מתוך 10 עברו), ומכינות את המדידה של 30 הפגישות.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P5-0 | שלב 5 בלוח המשימות, ושתי המשימות שנשארו משלב 6 | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P5-1 | "תאשרי" אחרי restart או ב-thread חדש: החלטה שמחכה נמצאת ב-mission store והכלי `decide_mission` נקרא, במקום "אין מה לאשר"; flag כבוי | Claude | `src/core/missions.ts`, `src/core/agent-tools.ts`, `tests/mission-approval.test.ts` | - |
+| [ ] | P5-2 | "מה נשאר?" רואה גם בקשות שבוצעו ישירות בתורה (ה-receipts של התורה), לא רק missions, ועונה מה בוצע, מה נכשל ומה עוד רץ; flag כבוי | Claude | `src/core/agent-tools.ts`, `src/core/missions.ts`, `tests/mission-status.test.ts` | P5-1 |
+| [ ] | P5-3 | תוצאה של mission בקול קצרה: `announce` ותשובת `mission_status` אומרות משפט או שניים, והפירוט המלא הולך לצ'אט; flag כבוי | Claude | `src/core/engine.ts`, `src/core/spoken.ts`, `tests/mission-announce.test.ts` | - |
+| [ ] | P5-4 | כתיבה שנחתה לפני שהתוצאה נשמרה (הפער מבדיקת הכאוס): `missionReport` מראה אותה כ"לא ידוע, לבדוק" ולא מריץ אותה שוב | Claude | `src/core/missions.ts`, `tools/mission-chaos/`, `tests/mission-chaos.test.ts` | P5-2 |
+| [ ] | P5-5 | סט ההערכה מגיע ל-100 מקרים: מקרה רגרסיה לכל אחד מ-P5-1 עד P5-4, בקשות מתמלול רועש וכמה דוברים, ו-`npm run eval` שומר JSON ב-`.eval/` כברירת מחדל כדי שה-dashboard יראה מגמה | Claude | `tests/eval/` | P5-1, P5-2, P5-3, P5-4, P6-4 |
+| [ ] | P5-6 | נתונים להחלטה על turn-taking v2 מול legacy: כל תרחישי voice lab בשני המצבים, כמה חזרות, ודוח עם המספרים והמלצה ב-`docs/TURN_TAKING_DECISION.md` | Claude | `tools/voice-lab/run.ts`, `docs/TURN_TAKING_DECISION.md` | - |
+| [ ] | P5-7 | שערי שלב 5 ב-dashboard: לכל שער עובר או לא עובר מהנתונים (שאלות שאבדו, תשובה או כישלון ברור, interruption p95, כתיבות כפולות או לא מורשות מה-audit log), וכמה פגישות ו-turns נאספו מתוך 30 ו-500 | Claude | `tools/dashboard/`, `tests/dashboard.test.ts` | P6-4 |
+| [ ] | P5-8 | 30 פגישות ו-500 turns, כולל אנשים שלא מכירים את המערכת, רעש, הפרעות וכמה דוברים; turn logs עם `NOGITA_USAGE_LOG=true`, וכל כשל עובר ל-Claude כמשימת תיקון עם בדיקת רגרסיה | רועי | | P5-5, P5-7 |
+| [ ] | P5-9 | החלטה על turn-taking v2 מול legacy לפי הדוח | רועי | | P5-6 |
+
 ### שלב 6 (מוקדם), שבועות 11–12: מוכנות לפיילוט
 
 **שער:** צוות חיצוני מחובר ומשתמש בלי שינוי ידני בקוד. המשימות כאן לא תלויות בשלב 4 ובשלב 5, ולכן נכנסו מוקדם.
@@ -139,3 +156,5 @@ Claude הוא הסוכן היחיד בריפו. צ'אט אחד רץ על כל ה
 | [ ] | P6-4 | dashboard לאיכות ולשימוש: `npm run dashboard` בונה HTML מ-turn logs ומדוחות voice lab ו-eval: שאלות שאבדו, זמני תגובה p50/p95, טענות מגובות במקור, עלות לפגישה, ומגמה בין ריצות | Claude | `tools/dashboard/`, `tests/dashboard.test.ts`, `package.json` | - |
 | [ ] | P6-5 | Claude לבד בזמן ש-Codex מושהה: המשימות הפתוחות של Codex עוברות ל-Claude, ו-`npm run board -- --agent claude --chain` בונה על PRs שמחכים למיזוג, כך שצ'אט אחד רץ עד שהלוח ריק | Claude | `tools/board.ts`, `tests/board.test.ts`, `CLAUDE.md`, `docs/TASK_BOARD.md` | - |
 | [ ] | P6-6 | Claude הוא הסוכן היחיד: בלי AGENTS.md ובלי חלוקת תחומים, `npm run board` רץ כברירת מחדל ל-Claude במצב שרשרת, וההוראות ב-CLAUDE.md ובלוח בהתאם | Claude | `CLAUDE.md`, `AGENTS.md`, `docs/TASK_BOARD.md`, `docs/WORK_PLAN.md`, `tools/board.ts` | - |
+| [ ] | P6-7 | onboarding לצוות פיילוט בלי שינוי בקוד: `npm run onboard` בודק קובץ tenant config, מחבר את הספקים דרך readiness ומדפיס מה חסר, עם מדריך קצר ב-`docs/ONBOARDING.md` | Claude | `tools/onboard.ts`, `src/app/tenant-config.ts`, `docs/ONBOARDING.md`, `tests/onboarding.test.ts` | - |
+| [ ] | P6-8 | צוות חיצוני אחד מחובר ומשתמש, מלווה ידנית, לפי `docs/ONBOARDING.md` (שער שלב 6) | רועי | | P6-7, P5-8 |
