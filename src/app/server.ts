@@ -36,6 +36,8 @@ import { readFileSync } from 'node:fs';
 import { StateStorageError, claimStateDirectory, persistentStateRequired } from './state-storage.ts';
 import { FileMeetingMemory } from './meeting-memory.ts';
 import { FileActionReceipts } from './action-receipts.ts';
+import { FileAuditLog } from './audit-log.ts';
+import { auditedPorts } from '../core/agent-tools.ts';
 import { acceptGitHubWebhook, GitHubRefreshQueue, githubWebhookConfigured } from './github-webhook.ts';
 
 loadDotEnv();
@@ -115,6 +117,9 @@ const presence = new PresenceHub({ boardName: dependencies.board.name, chatName:
 /** Opt-in: receipts of writes kept in NOGITA_STATE_DIR, so a retry after a restart does not write them again. */
 const actionReceipts: Map<string, ActionReceipt> = env.NOGITA_DURABLE_RECEIPTS === 'true'
   ? new FileActionReceipts(stateDirectory) : new Map();
+/** Opt-in (NOGITA_AUDIT_LOG=true): every write to Jira, Slack or GitHub appended to NOGITA_STATE_DIR/audit, read at /audit. */
+const auditLog = env.NOGITA_AUDIT_LOG === 'true' ? new FileAuditLog(stateDirectory) : undefined;
+const audit = auditLog && ((write: Parameters<FileAuditLog['record']>[0]) => auditLog.record(write));
 const missionCompleted = actionReceipts;
 const missionStore = new FileMissionStore(stateDirectory,
   FileMissionStore.reportToChat(dependencies.chat, env.NOGITA_MISSION_CHANNEL));
@@ -124,7 +129,7 @@ const missionRunner = dependencies.agent ? new MissionRunner({ model: dependenci
   toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
     request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
     policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat, people: dependencies.people,
-    completed: missionCompleted, writesApproved: true,
+    completed: missionCompleted, writesApproved: true, ...(audit ? { audit } : {}),
     onReceipt: receipt => notifyMission(mission, `${mission.id}: ${receipt.label}: ${receipt.url}`) }).toolbox,
   notify: (mission, text) => notifyMission(mission, text),
   onChange: mission => {
@@ -141,7 +146,12 @@ async function notifyMission(mission: Mission, text: string): Promise<void> {
   })) return;
   if (mission.sessionId && await nogita.announce(mission.sessionId, text)) return;
   const channel = env.NOGITA_MISSION_CHANNEL;
-  if (channel && dependencies.chat) { await dependencies.chat.postMessage(channel, text); return; }
+  if (channel && dependencies.chat) {
+    const chat = audit ? auditedPorts({ actor: { ...mission.owner, verified: true }, sessionId: `mission-${mission.id}`, eventId: `${mission.id}:update`,
+      board: dependencies.board, chat: dependencies.chat }, audit).chat! : dependencies.chat;
+    await chat.postMessage(channel, text);
+    return;
+  }
   console.log('mission_update', mission.id, mission.status);
 }
 
@@ -164,7 +174,7 @@ const publicBaseUrl = (() => {
 const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
 const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
   ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
-const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory },
+const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory, ...(audit ? { audit } : {}) },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
     floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000, explicitTurnEnd: turnTakingV2 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
@@ -668,6 +678,15 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/health') {
       respond(res, 200, { ok: true, service: 'nogita', sessions: nogita.sessionCount() }); return;
+    }
+    // Audit log (admin token): the latest writes, newest first; ?limit=, ?since= (ISO time), ?actor=, ?origin=.
+    if (req.method === 'GET' && pathname === '/audit') {
+      if (!safeToken(req.headers.authorization)) { respond(res, 401, { error: 'unauthorized' }); return; }
+      if (!auditLog) { respond(res, 404, { error: 'audit log is off (NOGITA_AUDIT_LOG)' }); return; }
+      const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
+      respond(res, 200, { writes: auditLog.read({ limit: Number(query.get('limit') ?? 100) || 100, since: query.get('since') ?? undefined,
+        actorId: query.get('actor') ?? undefined, origin: query.get('origin') ?? undefined }) });
+      return;
     }
     // Mission dashboard data (admin token): every mission with its status and history, without the model transcript.
     const missionMatch = pathname.match(/^\/missions(?:\/(M-[A-Z0-9]{1,20}))?$/);
