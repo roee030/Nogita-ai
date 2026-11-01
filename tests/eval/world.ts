@@ -7,8 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { MemoryBoard, MemoryCode } from '../../src/adapters/memory.ts';
 import { IdentityDirectory } from '../../src/core/identity.ts';
-import type { ActionReceipt, BoardPort, ChatChannel, ChatMessage, ChatPort, CodeChange, CodePort, RepoActivity, TaskDetail,
-  TaskSearch, TaskSummary } from '../../src/core/contracts.ts';
+import type { ActionReceipt, BoardPort, ChatChannel, ChatMessage, ChatPort, CiRun, CiStatus, CodeChange, CodePort, RepoActivity,
+  TaskDetail, TaskSearch, TaskSummary } from '../../src/core/contracts.ts';
 
 /** Frozen "now" of every case: Saturday 31 October 2026, 19:00 in Jerusalem, after the day's last merge. */
 export const NOW = Date.parse('2026-10-31T17:00:00Z');
@@ -33,7 +33,9 @@ export const DAYS = {
   today: ['2026-10-30T22:00:00.000Z', '2026-10-31T17:00:00.000Z'],
   yesterday: ['2026-10-29T22:00:00.000Z', '2026-10-30T22:00:00.000Z'],
 } as const;
-export const inDay = (iso: string, day: keyof typeof DAYS) => iso >= DAYS[day][0] && iso < DAYS[day][1];
+/** The team's week starts on Sunday 25 October, 00:00 in Jerusalem (still summer time). */
+export const WEEK_START = '2026-10-24T21:00:00.000Z';
+export const inDay =(iso: string, day: keyof typeof DAYS) => iso >= DAYS[day][0] && iso < DAYS[day][1];
 
 export const PEOPLE = [
   // An email lets the board find each of them, as in production; without one "my tasks" could not be resolved.
@@ -51,6 +53,33 @@ const WRITES = new Set(['createTask', 'updateTask', 'postMessage', 'openDraft'])
 export const isWrite = (call: PortCall) => WRITES.has(call.method);
 
 const github = `https://github.com/${history.repository}`;
+
+/**
+ * CI on the 31st: main went red in the morning (the flaky missions restart test, fixed by PR 6) and is green since;
+ * production runs PR 19, so PR 17 and PR 20 are merged but not deployed; open PR 21 fails typecheck.
+ */
+const run = (id: number, sha: string, branch: string, conclusion: string, startedAt: string, event = 'push',
+  failedJobs?: CiRun['failedJobs']): CiRun => ({ workflow: 'verify', status: 'completed', conclusion, sha, branch, event,
+  url: `${github}/actions/runs/${id}`, startedAt, ...(failedJobs ? { failedJobs } : {}) });
+export const CI = {
+  runs: [
+    run(18800012, 'c6b95a59521a336ae170f46c64f79cdeb43d8fbc', 'main', 'success', '2026-10-31T16:24:10Z'),
+    run(18800011, '5d64533a0a4735442f54cf3ef629bdeef30c5918', 'main', 'success', '2026-10-31T16:23:20Z'),
+    run(18800010, '7e3a1f0c2b9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f', 'claude/P1-3-eval-set', 'failure', '2026-10-31T16:20:02Z', 'pull_request',
+      [{ name: 'typecheck', url: `${github}/actions/runs/18800010/job/50000101`, step: 'npm run typecheck' }]),
+    run(18800009, 'af72c534f4e0c1d2b3a4f5e6d7c8b9a0f1e2d3c4', 'claude/P1-2-repo-activity', 'success', '2026-10-31T16:15:40Z', 'pull_request'),
+    run(18800008, 'd2e58f79c1c8d0f24cdc2a9bb01b3ce5887506b7', 'main', 'success', '2026-10-31T16:07:00Z'),
+    run(18800004, '8e6062917974d2611287aead039d00554f057a73', 'main', 'success', '2026-10-31T12:53:05Z'),
+    run(18800002, '356ec237ee02d3fd4ae44942390c8a054b2917fa', 'main', 'failure', '2026-10-31T07:01:20Z', 'push',
+      [{ name: 'test', url: `${github}/actions/runs/18800002/job/50000021`, step: 'npm test (tests/missions.test.ts: restart test)' }]),
+  ],
+  pulls: { 20: { branch: 'claude/P1-2-repo-activity', sha: 'af72c534f4e0c1d2b3a4f5e6d7c8b9a0f1e2d3c4' },
+    21: { branch: 'claude/P1-3-eval-set', sha: '7e3a1f0c2b9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' } } as Record<number, { branch: string; sha: string }>,
+  deployment: { sha: 'd2e58f79c1c8d0f24cdc2a9bb01b3ce5887506b7', environment: 'production', state: 'success',
+    createdAt: '2026-10-31T16:10:30Z', url: 'https://dashboard.render.invalid/deploys/dep-19' },
+  /** Commits on main after the deployed one. */
+  notDeployed: 5,
+};
 
 /** The repository: real files from the working tree, and the recorded history of main. */
 export class EvalCode extends MemoryCode implements CodePort {
@@ -93,6 +122,24 @@ export class EvalCode extends MemoryCode implements CodePort {
     if (!commit) return undefined;
     return { kind: 'commit', id: commit.sha, url: `${github}/commit/${commit.sha}`, title: commit.title, body: '',
       author: commit.author, date: commit.date, ...totals(commit.files), files: commit.files, truncated: false };
+  }
+
+  async ciStatus(target: { branch?: string; sha?: string; pr?: number }): Promise<CiStatus | undefined> {
+    if (target.pr !== undefined) {
+      const pull = CI.pulls[target.pr];
+      if (!pull) return undefined;
+      return { repository: history.repository, target: { pr: target.pr, branch: pull.branch, sha: pull.sha },
+        runs: CI.runs.filter(run => run.branch === pull.branch) };
+    }
+    if (target.sha) {
+      const sha = target.sha.toLowerCase();
+      const runs = CI.runs.filter(run => run.sha.startsWith(sha));
+      if (!runs.length && !history.commits.some(commit => commit.sha.startsWith(sha))) return undefined;
+      return { repository: history.repository, target: { sha: runs[0]?.sha ?? sha }, runs, deployment: CI.deployment };
+    }
+    const branch = target.branch ?? history.branch;
+    return { repository: history.repository, target: { branch }, runs: CI.runs.filter(run => run.branch === branch),
+      deployment: { ...CI.deployment, ...(branch === history.branch ? { notDeployed: CI.notDeployed } : {}) } };
   }
 }
 
@@ -145,13 +192,16 @@ const CHANNELS: Array<ChatChannel & { messages: Array<Omit<ChatMessage, 'channel
     { author: 'Dana Katz', at: '2026-10-28T09:12:00Z', text: 'Decision: the cache TTL for GitHub file reads is 5 minutes. We revisit it if we hit rate limits.' },
     { author: 'Roee Angel', at: '2026-10-28T09:15:00Z', text: 'Agreed, 5 minutes. Dana owns it (KAN-5).' },
     { author: 'Yossi Levi', at: '2026-10-30T11:02:00Z', text: 'Should the Jira client stop retrying 409s? It loops forever.' },
+    { author: 'Roee Angel', at: '2026-10-31T14:50:00Z', text: 'Turn taking v2 is merged behind the rollout flag (PR 11); the voice lab compares it with legacy (PR 12). It stays off in the next meeting.' },
   ] },
   { id: 'C2', name: 'incidents', messages: [
     { author: 'alerts', at: '2026-10-31T00:10:00Z', text: 'Slack replay failed: invalid_auth (3 events not replayed).' },
     { author: 'Dana Katz', at: '2026-10-31T06:40:00Z', text: 'Root cause of last night\'s replay failure: the bot token expired at 02:00 and replay does not refresh it. KAN-1 tracks the fix; the 3 events were replayed by hand.' },
+    { author: 'alerts', at: '2026-10-31T07:05:00Z', text: 'CI failed on main: verify / test (tests/missions.test.ts, restart test).' },
   ] },
   { id: 'C3', name: 'release', messages: [
     { author: 'Roee Angel', at: '2026-10-30T15:30:00Z', text: 'Release 0.4 goes out on Thursday 5 November.' },
+    { author: 'Yossi Levi', at: '2026-10-31T10:20:00Z', text: 'The /version endpoint (KAN-6) is in review; the release checklist needs it.' },
   ] },
   { id: 'C4', name: 'general', messages: [
     { author: 'Yossi Levi', at: '2026-10-31T08:00:00Z', text: 'Good morning! Meet at 16:00 today.' },

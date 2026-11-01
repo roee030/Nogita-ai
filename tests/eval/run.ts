@@ -51,6 +51,7 @@ for (const item of cases) {
     if (!score.passed) {
       const last = run.turns.at(-1);
       if (run.error) process.stdout.write(`     error: ${run.error}\n`);
+      if (score.claims?.unbacked.length) process.stdout.write(`     no source: ${score.claims.unbacked.join(', ')}\n`);
       if (last) process.stdout.write(`     said: ${[...last.spoken, ...last.chat].join(' | ').replace(/\s+/g, ' ').slice(0, 400)}\n`);
     }
   }
@@ -61,6 +62,8 @@ for (const dimension of DIMENSIONS) {
   const { passed, total, score } = summary.dimensions[dimension];
   process.stdout.write(`  ${dimension.padEnd(15)} ${(100 * score).toFixed(0).padStart(3)}%  (${passed}/${total})\n`);
 }
+const { claims } = summary;
+process.stdout.write(`  claims with a source ${(100 * claims.share).toFixed(0)}%  (${claims.backed}/${claims.total}; the phase 3 gate is 90%)\n`);
 if (values.json) {
   writeFileSync(values.json, `${JSON.stringify({ model: model.agentModel, at: new Date().toISOString(), summary, runs }, null, 1)}\n`);
   process.stdout.write(`wrote ${values.json}\n`);
