@@ -174,6 +174,30 @@ test('verified owner guidance from a handoff thread is persisted into the same a
   assert.match(JSON.stringify((await store.load('M-GUIDE'))!.messages), /also check the Slack reconnect logs/);
 });
 
+test('guidance arriving during a model round preempts that stale round before it can block the mission', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const requests: ChatModelRequest[] = [];
+  const model: ChatModel = { agentModel: 'deferred', async streamChat(request) {
+    requests.push(structuredClone(request));
+    if (requests.length === 1) { entered(); await gate; }
+    return { content: [use('report_blocked', { reason: 'stale blocker' })], stopReason: 'tool_use' };
+  } };
+  const runner = new MissionRunner({ model, store: new MemoryMissionStore(), toolbox: () => fakeTools([]), newId: () => 'M-RACE' });
+  await runner.start({ goal: 'Investigate KAN-20', owner });
+  await started;
+
+  assert.equal((await runner.guide('M-RACE', 'roee', 'check the reconnect log first')).ok, true);
+  release();
+  await runner.idle();
+
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests[0]!.messages), /reconnect log/);
+  assert.match(JSON.stringify(requests[1]!.messages), /check the reconnect log first/);
+});
+
 test('a write interrupted by a restart is never repeated blindly', async () => {
   const store = new MemoryMissionStore();
   const mission: Mission = { id: 'M-CRASH', goal: 'g', doneWhen: 'd', owner, status: 'executing', createdAt: 0, updatedAt: 0, attempts: 0,

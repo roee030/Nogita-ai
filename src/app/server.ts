@@ -133,8 +133,6 @@ const missionRunner = dependencies.agent ? new MissionRunner({ model: dependenci
       turnLog.record(mission.sessionId, { type: 'mission', id: mission.id, status: mission.status, ...(mission.activity ? { activity: mission.activity } : {}) });
     }
   } }) : undefined;
-// Populate the runner before Slack consumers open. Active work starts later, after the engine is ready.
-await missionRunner?.loadAll();
 
 /** Progress goes to the meeting or thread it came from while that is open, else to NOGITA_MISSION_CHANNEL if set. */
 async function notifyMission(mission: Mission, text: string): Promise<void> {
@@ -202,6 +200,11 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
       const participants = participantsBySession.get(sessionId);
       return participants ? { unverified: [...participants.values()].filter(verified => !verified).length } : undefined;
     } });
+// Restore and start missions before Slack consumers open, so no acknowledged thread reply can race an empty runner.
+let resumedMissions = 0;
+try { resumedMissions = await missionRunner?.resumeAll() ?? 0; }
+catch { console.error('missions_resume_failed'); }
+if (resumedMissions) console.log('missions_resumed', resumedMissions);
 const allowedSlackTeams = new Set((env.SLACK_ALLOWED_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
 const meetingHandles = new Map<string, DemoMeeting>();
 const MAX_SLACK_CONVERSATIONS = 500;
@@ -850,9 +853,6 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 const host = env.HOST ?? '127.0.0.1';
-// Missions that were working when the server stopped go on from their last saved step.
-void missionRunner?.resumeAll().then(count => { if (count) console.log('missions_resumed', count); })
-  .catch(() => console.error('missions_resume_failed'));
 const port = Number(env.PORT ?? '8787');
 server.listen(port, host, () => console.log(`Nogita dev server listening on http://${host}:${port}`));
 

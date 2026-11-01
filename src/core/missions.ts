@@ -344,6 +344,17 @@ ${note}` : [...last.content, { type: 'text', text: note }];
       mission.rounds++;
       mission.messages.push({ role: 'assistant', content: response.content });
       const uses = response.content.filter((block): block is Extract<AgentContent, { type: 'tool_use' }> => block.type === 'tool_use');
+      // Guidance received while the model was thinking invalidates that stale plan before any action or terminal state.
+      if (mission.guidance?.length) {
+        const notes = mission.guidance.map(item => ({ type: 'text' as const, text: `${mission.owner.displayName}: ${item.text}` }));
+        mission.guidance = undefined;
+        mission.messages.push({ role: 'user', content: uses.length
+          ? [...uses.map(use => ({ type: 'tool_result' as const, tool_use_id: use.id, is_error: true,
+            content: 'Not run: the owner sent new guidance while this round was in progress.' })), ...notes]
+          : notes });
+        await this.persist(mission);
+        continue;
+      }
       if (!uses.length) {
         const said = response.content.filter(block => block.type === 'text').map(block => (block as { text: string }).text).join(' ').trim();
         if (++idleRounds >= 2) { await this.block(mission, said.slice(0, 400) || 'I am not sure how to go on.', 'direction from the owner'); return; }
