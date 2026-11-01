@@ -52,7 +52,9 @@ function isMission(value: unknown, id: string): value is Mission {
     typeof mission.createdAt === 'number' && typeof mission.updatedAt === 'number' &&
     typeof mission.attempts === 'number' && typeof mission.rounds === 'number' &&
     Array.isArray(mission.steps) && mission.steps.every(isStep) &&
-    Array.isArray(mission.messages) && mission.messages.every(isMessage);
+    Array.isArray(mission.messages) && mission.messages.every(isMessage) &&
+    (mission.guidance === undefined || (Array.isArray(mission.guidance) && mission.guidance.every(item =>
+      record(item) && typeof item.at === 'number' && typeof item.text === 'string')));
 }
 
 export class FileMissionStore implements MissionStore, SlackMissionHandoffStore {

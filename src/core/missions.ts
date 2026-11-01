@@ -42,6 +42,8 @@ export interface Mission {
   steps: MissionStep[];
   /** The mission's own conversation with the model, so it resumes where it was after a restart. */
   messages: AgentMessage[];
+  /** Owner guidance queued while a round is running or before restart recovery starts it. */
+  guidance?: Array<{ at: number; text: string }>;
   /** A write waiting for the owner: the tool call, a plain description, and the other results of the same round. */
   pending?: { toolUseId: string; tool: string; input: Record<string, unknown>; summary: string; results: AgentContent[]; requestedAt: number };
   result?: { summary: string; evidence: string[]; verified: boolean };
@@ -244,6 +246,18 @@ ${note}` : [...last.content, { type: 'text', text: note }];
     return { ok: true, message: `Cancelled ${mission.id}.` };
   }
 
+  /** Adds owner guidance to an active mission without creating a separate conversation mission. */
+  async guide(id: string, actorId: string, text: string): Promise<{ ok: boolean; message: string }> {
+    const mission = this.get(id);
+    if (!mission || !ACTIVE_MISSION.has(mission.status)) return { ok: false, message: `${id} is not actively working.` };
+    if (mission.owner.id !== actorId) return { ok: false, message: `Only ${mission.owner.displayName} can guide ${mission.id}.` };
+    const guidance = text.trim().slice(0, 600);
+    if (!guidance) return { ok: false, message: 'Guidance is empty.' };
+    (mission.guidance ??= []).push({ at: this.now(), text: guidance });
+    await this.persist(mission);
+    return { ok: true, message: `Guidance added to ${mission.id}.` };
+  }
+
   /** After a restart: load every saved mission and continue the ones that were working. */
   async resumeAll(): Promise<number> {
     let resumed = 0;
@@ -294,6 +308,11 @@ ${note}` : [...last.content, { type: 'text', text: note }];
     const maxRounds = this.options.maxRounds ?? 24;
     let idleRounds = 0;
     while (ACTIVE_MISSION.has(mission.status)) {
+      if (mission.guidance?.length) {
+        for (const item of mission.guidance) mission.messages.push({ role: 'user', content: `${mission.owner.displayName}: ${item.text}` });
+        mission.guidance = undefined;
+        await this.persist(mission);
+      }
       if (mission.rounds >= maxRounds) {
         await this.block(mission, 'I used my step budget without finishing.', 'a narrower goal or guidance on the next step');
         return;

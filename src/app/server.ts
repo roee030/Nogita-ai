@@ -133,6 +133,8 @@ const missionRunner = dependencies.agent ? new MissionRunner({ model: dependenci
       turnLog.record(mission.sessionId, { type: 'mission', id: mission.id, status: mission.status, ...(mission.activity ? { activity: mission.activity } : {}) });
     }
   } }) : undefined;
+// Populate the runner before Slack consumers open. Active work starts later, after the engine is ready.
+await missionRunner?.loadAll();
 
 /** Progress goes to the meeting or thread it came from while that is open, else to NOGITA_MISSION_CHANNEL if set. */
 async function notifyMission(mission: Mission, text: string): Promise<void> {
@@ -478,7 +480,10 @@ async function processSlack(raw: string): Promise<void> {
           new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs, fetch, slackThreadReader));
       }
       const routed = await dispatchSlackMissionReply(request, slackMissionHandoffs, async (missionId, utterance) => {
-        await nogita.onUtterance(request.sessionId, { ...utterance, text: `Regarding mission ${missionId}: ${utterance.text}` });
+        const guided = await missionRunner?.guide(missionId, utterance.actor.id, utterance.text);
+        if (!guided?.ok) {
+          await nogita.onUtterance(request.sessionId, { ...utterance, text: `Regarding mission ${missionId}: ${utterance.text}` });
+        }
       });
       if (!routed) await nogita.onUtterance(request.sessionId, request.utterance);
     });

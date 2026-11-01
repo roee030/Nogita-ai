@@ -156,6 +156,24 @@ test('missions survive a restart: working ones resume from disk, one awaiting ap
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('verified owner guidance from a handoff thread is persisted into the same active mission before resume', async () => {
+  const store = new MemoryMissionStore();
+  const mission: Mission = { id: 'M-GUIDE', goal: 'Investigate KAN-20', doneWhen: 'Find the blocker', owner,
+    sessionId: 'meet:daily', status: 'investigating', createdAt: 1, updatedAt: 1, attempts: 0, rounds: 0,
+    steps: [{ at: 1, kind: 'started', text: 'Started' }], messages: [{ role: 'user', content: 'Mission' }] };
+  await store.save(mission);
+  const f = rig([[use('report_blocked', { reason: 'done reading guidance' })]], store);
+  await f.runner.loadAll();
+
+  assert.equal((await f.runner.guide('M-GUIDE', 'other', 'ignore this')).ok, false);
+  assert.equal((await f.runner.guide('M-GUIDE', 'roee', 'also check the Slack reconnect logs')).ok, true);
+  assert.equal(await f.runner.resumeAll(), 1);
+  await f.runner.idle();
+
+  assert.match(JSON.stringify(f.model.missionRequests[0]!.messages), /also check the Slack reconnect logs/);
+  assert.match(JSON.stringify((await store.load('M-GUIDE'))!.messages), /also check the Slack reconnect logs/);
+});
+
 test('a write interrupted by a restart is never repeated blindly', async () => {
   const store = new MemoryMissionStore();
   const mission: Mission = { id: 'M-CRASH', goal: 'g', doneWhen: 'd', owner, status: 'executing', createdAt: 0, updatedAt: 0, attempts: 0,
