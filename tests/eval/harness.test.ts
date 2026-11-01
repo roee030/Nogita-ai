@@ -25,11 +25,14 @@ class ScriptedModel implements ChatModel {
 const byId = (id: string): EvalCase => CASES.find(item => item.id === id)!;
 const failed = (score: ReturnType<typeof scoreCase>) => score.checks.filter(check => !check.pass).map(check => check.name);
 
-test('the set has 70 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries and research', () => {
-  assert.equal(CASES.length, 70);
-  assert.equal(new Set(CASES.map(item => item.id)).size, 70);
+test('the set has 80 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research and missions', () => {
+  assert.equal(CASES.length, 80);
+  assert.equal(new Set(CASES.map(item => item.id)).size, 80);
   const groups = (group: EvalCase['group']) => CASES.filter(item => item.group === group).length;
-  assert.deepEqual([groups('research'), groups('cross_source'), groups('ci')], [12, 10, 8]);
+  assert.deepEqual([groups('research'), groups('cross_source'), groups('ci'), groups('missions')], [12, 10, 8, 10]);
+  const missions = CASES.filter(item => item.missions);
+  assert.ok(missions.some(item => item.restartAfter !== undefined) && missions.some(item => item.chatAfter !== undefined));
+  assert.ok(missions.some(item => item.turns.length >= 3));
   assert.ok(byId('live-three-tasks').origin && byId('live-repo-today').origin);
   for (const item of CASES) assert.ok(item.checks.length > 0, item.id);
   const actions = CASES.map(item => Object.values(item.writes ?? {}).reduce((sum, count) => sum + count, 0));
@@ -204,4 +207,52 @@ test('a CI question answered without reading CI: honest is no fabrication, a mad
   const answer = async (text: string) => scoreCase(item, await runCase(new ScriptedModel([{ text }]), item));
   assert.deepEqual(failed(await answer('I can\'t see CI from here.')), ['read CI', 'yes, the latest run passed']);
   assert.deepEqual(failed(await answer('Yes, main is green.')), ['read CI', 'gives no CI result without reading CI']);
+});
+
+/** Conversation turns and mission rounds each play their own script. */
+class MissionScriptModel implements ChatModel {
+  readonly agentModel = 'scripted';
+  private readonly scripts: { conversation: ScriptedModel; mission: ScriptedModel };
+  constructor(conversation: Step[], mission: Step[]) { this.scripts = { conversation: new ScriptedModel(conversation), mission: new ScriptedModel(mission) }; }
+  streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
+    return this.scripts[request.usageContext?.startsWith('mission:') ? 'mission' : 'conversation'].streamChat(request, onText);
+  }
+}
+
+test('a mission waiting for approval survives a restart; approved after it, the task is opened once', async () => {
+  const item = byId('mission-approve-after-restart');
+  const run = await runCase(new MissionScriptModel([
+    { tools: [{ name: 'delegate_mission', input: { goal: 'Open a task to document turn taking v2 in the voice lab README (KAN-3).' } }] },
+    { text: 'On it.' },
+    { tools: [{ name: 'decide_mission', input: { decision: 'approve' } }] },
+    { text: 'Approved, opening it.' },
+  ], [
+    { tools: [{ name: 'get_task', input: { key: 'KAN-3' } }] },
+    { tools: [{ name: 'create_task', input: { title: 'Document turn taking v2 in the voice lab README', description: 'From KAN-3.' } }] },
+    { tools: [{ name: 'finish_mission', input: { summary: 'Opened KAN-7.', evidence: ['KAN-7'] } }] },
+  ]), item);
+  assert.equal(run.turns[0]!.tasksAfter, 6, 'nothing written before the approval');
+  assert.equal(run.missions?.[0]?.status, 'done');
+  assert.deepEqual(failed(scoreCase(item, run)), []);
+});
+
+test('"what\'s left?" asked in a chat thread after the meeting is answered from the mission store', async () => {
+  const item = byId('mission-status-other-channel');
+  const run = await runCase(new MissionScriptModel([
+    { tools: [{ name: 'delegate_mission', input: { goal: 'Check whether the version endpoint (KAN-6) is merged.' } }] },
+    { text: 'On it.' },
+    { tools: [{ name: 'mission_status', input: {} }] },
+    { text: 'KAN-6 is in review with Yossi, not merged yet.' },
+  ], [
+    { tools: [{ name: 'get_task', input: { key: 'KAN-6' } }] },
+    { tools: [{ name: 'finish_mission', input: { summary: 'KAN-6 is in review with Yossi, not merged yet.', evidence: ['KAN-6'] } }] },
+  ]), item);
+  assert.deepEqual(run.tools.filter(tool => tool === 'mission_status'), ['mission_status']);
+  assert.match(JSON.stringify(run.evidence), /M-\w+ \[done\]/);
+  assert.deepEqual(failed(scoreCase(item, run)), []);
+  // Without mission_status the same answer fails the source check.
+  const guessed = await runCase(new MissionScriptModel([
+    { tools: [{ name: 'delegate_mission', input: { goal: 'Check KAN-6.' } }] }, { text: 'On it.' }, { text: 'It is merged.' },
+  ], [{ tools: [{ name: 'finish_mission', input: { summary: 'Done.', evidence: [] } }] }]), item);
+  assert.ok(failed(scoreCase(item, guessed)).includes('answered "what\'s left" from the mission store'));
 });
