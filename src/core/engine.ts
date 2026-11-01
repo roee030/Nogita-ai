@@ -10,7 +10,7 @@ import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-pr
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
-import { PhrasePicker, toSpoken } from './spoken.ts';
+import { briefly, PhrasePicker, toSpoken } from './spoken.ts';
 import { stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
 import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
@@ -167,6 +167,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_WHATS_LEFT_DIRECT: mission_status also answers for requests done in the turn itself (what was changed, what
    *  was not), kept per person for a few hours in memory. Needs `missionStatus`. Off unless set. */
   whatsLeftDirect?: boolean;
+  /** NOGITA_SHORT_SPOKEN_RESULTS: a mission's result and a mission_status answer are spoken in a sentence or two; the full
+   *  text goes to chat. Off unless set. */
+  shortSpokenResults?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -410,6 +413,7 @@ export class NogitaEngine {
   private readonly missionStatus: boolean;
   private readonly pendingApprovals: boolean;
   private readonly whatsLeftDirect: boolean;
+  private readonly shortSpokenResults: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -464,6 +468,7 @@ export class NogitaEngine {
     this.missionStatus = options.missionStatus === true && options.missions !== undefined;
     this.pendingApprovals = options.pendingApprovals === true && options.missions !== undefined;
     this.whatsLeftDirect = options.whatsLeftDirect === true && this.missionStatus;
+    this.shortSpokenResults = options.shortSpokenResults === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -973,6 +978,7 @@ export class NogitaEngine {
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus,
+      ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => s.meeting.sendStatus(text) } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),
       onReceipt: receipt => {
@@ -1210,7 +1216,7 @@ export class NogitaEngine {
     await s.meeting.sendStatus(text).catch(() => undefined);
     // Spoken after the answers people are waiting for, never ahead of them.
     const open = s.questions.filter(q => NogitaEngine.isOpen(q) && q.run).map(q => q.run!);
-    if (s.floor) void Promise.allSettled(open).then(() => { if (this.sessions.get(sessionId) === s && !s.ending) this.sayAside(s, toSpoken(text)); });
+    if (s.floor) void Promise.allSettled(open).then(() => { if (this.sessions.get(sessionId) === s && !s.ending) this.sayAside(s, this.shortSpokenResults ? briefly(text) : toSpoken(text)); });
     return true;
   }
 
