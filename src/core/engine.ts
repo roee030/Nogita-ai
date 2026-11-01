@@ -3,7 +3,7 @@ import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedErr
 import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
 import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
-import { OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
+import { missionReport, OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
@@ -157,6 +157,9 @@ export interface NogitaEngineOptions {
    * spoken when the room has an opening, or stays in chat when none comes. Needs `missions`. Off unless set.
    */
   twoSpeed?: boolean;
+  /** mission_status (NOGITA_MISSION_STATUS): "what's left of what I asked?" answered from the mission store, with what
+   *  was done, what failed and what is still open, and its sources. Needs `missions`. Off unless set. */
+  missionStatus?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -393,6 +396,7 @@ export class NogitaEngine {
   private readonly roomNoiseGuard: boolean;
   private readonly swallowedQuestion: boolean;
   private readonly twoSpeed: boolean;
+  private readonly missionStatus: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -438,6 +442,7 @@ export class NogitaEngine {
     this.roomNoiseGuard = options.roomNoiseGuard === true;
     this.swallowedQuestion = options.swallowedQuestion === true;
     this.twoSpeed = options.twoSpeed === true && options.missions !== undefined;
+    this.missionStatus = options.missionStatus === true && options.missions !== undefined;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -946,7 +951,7 @@ export class NogitaEngine {
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
-      ciStatus: this.research.ciStatus,
+      ciStatus: this.research.ciStatus, missionStatus: this.missionStatus,
       onReceipt: receipt => {
         if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
         return s.meeting.sendCompletion(receipt);
@@ -1247,6 +1252,11 @@ export class NogitaEngine {
           ...(m.pending ? { pending: m.pending.summary } : {}),
           ...(m.steps.filter(step => step.kind === 'finding').at(-1) ? { lastFinding: m.steps.filter(step => step.kind === 'finding').at(-1)!.text } : {}),
           ...(m.result ? { result: m.result.summary } : m.blockedReason ? { result: `blocked: ${m.blockedReason}` } : {}) })),
+      report: id => {
+        const visible = (m: Mission) => m.owner.id === actor.id || m.sessionId === sessionId;
+        const mission = id ? runner.get(id) : runner.list().find(visible);
+        return mission && visible(mission) ? missionReport(mission) : undefined;
+      },
       decide: async (decision, id, note) => {
         const fits = { approve: ['awaiting_approval'], decline: ['awaiting_approval'], resume: ['blocked', 'failed'],
           cancel: ['investigating', 'executing', 'awaiting_approval', 'blocked'] }[decision];
