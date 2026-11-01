@@ -165,6 +165,9 @@ export interface MissionReport {
   failed: string[];
   /** What is still running or waiting, and on whom; empty once the mission is done. */
   open: string[];
+  /** Writes a restart cut off after they started and before their result was saved: they may or may not have happened,
+   *  so they are checked, never run again blindly. Listed until the mission is done (its finish evidence is verified). */
+  unknown: string[];
   findings: string[];
   /** The sources its own tool results rest on: what it changed first, then what its result cites, then the rest. */
   sources: EvidenceSource[];
@@ -177,9 +180,19 @@ export function missionReport(mission: Mission, maxSources = 8): MissionReport {
   const done: string[] = []; const failed: string[] = []; const findings: string[] = [];
   const once = (list: string[], text: string) => { if (!list.includes(text)) list.push(text); };
   let change = '';
+  // A write started and not finished yet; a restart (or the next write) while it is open means its outcome is unknown.
+  let started: string | undefined;
+  const unknown: string[] = [];
   for (const step of mission.steps) {
-    if (step.kind === 'write_started') change = step.text;
-    else if (step.kind === 'write_done') {
+    if (step.kind === 'write_started') {
+      if (started !== undefined) once(unknown, started);
+      change = step.text;
+      started = step.text;
+    } else if (step.kind === 'resumed') {
+      if (started !== undefined) once(unknown, started);
+      started = undefined;
+    } else if (step.kind === 'write_done') {
+      started = undefined;
       if (step.ok) once(done, change || step.text);
       else once(failed, `${change || step.tool || 'a change'}: ${step.text.slice(0, 160)}`);
     } else if (step.kind === 'tool' && step.ok === false) once(failed, step.text);
@@ -197,7 +210,8 @@ export function missionReport(mission: Mission, maxSources = 8): MissionReport {
     : mission.status === 'failed' ? ['Stopped after errors; it can be resumed']
     : mission.status === 'cancelled' ? ['Cancelled before it finished']
     : ACTIVE_MISSION.has(mission.status) ? [`Still working: ${mission.activity ?? 'in progress'}`] : [];
-  return { id: mission.id, goal: mission.goal, status: mission.status, done, failed, open, findings: findings.slice(-3),
+  return { id: mission.id, goal: mission.goal, status: mission.status, done, failed, open,
+    unknown: mission.status === 'done' ? [] : unknown, findings: findings.slice(-3),
     sources: missionSources(mission, maxSources) };
 }
 
