@@ -86,3 +86,21 @@ test('a task Roee put off holds back what depends on it, and is not listed as so
   assert.doesNotMatch(text, /Do P1-8/);
   assert.match(text, /Put off by Roee, no action now: P1-8, P2-7, P2-8/);
 });
+
+test('in a chain, the agent builds on its own PRs waiting for review instead of waiting for a merge', () => {
+  const tasks = parseBoard(BOARD);
+  const prs = [pr(15, 'claude/P1-1-truncated', 'OPEN')];
+  const plain = buildReport(tasks, prs, 'claude');
+  assert.equal(plain.tasks.find(task => task.id === 'P1-2')!.status, 'waiting');
+  assert.equal(plain.next, undefined);
+
+  const chain = buildReport(tasks, prs, 'claude', { chain: true });
+  assert.equal(chain.tasks.find(task => task.id === 'P1-1')!.status, 'in-review');
+  assert.equal(chain.tasks.find(task => task.id === 'P1-2')!.status, 'ready');
+  // engine.ts is in both, but the new branch carries P1-1's work, so it is not held back.
+  assert.deepEqual(chain.next && [chain.next.task.id, chain.next.buildsOn?.map(item => item.number)], ['P1-2', [15]]);
+  assert.match(formatReport(chain, 'claude'), /merge origin\/claude\/P1-1-truncated into the new branch/);
+  // Another agent's PR waiting for review is still a dependency to wait for.
+  const codex = buildReport(tasks, prs, 'codex', { chain: true });
+  assert.equal(codex.tasks.find(task => task.id === 'P1-5')!.status, 'waiting');
+});
