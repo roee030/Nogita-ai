@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SlackMissionHandoffs } from '../src/app/slack-conversations.ts';
 import { FileMissionStore } from '../src/app/mission-store.ts';
-import { bindSlackMissionHandoff, dispatchSlackMissionReply, missionHandoffRequested } from '../src/app/slack-socket-events.ts';
+import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, missionHandoffRequested } from '../src/app/slack-socket-events.ts';
 
 test('a meeting mission update is delivered to its bound Slack thread', async () => {
   const handoffs = new SlackMissionHandoffs(true);
@@ -109,4 +109,11 @@ test('the Slack event boundary binds the named meeting mission to the originatin
 
   assert.equal(await bindSlackMissionHandoff(request, handoffs, id => id === mission.id ? mission : undefined), 'M-7ABC');
   assert.equal(handoffs.missionForThread(request.sessionId), 'M-7ABC');
+});
+
+test('explicit mission controls stay on the decision path instead of becoming guidance', () => {
+  for (const text of ['approve M-7ABC', 'decline it', 'resume M-7ABC with the logs', 'cancel M-7ABC']) {
+    assert.equal(isMissionDecision(text), true, text);
+  }
+  assert.equal(isMissionDecision('also check the reconnect logs'), false);
 });

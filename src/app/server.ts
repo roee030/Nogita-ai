@@ -8,7 +8,7 @@ import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, loadDotEnv, researchFeatures } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
-import { bindSlackMissionHandoff, dispatchSlackMissionReply, registerSlackEventHandlers } from './slack-socket-events.ts';
+import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
@@ -483,7 +483,7 @@ async function processSlack(raw: string): Promise<void> {
           new SlackThreadMeeting(request.sessionId, env.SLACK_BOT_TOKEN!, request.channel, request.threadTs, fetch, slackThreadReader));
       }
       const routed = await dispatchSlackMissionReply(request, slackMissionHandoffs, async (missionId, utterance) => {
-        const guided = await missionRunner?.guide(missionId, utterance.actor.id, utterance.text);
+        const guided = isMissionDecision(utterance.text) ? undefined : await missionRunner?.guide(missionId, utterance.actor.id, utterance.text);
         if (!guided?.ok) {
           await nogita.onUtterance(request.sessionId, { ...utterance, text: `Regarding mission ${missionId}: ${utterance.text}` });
         }

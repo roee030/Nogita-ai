@@ -3,6 +3,10 @@ import type { SlackMissionHandoffs } from './slack-conversations.ts';
 
 export const SLACK_EVENT_TYPES = ['app_mention', 'message'] as const;
 
+export function isMissionDecision(text: string): boolean {
+  return /\b(?:approve|approved|decline|reject|resume|continue mission|cancel|stop mission)\b/i.test(text);
+}
+
 export interface SlackMissionReply {
   sessionId: string;
   utterance: Utterance;

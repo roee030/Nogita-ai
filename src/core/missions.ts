@@ -366,8 +366,10 @@ ${note}` : [...last.content, { type: 'text', text: note }];
       const results: AgentContent[] = [];
       let waitFor: Extract<AgentContent, { type: 'tool_use' }> | undefined;
       let ended = false;
+      let superseded = false;
       let blocked: { reason: string; needs?: string } | undefined;
-      for (const use of uses) {
+      for (let index = 0; index < uses.length; index++) {
+        const use = uses[index]!;
         const input = use.input ?? {};
         if (blocked || ended) {
           results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Not run: the mission stopped first.' });
@@ -407,6 +409,19 @@ ${note}` : [...last.content, { type: 'text', text: note }];
           results.push({ type: 'tool_result', tool_use_id: use.id, content: outcome.content.slice(0, 6_000), ...(outcome.isError ? { is_error: true } : {}) });
         }
         if (this.cancelled(mission)) return;
+        if (mission.guidance?.length) {
+          for (const remaining of uses.slice(index + 1)) results.push({ type: 'tool_result', tool_use_id: remaining.id,
+            is_error: true, content: 'Not run: the owner sent new guidance while this round was in progress.' });
+          superseded = true;
+          break;
+        }
+      }
+      if (superseded) {
+        const notes = mission.guidance!.map(item => ({ type: 'text' as const, text: `${mission.owner.displayName}: ${item.text}` }));
+        mission.guidance = undefined;
+        mission.messages.push({ role: 'user', content: [...results, ...notes] });
+        await this.persist(mission);
+        continue;
       }
       if (blocked) {
         // A pending write in the same round is dropped with the rest: the owner decides how to go on.
