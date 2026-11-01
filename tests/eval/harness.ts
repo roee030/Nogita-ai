@@ -12,6 +12,8 @@ import { DemoBrain, DemoMeeting } from '../../src/adapters/demo.ts';
 import type { ChatModel, ChatModelRequest, ChatModelResponse } from '../../src/core/agent.ts';
 import type { ActionReceipt, Capability, SpeakOptions } from '../../src/core/contracts.ts';
 import { EvidenceLedger } from '../../src/core/evidence.ts';
+import { buildToolbox } from '../../src/core/agent-tools.ts';
+import { MemoryMissionStore, MissionRunner } from '../../src/core/missions.ts';
 import { DIMENSIONS, type CaseRun, type Check, type Dimension, type EvalCase, type TurnRecord, type WriteMethod, said } from './cases.ts';
 import { NOW, SPEAKERS, TEAM, evalWorld, isWrite } from './world.ts';
 
@@ -83,39 +85,83 @@ class EvalMeeting extends DemoMeeting {
   }
 }
 
+/** A mission round with the real model takes seconds; a mission that is still running after this is left as it is. */
+const MISSION_WAIT_MS = 180_000;
+
 export async function runCase(model: ChatModel, item: EvalCase, options: { research?: ResearchFeatures } = {}): Promise<CaseRun> {
   const world = evalWorld();
   const traced = new TracedModel(model);
   const voice = (item.mode ?? 'voice') === 'voice';
-  const meeting = new EvalMeeting(item.id, new Set<Capability>(voice ? ['listen', 'speak', 'streaming_speech', 'chat_receipt'] : ['chat_receipt']));
+  const meetingFor = (id: string, inVoice: boolean) =>
+    new EvalMeeting(id, new Set<Capability>(inVoice ? ['listen', 'speak', 'streaming_speech', 'chat_receipt'] : ['chat_receipt']));
+  let meeting = meetingFor(item.id, voice);
+  let sessionId = item.id;
   // Time starts at the frozen moment and runs at real speed, so timers inside the engine still behave.
   const started = Date.now();
-  // Kept across a restart, as NOGITA_DURABLE_RECEIPTS keeps them on disk.
+  const now = () => NOW + Date.now() - started;
+  // Kept across a restart, as NOGITA_DURABLE_RECEIPTS keeps them on disk; missions keep their store the same way.
   const receipts = new Map<string, ActionReceipt>();
+  const missionStore = new MemoryMissionStore();
+  const missionReceipts: ActionReceipt[] = [];
+  const policy = new AllowlistPolicy(new Set(['roee']));
+  let engine: NogitaEngine;
+  // Missions use the owner's tools, as tools/mission.ts builds them; an approved write runs without the request check.
+  const newRunner = () => item.missions ? new MissionRunner({ model: traced, store: missionStore, now,
+    toolbox: (mission, callId) => buildToolbox({ actor: { ...mission.owner, verified: true }, request: mission.goal,
+      sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`, policy,
+      code: world.ports.code, board: world.ports.board, chat: world.ports.chat, people: world.people, completed: new Map(),
+      writesApproved: true, team: TEAM, now, onReceipt: async receipt => { missionReceipts.push(receipt); } }).toolbox,
+    notify: (mission, text) => { void engine.announce(mission.sessionId ?? sessionId, text); } }) : undefined;
+  let runner = newRunner();
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
-    policy: new AllowlistPolicy(new Set(['roee'])), agent: traced, people: world.people, tenant: TEAM },
-  { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now: () => NOW + Date.now() - started, receipts,
-    research: options.research,
+    policy, agent: traced, people: world.people, tenant: TEAM },
+  { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
+    research: options.research, ...(runner ? { missions: runner, missionStatus: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
-  let engine = newEngine();
+  engine = newEngine();
   const actor = SPEAKERS[item.speaker ?? 'roee'];
   const run: CaseRun = { turns: [], receipts: meeting.receipts, calls: world.calls, tools: traced.tools, stops: traced.stops,
     board: world.board, posted: world.chat.posted, sources: [], evidence: traced.evidence, ms: 0 };
+  /** Waits until no mission is in the middle of a round: it is waiting for approval, settled, or out of time. */
+  const settle = async () => {
+    if (runner) await Promise.race([runner.idle(), new Promise(resolve => setTimeout(resolve, MISSION_WAIT_MS).unref())]);
+  };
   const deliver = async (text: string, eventId: string) => {
     meeting.spoken = [];
     meeting.chat = [];
-    const result = await engine.onUtterance(item.id, { eventId, text, actor });
+    const result = await engine.onUtterance(sessionId, { eventId, text, actor });
+    await settle();
     run.turns.push({ text, result, spoken: meeting.spoken, chat: meeting.chat, tasksAfter: world.board.tasks.length });
   };
-  await engine.startSession(item.id, meeting);
+  await engine.startSession(sessionId, meeting);
   try {
-    for (const [index, text] of item.turns.entries()) await deliver(text, `${item.id}-${index}`);
+    for (const [index, text] of item.turns.entries()) {
+      await deliver(text, `${item.id}-${index}`);
+      if (item.restartAfter === index) {
+        // The process is gone: a new engine and runner, and the missions come back from their store.
+        await engine.endSession(sessionId);
+        runner = newRunner();
+        engine = newEngine();
+        await runner?.resumeAll();
+        await engine.startSession(sessionId, meeting);
+      }
+      if (item.chatAfter === index) {
+        // The meeting is over; the same person goes on in a chat thread.
+        await engine.endSession(sessionId);
+        const thread = meetingFor(`${item.id}-thread`, false);
+        thread.receipts.push(...meeting.receipts);
+        meeting = thread;
+        run.receipts = meeting.receipts;
+        sessionId = thread.id;
+        await engine.startSession(sessionId, meeting);
+      }
+    }
     if (item.retry) {
       // The meeting provider delivers the last utterance again, with the same event id; after a restart the process
       // lost the session and its seen events, and only the stored receipts remain.
       if (item.retry === 'restart') {
         engine = newEngine();
-        await engine.startSession(item.id, meeting);
+        await engine.startSession(sessionId, meeting);
       }
       await deliver(item.turns.at(-1)!, `${item.id}-${item.turns.length - 1}`);
     }
@@ -124,7 +170,10 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   } finally {
     run.ms = Date.now() - started;
     run.sources = traced.ledger.list();
-    await engine.endSession(item.id);
+    // A mission's receipts are the system's own lines, like the meeting's.
+    run.receipts.push(...missionReceipts);
+    if (item.missions) run.missions = await missionStore.list();
+    await engine.endSession(sessionId);
   }
   return run;
 }
