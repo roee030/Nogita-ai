@@ -142,6 +142,9 @@ Claude הוא הסוכן היחיד בריפו. צ'אט אחד רץ על כל ה
 | [ ] | P5-7 | שערי שלב 5 ב-dashboard: לכל שער עובר או לא עובר מהנתונים (שאלות שאבדו, תשובה או כישלון ברור, interruption p95, כתיבות כפולות או לא מורשות מה-audit log), וכמה פגישות ו-turns נאספו מתוך 30 ו-500 | Claude | `tools/dashboard/`, `tests/dashboard.test.ts` | P6-4 |
 | [ ] | P5-8 | 30 פגישות ו-500 turns, כולל אנשים שלא מכירים את המערכת, רעש, הפרעות וכמה דוברים; turn logs עם `NOGITA_USAGE_LOG=true`, וכל כשל עובר ל-Claude כמשימת תיקון עם בדיקת רגרסיה | רועי | | P5-5, P5-7 |
 | [ ] | P5-9 | החלטה על turn-taking v2 מול legacy לפי הדוח | רועי | | P5-6 |
+| [ ] | P5-10 | שני תיקונים מסט ההערכה של 100 המקרים בלוח המשימות | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P5-11 | "פתחי משימה על X" פותחת משימה: כשהנושא נאמר, היא פותחת עם מה שנאמר ולא שואלת "מה המשימה צריכה להגיד?"; שואלת רק כשאין נושא בכלל; flag כבוי; רגרסיה: בדיקה דטרמיניסטית, ומקרי ה-eval `dana-for-me-task`, `two-people-two-tasks`, `noisy-two-tasks-fillers` ו-`noisy-mixed-hebrew` עוברים | Claude | `src/core/agent-prompt.ts`, `src/core/agent-tools.ts`, `tests/task-from-topic.test.ts`, `tests/eval/` | - |
+| [ ] | P5-12 | מילה שנשמעה לא נכון לא חוסמת כתיבה: "open three tusks" (טעות תמלול של tasks) עובר את בדיקת הבקשה המפורשת ב-`requestsTaskWrite`, בלי לפתוח כתיבה לבקשות שלא ביקשו; flag כבוי; רגרסיה: בדיקה דטרמיניסטית לטעויות תמלול ולמשפטים שאסור שיעברו, ומקרה ה-eval `noisy-three-tasks-asr` עובר | Claude | `src/core/agent-tools.ts`, `tests/task-write-request.test.ts`, `tests/eval/` | P5-11 |
 
 ### שלב 6 (מוקדם), שבועות 11–12: מוכנות לפיילוט
 
