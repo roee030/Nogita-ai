@@ -8,7 +8,9 @@
  */
 
 import { checkCompletion, type CompletionReport, type GateCall } from './completion-gate.ts';
-import { CITE_SOURCES_PROMPT, EvidenceLedger, linkSources, tagSources, type EvidenceSource } from './evidence.ts';
+import { checkProofLevels, CITE_SOURCES_PROMPT, EvidenceLedger, linkSources, tagSources, type EvidenceSource,
+  type ProofCheck } from './evidence.ts';
+import { PROOF_LEVELS_PROMPT } from './agent-prompt.ts';
 import { digestResultWithStats, MORE_OF_RESULT, MORE_OF_RESULT_SPEC, resultPage } from './result-digest.ts';
 
 export type AgentContent =
@@ -85,6 +87,10 @@ export interface AgentTurn {
    *  is returned with the result. In a chat turn (no `onSpeech`) the model cites them as [S1] and the answer ends with
    *  numbered links; a voice turn is not told to cite, so nothing is read aloud. Off by default. */
   evidenceLedger?: boolean;
+  /** With `evidenceLedger`, in a chat turn: the answer ends with the proof level its sources show (planned, in code,
+   *  tested, voice lab, meeting, production), lowered to what the cited sources reach, and a production claim with no
+   *  deployment behind it is marked as not shown. Off by default. */
+  proofLevels?: boolean;
 }
 export interface AgentResult {
   /** Text of the final model step: the answer itself. */
@@ -117,6 +123,8 @@ export interface AgentEvidence {
   sources: EvidenceSource[];
   /** Ids of the sources the chat answer cites, in order; empty in a voice turn. */
   cited: string[];
+  /** With `proofLevels`, in a chat turn: the level the answer claimed and the level it was allowed to show. */
+  proof?: ProofCheck;
 }
 export interface AgentStepStop {
   step: number;
@@ -245,8 +253,10 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const withEvidence = (done: AgentResult): AgentResult => {
     if (!ledger) return done;
     if (!citeSources || !done.answer) return { ...done, evidence: { sources: ledger.list(), cited: [] } };
-    const linked = linkSources(done.answer, ledger);
-    return { ...done, answer: linked.text, evidence: { sources: ledger.list(), cited: linked.cited } };
+    const checked = turn.proofLevels ? checkProofLevels(done.answer, ledger) : undefined;
+    const linked = linkSources(checked?.text ?? done.answer, ledger);
+    return { ...done, answer: linked.text,
+      evidence: { sources: ledger.list(), cited: linked.cited, ...(checked ? { proof: checked.proof } : {}) } };
   };
   const cutShort = (interrupted: 'deadline' | 'cut_off', step: number): AgentResult => {
     const done = result(true);
@@ -271,7 +281,8 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
         turnSystem: (lastStep
           ? `${turn.turnSystem}\nThis is your last step: answer now with what you have; do not call tools.` +
             (turn.honestShortfall ? ' If something they asked for is not done, say what, and offer to finish it.' : '')
-          : turn.turnSystem) + (citeSources && ledger!.size ? `\n${CITE_SOURCES_PROMPT}` : ''),
+          : turn.turnSystem) +
+          (citeSources && ledger!.size ? `\n${CITE_SOURCES_PROMPT}${turn.proofLevels ? `\n${PROOF_LEVELS_PROMPT}` : ''}` : ''),
         messages, tools: lastStep ? [] : toolbox.specs, maxTokens,
         usageContext: turn.usageContext, timeoutMs: Math.min(30_000, deadline - (now() - started)), signal: turn.signal,
       }, delta => {
