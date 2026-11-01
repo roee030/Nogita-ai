@@ -13,7 +13,16 @@ interface AgentModelOptions {
   /** 'off' (the default) skips the model's own thinking before it answers: on Haiku 5.5 it halved the time to first
    *  text, and the voice lab scored the same. 'default' leaves the model's adaptive thinking on. */
   thinking?: 'default' | 'off';
+  /** Route research and multi-action steps to a stronger model. Off by default. */
+  routing?: boolean;
+  routingModel?: string;
+  routingInputUsdPerMillion?: number;
+  routingOutputUsdPerMillion?: number;
+  maxRoutedCallsPerSession?: number;
 }
+
+export interface ModelRouteTrace { step: number; model: string; reason: 'flag_off' | 'fast_voice' | 'research' |
+  'multiple_actions' | 'meeting_budget' }
 
 interface ModelUsage { modelCalls: number; inputTokens: number; outputTokens: number }
 interface CodeModelOptions {
@@ -26,6 +35,25 @@ interface CodeModelOptions {
 function needsCodeReasoning(question: string, evidence: readonly Evidence[]): boolean {
   return new Set(evidence.map(item => item.path)).size >= 2 &&
     /\b(?:why|architecture|architectural|across|between|interact(?:ion|s)?|trade-?offs?|root cause|end.to.end)\b/i.test(question);
+}
+
+function originalRequest(request: ChatModelRequest): string {
+  const user = [...request.messages].reverse().find(message => message.role === 'user' &&
+    (typeof message.content === 'string' || message.content.some(item => item.type === 'text')));
+  if (!user) return '';
+  if (typeof user.content === 'string') return user.content;
+  return user.content.filter(item => item.type === 'text').map(item => (item as { text: string }).text).join(' ');
+}
+
+function routingReason(text: string): 'research' | 'multiple_actions' | 'fast_voice' {
+  const actions = text.match(/\b(?:create|open|add|update|change|assign|close|post|send|draft|delete|remove)\b/gi) ?? [];
+  const quantifiedAction = actions.length > 0 &&
+    /\b(?:two|three|four|five|six|seven|eight|nine|ten|multiple|several|a few|\d+)\b/i.test(text);
+  if (actions.length >= 2 || quantifiedAction) return 'multiple_actions';
+  if (/\b(?:what (?:changed|shipped|landed)|what(?:'s| is) new|today|this week|research|investigate|compare|root cause|why (?:did|does|is|was|are)|ci\b|build (?:failed|failure)|across (?:github|jira|slack|sources))\b/i.test(text)) {
+    return 'research';
+  }
+  return 'fast_voice';
 }
 
 const PLAN_FORMAT = { type: 'json_schema', schema: { anyOf: [
@@ -79,6 +107,8 @@ export class AnthropicBrain implements BrainPort, ChatModel {
   private readonly codeReasoningAttempts = new Map<string, number>();
   private readonly activeUsageSessions = new Set<string>();
   private readonly completedUsageSessions = new Set<string>();
+  private readonly routedCalls = new Map<string, number>();
+  private readonly routeTraces = new Map<string, ModelRouteTrace[]>();
   private readonly inputUsdPerMillion: number;
   private readonly outputUsdPerMillion: number;
   private readonly codeReasoningModel?: string;
@@ -89,6 +119,11 @@ export class AnthropicBrain implements BrainPort, ChatModel {
   private readonly agentThinking: 'default' | 'off';
   private readonly agentInputUsdPerMillion: number;
   private readonly agentOutputUsdPerMillion: number;
+  private readonly routingEnabled: boolean;
+  private readonly routingModel?: string;
+  private readonly routingInputUsdPerMillion: number;
+  private readonly routingOutputUsdPerMillion: number;
+  private readonly maxRoutedCallsPerSession: number;
 
   constructor(private readonly key: string, model = DEFAULT_ANTHROPIC_MODEL, private readonly http: typeof fetch = fetch,
     prices: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } = {},
@@ -98,9 +133,19 @@ export class AnthropicBrain implements BrainPort, ChatModel {
     this.agentThinking = agent.thinking ?? 'off';
     this.agentInputUsdPerMillion = agent.inputUsdPerMillion ?? 0.10;
     this.agentOutputUsdPerMillion = agent.outputUsdPerMillion ?? 0.50;
+    this.routingEnabled = agent.routing ?? process.env.NOGITA_MODEL_ROUTING === 'true';
+    const configuredRoutingModel = agent.routingModel?.trim() || process.env.ANTHROPIC_ROUTING_MODEL?.trim();
+    this.routingModel = configuredRoutingModel && configuredRoutingModel !== this.agentModel
+      ? configuredRoutingModel : undefined;
+    this.routingInputUsdPerMillion = agent.routingInputUsdPerMillion ?? 3;
+    this.routingOutputUsdPerMillion = agent.routingOutputUsdPerMillion ?? 15;
+    this.maxRoutedCallsPerSession = agent.maxRoutedCallsPerSession ?? 4;
     if (![this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0)) {
       throw new Error('invalid Anthropic agent token price');
     }
+    if (![this.routingInputUsdPerMillion, this.routingOutputUsdPerMillion].every(value => Number.isFinite(value) && value >= 0) ||
+        !Number.isSafeInteger(this.maxRoutedCallsPerSession) || this.maxRoutedCallsPerSession < 0 ||
+        this.maxRoutedCallsPerSession > 20) throw new Error('invalid Anthropic routing model budget');
     this.model = model.trim() || DEFAULT_ANTHROPIC_MODEL;
     this.inputUsdPerMillion = prices.inputUsdPerMillion ?? 0.10;
     this.outputUsdPerMillion = prices.outputUsdPerMillion ?? 0.50;
@@ -141,7 +186,32 @@ export class AnthropicBrain implements BrainPort, ChatModel {
       this.completedUsageSessions.delete(oldest);
       this.usage.delete(oldest);
       this.codeReasoningAttempts.delete(oldest);
+      this.routedCalls.delete(oldest);
+      this.routeTraces.delete(oldest);
     }
+  }
+
+  routingTraceFor(usageContext: string): readonly ModelRouteTrace[] {
+    return [...(this.routeTraces.get(usageContext) ?? [])];
+  }
+
+  private routeAgentStep(request: ChatModelRequest): { model: string; reason: ModelRouteTrace['reason'] } {
+    const reason = routingReason(originalRequest(request));
+    let selected = this.agentModel;
+    let selectedReason: ModelRouteTrace['reason'] = !this.routingEnabled || !this.routingModel ? 'flag_off' : reason;
+    if (this.routingEnabled && this.routingModel && reason !== 'fast_voice') {
+      const used = request.usageContext ? this.routedCalls.get(request.usageContext) ?? 0 : this.maxRoutedCallsPerSession;
+      if (request.usageContext && this.activeUsageSessions.has(request.usageContext) && used < this.maxRoutedCallsPerSession) {
+        selected = this.routingModel;
+        this.routedCalls.set(request.usageContext, used + 1);
+      } else selectedReason = 'meeting_budget';
+    }
+    if (request.usageContext) {
+      const trace = this.routeTraces.get(request.usageContext) ?? [];
+      trace.push({ step: trace.length, model: selected, reason: selectedReason });
+      this.routeTraces.set(request.usageContext, trace);
+    }
+    return { model: selected, reason: selectedReason };
   }
   private async ask(system: string, user: string, maxTokens: number, usageContext?: string,
     history: readonly { role: 'user' | 'assistant'; content: string }[] = [], structuredPlan = false,
@@ -193,10 +263,10 @@ export class AnthropicBrain implements BrainPort, ChatModel {
    * prompt caching, so later turns in a meeting skip re-reading the repository map.
    */
   /** Haiku accepts thinking off outright; Sonnet only between tool calls; other models keep their default. */
-  private thinkingParameter(): Record<string, unknown> {
+  private thinkingParameter(model = this.agentModel): Record<string, unknown> {
     if (this.agentThinking !== 'off') return {};
-    if (/haiku/.test(this.agentModel)) return { thinking: { type: 'disabled' } };
-    if (/sonnet/.test(this.agentModel)) return { thinking: { type: 'between_tools' } };
+    if (/haiku/.test(model)) return { thinking: { type: 'disabled' } };
+    if (/sonnet/.test(model)) return { thinking: { type: 'between_tools' } };
     return {};
   }
 
@@ -229,20 +299,21 @@ export class AnthropicBrain implements BrainPort, ChatModel {
   }
 
   async streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
+    const route = this.routeAgentStep(request);
     const tools = request.tools.map((tool, index) => ({ ...tool,
       ...(index === request.tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}) }));
     const res = await this.http('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': this.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: this.agentModel, max_tokens: request.maxTokens, stream: true,
+        model: route.model, max_tokens: request.maxTokens, stream: true,
         system: [
           { type: 'text', text: request.stableSystem, cache_control: { type: 'ephemeral' } },
           ...(request.turnSystem ? [{ type: 'text', text: request.turnSystem }] : []),
         ],
         messages: request.messages,
         ...(tools.length ? { tools } : {}),
-        ...this.thinkingParameter(),
+        ...this.thinkingParameter(route.model),
       }),
       signal: request.signal ? AbortSignal.any([AbortSignal.timeout(request.timeoutMs ?? 30_000), request.signal])
         : AbortSignal.timeout(request.timeoutMs ?? 30_000),
@@ -303,7 +374,7 @@ export class AnthropicBrain implements BrainPort, ChatModel {
         }
       }
     } finally {
-      if (request.usageContext) this.recordUsage(request.usageContext, this.agentModel, inputTokens, outputTokens);
+      if (request.usageContext) this.recordUsage(request.usageContext, route.model, inputTokens, outputTokens);
     }
     const content: AgentContent[] = [];
     for (const block of blocks) {
@@ -413,6 +484,8 @@ Reply with only JSON: {"raise": false} or {"raise": true, "topic": "3-6 word top
     const entries = [...(this.usage.get(usageContext) ?? new Map<string, ModelUsage>())].map(([model, usage]) => {
       const [inputPrice, outputPrice] = model === this.codeReasoningModel
         ? [this.codeInputUsdPerMillion, this.codeOutputUsdPerMillion]
+        : model === this.routingModel
+          ? [this.routingInputUsdPerMillion, this.routingOutputUsdPerMillion]
         : model === this.agentModel && model !== this.model
           ? [this.agentInputUsdPerMillion, this.agentOutputUsdPerMillion]
           : [this.inputUsdPerMillion, this.outputUsdPerMillion];

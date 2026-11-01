@@ -70,6 +70,9 @@ export async function probeConnections(
           // The conversational agent model must be available too whenever live mode uses it.
           if (env.NOGITA_MODE === 'live' && env.NOGITA_AGENT !== 'off') {
             models.push(env.ANTHROPIC_AGENT_MODEL?.trim() || DEFAULT_ANTHROPIC_AGENT_MODEL);
+            if (env.NOGITA_MODEL_ROUTING === 'true') {
+              models.push(env.ANTHROPIC_ROUTING_MODEL?.trim() || '');
+            }
           }
           modelAvailable = models.every(model => data.some(item => item && typeof item === 'object' &&
             (item as Record<string, unknown>).id === model));
