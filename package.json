@@ -16,6 +16,7 @@
     "voice-lab": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/run.ts",
     "tts-benchmark": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/voice-lab/benchmark-tts.ts",
     "turn-report": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/turn-report.ts",
+    "onboard": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/onboard.ts",
     "dashboard": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/dashboard/run.ts",
     "control": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/control/main.ts",
     "mission": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/mission.ts",
