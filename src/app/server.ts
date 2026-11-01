@@ -236,7 +236,8 @@ const attendeeCommands = new AttendeeCommandRouter(
     let result = 'error';
     try {
       result = await nogita.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
-        ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+        ...(context.speculation ? { speculation: context.speculation as Speculation } : {}),
+        ...(context.turnEnded ? { turnEnded: true } : {}) });
     } finally {
       turnLog.record(sessionId, { type: 'turn', speaker: turnLog.person(utterance.actor.displayName),
         addressed: directlyAddressesNogita(utterance.text), words: utterance.text.trim().split(/\s+/).length, result,
@@ -327,8 +328,10 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
         attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant, inputTurnId));
       },
       onTurnResumed: (sessionId, participantUuid) => attendeeCommands.resumeTurn(sessionId, participantUuid),
-      onTurnTiming: (sessionId, participantUuid, event) => turnLog.record(sessionId,
-        { type: 'eot', speaker: turnLog.person(participantUuid), ...event }),
+      onTurnTiming: (sessionId, participantUuid, event) => {
+        turnLog.record(sessionId, { type: 'eot', speaker: turnLog.person(participantUuid), ...event });
+        if (turnTakingV2 && event.phase === 'confirmed') nogita.noteTurnEnded(sessionId, participantUuid);
+      },
       onVoice: (sessionId, participantUuid) => {
         nogita.noteVoice(sessionId, participantUuid);
         attendeeCommands.noteOwnVoice(sessionId, participantUuid);

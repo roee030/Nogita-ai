@@ -237,9 +237,11 @@ export class VoiceRig {
         this.log('stt_resumed', { participant: participantUuid });
         this.router.resumeTurn(sessionId, participantUuid);
       },
-      onTurnTiming: (_sessionId, participant, event) => this.log('eot_timing', { participant,
-        inputTurnIds: [event.inputTurnId],
-        phase: event.phase, ...(event.sinceLastVoiceMs !== undefined ? { ms: event.sinceLastVoiceMs } : {}) }),
+      onTurnTiming: (sessionId, participant, event) => {
+        this.log('eot_timing', { participant, inputTurnIds: [event.inputTurnId],
+          phase: event.phase, ...(event.sinceLastVoiceMs !== undefined ? { ms: event.sinceLastVoiceMs } : {}) });
+        if (this.options.turnTakingV2 !== false && event.phase === 'confirmed') this.engine.noteTurnEnded(sessionId, participant);
+      },
       onInterrupt: (_sessionId, event) => {
         this.lastTtsInterruptAt = performance.now();
         this.log('interrupt', { questionId: event.questionId,
@@ -276,7 +278,8 @@ export class VoiceRig {
         this.pendingEngine++;
         try {
           const result = await this.engine.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
-            ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+            ...(context.speculation ? { speculation: context.speculation as Speculation } : {}),
+            ...(context.turnEnded ? { turnEnded: true } : {}) });
           this.log('engine_done', { detail: String(result) });
         } catch (error) {
           this.log('engine_error', { detail: error instanceof Error ? error.message : String(error) });

@@ -133,9 +133,9 @@ export class SpeechFloor {
   }
 
   /** A person is talking (live recognition); `ended` when their turn reached Nogita. */
-  noteTalking(speaker: string, ended = false): void {
+  noteTalking(speaker: string, ended = false, confirmed = false): void {
     if (ended) this.talking.delete(speaker);
-    else this.talking.set(speaker, this.options.explicitTurnEnd
+    else this.talking.set(speaker, this.options.explicitTurnEnd && confirmed
       ? Number.POSITIVE_INFINITY
       : this.now() + (this.options.talkingMs ?? 1_000));
     if (ended && this.interruptedOwner !== undefined) this.heardSinceInterrupt = true;

@@ -7,11 +7,12 @@ type ScheduledWork = () => void | Promise<void>;
 interface Fragment { text: string; eventId: string; at?: number; sequence: number; inputTurnIds?: string[] }
 interface BufferEntry {
   actor: Actor; fragments: Fragment[]; timer: unknown; receivedAt: number;
+  turnEnded: boolean; turnEndReported: boolean;
   waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
 }
 /** An answer started on Deepgram's early end-of-turn, kept until the turn is confirmed or resumed. */
 export interface EarlyStart { cancel(): void }
-export interface EmitContext { speakerKey: string; speculation?: EarlyStart }
+export interface EmitContext { speakerKey: string; speculation?: EarlyStart; turnEnded?: boolean }
 interface SessionState {
   owner?: Actor;
   speculations: Map<string, { text: string; handle: EarlyStart }>;
@@ -142,6 +143,10 @@ export class AttendeeCommandRouter {
   }
 
   accept(request: AttendeeTranscriptRequest): Promise<void> {
+    return this.acceptRequest(request, false, false);
+  }
+
+  private acceptRequest(request: AttendeeTranscriptRequest, turnEnded: boolean, turnEndReported: boolean): Promise<void> {
     const state = this.sessions.get(request.sessionId);
     if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
     state.acceptedEventIds.add(request.utterance.eventId);
@@ -158,7 +163,9 @@ export class AttendeeCommandRouter {
       resolve = resolvePromise; reject = rejectPromise;
     });
     completion.catch(() => undefined);
-    const entry: BufferEntry = { actor, fragments, waiters: [...(previous?.waiters ?? []), { resolve, reject }],
+    const entry: BufferEntry = { actor, fragments, turnEnded: previous?.turnEnded === true || turnEnded,
+      turnEndReported: previous?.turnEndReported === true || turnEndReported,
+      waiters: [...(previous?.waiters ?? []), { resolve, reject }],
       timer: undefined, receivedAt: previous?.receivedAt ?? performance.now() };
     entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError),
       this.quietWindow(fragments));
@@ -180,7 +187,7 @@ export class AttendeeCommandRouter {
 
   /** Treat provider-final speech as a fragment; a quiet window prevents interruptions at short pauses. */
   acceptFinal(request: AttendeeTranscriptRequest): Promise<void> {
-    return this.accept(request);
+    return this.acceptRequest(request, true, false);
   }
 
   /** Flux has already identified the end of the speaker's turn. */
@@ -201,7 +208,7 @@ export class AttendeeCommandRouter {
       }
       if (rest !== undefined) request = { ...request, utterance: { ...request.utterance, text: rest } };
     }
-    const completion = this.accept(request);
+    const completion = this.acceptRequest(request, true, this.explicitTurnEnd);
     const entry = state.buffers.get(request.speakerUuid);
     if (entry) {
       this.cancel(entry.timer);
@@ -298,6 +305,10 @@ export class AttendeeCommandRouter {
     const state = this.sessions.get(sessionId); const entry = state?.buffers.get(speakerUuid);
     if (!state || !entry) return;
     state.buffers.delete(speakerUuid);
+    if (this.explicitTurnEnd && entry.turnEnded && !entry.turnEndReported) {
+      this.onTurnEnded?.(sessionId, speakerUuid);
+      entry.turnEndReported = true;
+    }
     const ordered = [...entry.fragments].sort((a, b) =>
       (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER) || a.sequence - b.sequence);
     const text = normalizeWakeWord(ordered.map(fragment => fragment.text).join(' ').replace(/\s+/g, ' ').trim().slice(0, 4000));
@@ -340,7 +351,8 @@ export class AttendeeCommandRouter {
         const inputTurnIds = [...new Set(ordered.flatMap(f => f.inputTurnIds ?? []))];
         await this.emit(sessionId, { eventId, actor, text, ...(at === undefined ? {} : { at }),
           ...(inputTurnIds.length ? { inputTurnIds } : {}) },
-          { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}) });
+          { speakerKey: speakerUuid, ...(speculation ? { speculation } : {}),
+            ...(this.explicitTurnEnd && entry.turnEnded ? { turnEnded: true } : {}) });
       }
       for (const waiter of entry.waiters) waiter.resolve();
     } catch (error) {
