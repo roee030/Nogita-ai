@@ -5,7 +5,8 @@
  *
  *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
  *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5]
- *                        [--warmup production|cold] [--research] [--room-noise-guard] [--swallowed-question] [--two-speed] [--list]
+ *                        [--warmup production|cold] [--research] [--room-noise-guard] [--swallowed-question] [--two-speed]
+ *                        [--turn-taking v2|legacy] [--repeat N] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
  * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
@@ -34,6 +35,7 @@ const { values } = parseArgs({ options: {
   'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
   research: { type: 'boolean', default: false }, 'room-noise-guard': { type: 'boolean', default: false },
   'swallowed-question': { type: 'boolean', default: false }, 'two-speed': { type: 'boolean', default: false },
+  repeat: { type: 'string', default: '1' },
 } });
 
 if (values.list) {
@@ -75,6 +77,7 @@ const earlyCommitMs = Number(values['early-commit-ms'] ?? env.NOGITA_EARLY_COMMI
 const turnTaking = values['turn-taking'] ?? 'v2';
 if (turnTaking !== 'v2' && turnTaking !== 'legacy') throw new Error('--turn-taking must be v2 or legacy');
 const warmup = parseWarmupMode(values.warmup);
+const repeat = Math.max(1, Math.floor(Number(values.repeat)) || 1);
 // --research turns on every phase 3 research feature; without it each follows its NOGITA_* flag, as in production.
 const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(env);
 // --room-noise-guard turns on NOGITA_ROOM_NOISE_GUARD for this run.
@@ -147,78 +150,83 @@ if (needsBabble) {
 console.log('Indexing the repository...');
 if (dependencies.code.prepare) await dependencies.code.prepare();
 
-const startedAt = new Date().toISOString();
-const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
-  routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
-  eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs), earlyCommitMs: String(earlyCommitMs), turnTaking,
-  warmup, twoSpeed: allTwoSpeed ? 'on' : 'per scenario',
-  thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
-const results: ScenarioResult[] = [];
-for (const scenario of scenarios) {
-  console.log(`\n▶ ${scenario.title}`);
-  const voices = new Map(scenario.participants.map(p => [p.id, p.voice]));
-  const audio: Float32Array[] = [];
-  for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
-  rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
-    dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, earlyCommitMs, turnTakingV2: turnTaking === 'v2', frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
-    warmup,
-    eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
-    // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
-    engineOptions: { handRaiseFallback: 'chat', research, roomNoiseGuard: noiseGuard, swallowedQuestion: askSwallowed,
-      ...(scenario.twoSpeed || allTwoSpeed ? { missions: missionRunner(), twoSpeed: true } : {}) } });
-  const errors: string[] = [];
-  let records: Awaited<ReturnType<typeof playScenario>> = [];
-  try {
-    // People sharing a meeting-room mic speak through its owner; the meeting sees only the owner.
-    await rig.start(scenario.participants.flatMap((p, i) => p.sharesMicWith ? [] : [{
-      id: p.id, name: p.name, mic: p.mic,
-      actor: p.authorized
-        ? { id: actorIdFor(p.id, i), displayName: p.name, verified: true }
-        : { id: `unmapped:lab:${p.id}`, displayName: p.name, verified: false },
-      noise: createNoise(scenario.noise, 1000 + i * 77, babble),
-    }]));
-    records = await playScenario(rig, scenario, audio, {
-      onTurn: (index, turn) => console.log(`  ${index + 1}. ${turn.speaker}: ${Array.isArray(turn.say) ? turn.say.join(' … ') : turn.say}`) });
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
-  } finally {
-    await rig.stop();
+// --repeat N plays the whole set N times, one report each, so two settings can be compared on more than one sample.
+for (let repetition = 1; repetition <= repeat; repetition++) {
+  if (repeat > 1) console.log(`\n=== Repetition ${repetition} of ${repeat} ===`);
+  const startedAt = new Date().toISOString();
+  const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
+    routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
+    eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs), earlyCommitMs: String(earlyCommitMs), turnTaking,
+    warmup, twoSpeed: allTwoSpeed ? 'on' : 'per scenario',
+    thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
+  const results: ScenarioResult[] = [];
+  for (const scenario of scenarios) {
+    console.log(`\n▶ ${scenario.title}`);
+    const voices = new Map(scenario.participants.map(p => [p.id, p.voice]));
+    const audio: Float32Array[] = [];
+    for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
+    rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
+      dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, earlyCommitMs, turnTakingV2: turnTaking === 'v2', frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+      warmup,
+      eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
+      // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
+      engineOptions: { handRaiseFallback: 'chat', research, roomNoiseGuard: noiseGuard, swallowedQuestion: askSwallowed,
+        ...(scenario.twoSpeed || allTwoSpeed ? { missions: missionRunner(), twoSpeed: true } : {}) } });
+    const errors: string[] = [];
+    let records: Awaited<ReturnType<typeof playScenario>> = [];
+    try {
+      // People sharing a meeting-room mic speak through its owner; the meeting sees only the owner.
+      await rig.start(scenario.participants.flatMap((p, i) => p.sharesMicWith ? [] : [{
+        id: p.id, name: p.name, mic: p.mic,
+        actor: p.authorized
+          ? { id: actorIdFor(p.id, i), displayName: p.name, verified: true }
+          : { id: `unmapped:lab:${p.id}`, displayName: p.name, verified: false },
+        noise: createNoise(scenario.noise, 1000 + i * 77, babble),
+      }]));
+      records = await playScenario(rig, scenario, audio, {
+        onTurn: (index, turn) => console.log(`  ${index + 1}. ${turn.speaker}: ${Array.isArray(turn.say) ? turn.say.join(' … ') : turn.say}`) });
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    } finally {
+      await rig.stop();
+    }
+    errors.push(...new Set(rig.events.filter(e => e.type === 'error').map(e => e.detail ?? 'error')));
+    const turns = records.map(record => ({ record, score: scoreTurn(record) }));
+    if (values.judge && env.ANTHROPIC_API_KEY) {
+      const model = env.VOICE_LAB_JUDGE_MODEL || 'claude-sonnet-5-5';
+      await Promise.all(turns.map(async turn => { turn.score.judgement = await judge(turn.record, env.ANTHROPIC_API_KEY!, model).catch(() => undefined); }));
+    }
+    for (const error of errors) console.log(`  ! ${error}`);
+    for (const { record, score } of turns) {
+      const gap = record.timing.firstAudio === undefined ? '   —   ' : `${(record.timing.firstAudio / 1000).toFixed(2)} s`;
+      console.log(`  ${score.passed ? '✓' : '✗'} #${record.index + 1} gap ${gap}  heard: "${record.heard ?? ''}"`);
+      for (const check of score.checks.filter(c => !c.ok)) console.log(`      ✗ ${check.name}${check.detail ? `: ${check.detail}` : ''}`);
+    }
+    results.push({ scenario, turns, room: rig.room.samples().slice(), nogita: rig.nogita.samples().slice(), errors, events: rig.events.slice() });
   }
-  errors.push(...new Set(rig.events.filter(e => e.type === 'error').map(e => e.detail ?? 'error')));
-  const turns = records.map(record => ({ record, score: scoreTurn(record) }));
-  if (values.judge && env.ANTHROPIC_API_KEY) {
-    const model = env.VOICE_LAB_JUDGE_MODEL || 'claude-sonnet-5-5';
-    await Promise.all(turns.map(async turn => { turn.score.judgement = await judge(turn.record, env.ANTHROPIC_API_KEY!, model).catch(() => undefined); }));
-  }
-  for (const error of errors) console.log(`  ! ${error}`);
-  for (const { record, score } of turns) {
-    const gap = record.timing.firstAudio === undefined ? '   —   ' : `${(record.timing.firstAudio / 1000).toFixed(2)} s`;
-    console.log(`  ${score.passed ? '✓' : '✗'} #${record.index + 1} gap ${gap}  heard: "${record.heard ?? ''}"`);
-    for (const check of score.checks.filter(c => !c.ok)) console.log(`      ✗ ${check.name}${check.detail ? `: ${check.detail}` : ''}`);
-  }
-  results.push({ scenario, turns, room: rig.room.samples().slice(), nogita: rig.nogita.samples().slice(), errors, events: rig.events.slice() });
-}
 
-const summary = summarize(results, settings, startedAt);
-const out = resolve(values.out ?? join('.voice-lab', 'reports', startedAt.replace(/[:.]/g, '-')));
-await writeReport(out, summary, results);
-const s = summary.responseGap;
-console.log(`\nResponse gap: p50 ${s.p50} ms, p90 ${s.p90} ms, max ${s.max} ms (n=${s.count})`);
-console.log(`Passed ${summary.passed}/${summary.total}; name recognized ${summary.addressHeard.heard}/${summary.addressHeard.total}`);
-const c = summary.conversation;
-console.log(`Answer itself p50 ${summary.meaningfulGap.p50} ms; questions ${c.questions}, answered ${c.answered}, chat only ${c.chatOnly}, ` +
-  `cancelled ${c.cancelled}, stopped ${c.stopped}, lost ${c.unresolved}; early starts ${c.earlyAdopted} used / ${c.earlyRolledBack} rolled back; ` +
-  `spoke over someone ${c.spokeOverPeople}`);
-if (summary.falsePauses.total) console.log(`False pauses ${summary.falsePauses.pauses}/${summary.falsePauses.total}; ` +
-  `95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%; p90 duration ${summary.falsePauses.duration.p90 ?? 'n/a'} ms`);
-const twoSpeedTurns = results.flatMap(result => result.turns).filter(({ record }) => record.turn.expect.fullAnswerWithinMs !== undefined);
-if (twoSpeedTurns.length) {
-  const short = stats(twoSpeedTurns.map(({ record }) => record.timing.firstContentAudio));
-  const full = stats(twoSpeedTurns.map(({ record }) => record.fullAnswer?.at));
-  const spoken = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.spokenAt !== undefined).length;
-  const over = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.overPeople).length;
-  console.log(`Two speeds: short answer p50 ${short.p50 ?? 'n/a'} ms; full answer p50 ${full.p50 ?? 'n/a'} ms (${full.count}/${twoSpeedTurns.length} arrived), ` +
-    `spoken ${spoken}, started over someone ${over}`);
+  const summary = summarize(results, settings, startedAt);
+  const name = startedAt.replace(/[:.]/g, '-');
+  const out = resolve(values.out ? (repeat > 1 ? `${values.out}-r${repetition}` : values.out) : join('.voice-lab', 'reports', name));
+  await writeReport(out, summary, results);
+  const s = summary.responseGap;
+  console.log(`\nResponse gap: p50 ${s.p50} ms, p90 ${s.p90} ms, max ${s.max} ms (n=${s.count})`);
+  console.log(`Passed ${summary.passed}/${summary.total}; name recognized ${summary.addressHeard.heard}/${summary.addressHeard.total}`);
+  const c = summary.conversation;
+  console.log(`Answer itself p50 ${summary.meaningfulGap.p50} ms; questions ${c.questions}, answered ${c.answered}, chat only ${c.chatOnly}, ` +
+    `cancelled ${c.cancelled}, stopped ${c.stopped}, lost ${c.unresolved}; early starts ${c.earlyAdopted} used / ${c.earlyRolledBack} rolled back; ` +
+    `spoke over someone ${c.spokeOverPeople}`);
+  if (summary.falsePauses.total) console.log(`False pauses ${summary.falsePauses.pauses}/${summary.falsePauses.total}; ` +
+    `95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%; p90 duration ${summary.falsePauses.duration.p90 ?? 'n/a'} ms`);
+  const twoSpeedTurns = results.flatMap(result => result.turns).filter(({ record }) => record.turn.expect.fullAnswerWithinMs !== undefined);
+  if (twoSpeedTurns.length) {
+    const short = stats(twoSpeedTurns.map(({ record }) => record.timing.firstContentAudio));
+    const full = stats(twoSpeedTurns.map(({ record }) => record.fullAnswer?.at));
+    const spoken = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.spokenAt !== undefined).length;
+    const over = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.overPeople).length;
+    console.log(`Two speeds: short answer p50 ${short.p50 ?? 'n/a'} ms; full answer p50 ${full.p50 ?? 'n/a'} ms (${full.count}/${twoSpeedTurns.length} arrived), ` +
+      `spoken ${spoken}, started over someone ${over}`);
+  }
+  console.log(`Report: ${join(out, 'report.html')}`);
 }
-console.log(`Report: ${join(out, 'report.html')}`);
 process.exit(0);
