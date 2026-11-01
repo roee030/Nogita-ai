@@ -865,7 +865,7 @@ export const CASES: EvalCase[] = [
   },
   {
     id: 'mission-whats-left-done', group: 'missions', missions: true,
-    turns: ['Nogita, take care of this: open a task for Dana to add retries to the Slack replay, KAN-1 has the details.', 'Nogita, approve it.',
+    turns: ['Nogita, work on this in the background: open a task for Yossi to document the /version endpoint in the README, KAN-6 has the details.', 'Nogita, approve it.',
       'Nogita, did all of what I asked get done?'],
     writes: { createTask: 1 },
     checks: [
@@ -885,7 +885,7 @@ export const CASES: EvalCase[] = [
   },
   {
     id: 'mission-research-no-writes', group: 'missions', missions: true,
-    turns: ['Nogita, take care of figuring out why the Slack replay failed last night and who is on it. No changes, just find out.',
+    turns: ['Nogita, own this in the background: figure out why the Slack replay failed last night and who is on it. No changes, just find out.',
       'Nogita, what\'s left from what I asked?'],
     checks: [
       delegated, askedStatus,
@@ -915,7 +915,7 @@ export const CASES: EvalCase[] = [
   },
   {
     id: 'mission-status-other-channel', group: 'missions', missions: true, chatAfter: 0,
-    turns: ['Nogita, take care of KAN-6: check whether the version endpoint is merged yet and tell me.', 'Nogita, what\'s left from the thing I asked you in the meeting?'],
+    turns: ['Nogita, take care of KAN-6 in the background: check whether the version endpoint is merged yet and tell me later.', 'Nogita, what\'s left from the thing I asked you in the meeting?'],
     checks: [
       delegated, askedStatus,
       { dimension: 'accuracy', name: 'answers from the mission', pass: run => /version|kan-6|review|merged/.test(said(run)) },
@@ -923,7 +923,7 @@ export const CASES: EvalCase[] = [
   },
   {
     id: 'mission-approve-other-channel', group: 'missions', missions: true, chatAfter: 0,
-    turns: ['Nogita, take care of this: open a task for Yossi to stop the Jira client retrying 409s forever.', 'Nogita, approve it.'],
+    turns: ['Nogita, work on this in the background: open a task for Yossi to stop the Jira client retrying 409s forever.', 'Nogita, approve it.'],
     writes: { createTask: 1 },
     checks: [
       delegated,
