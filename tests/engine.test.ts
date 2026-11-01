@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { NogitaEngine, type NogitaEngineOptions } from '../src/core/engine.ts';
 import { AllowlistPolicy, directlyAddressesNogita, isExplicitCreateRequest, removeAddress } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
+import type { ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
+import { swallowedQuestion } from '../src/app/config.ts';
 import { CodeLookupRateLimitError, SpeechFallbackSentError, type BrainPort, type CodePort, type Plan, type UsagePort } from '../src/core/contracts.ts';
 
 const lead = { id: 'lead', displayName: 'Lead', verified: true };
@@ -847,4 +849,109 @@ test('create task request is recognized, question not treated as request', () =>
   assert.equal(isExplicitCreateRequest('Do we have a task about auth?'), false);
   assert.equal(isExplicitCreateRequest('and open one for me to write tests for the socket reconnect'), true);
   assert.equal(isExplicitCreateRequest('open one file for me'), false);
+});
+
+// P3-14: a swallowed question comes back fast (NOGITA_SWALLOWED_QUESTION). Transcripts as heard in the voice lab.
+class RoomModel {
+  readonly agentModel = 'scripted';
+  readonly asked: string[] = [];
+  readonly transcripts: string[] = [];
+  async streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
+    if (request.stableSystem.startsWith('Name the topic')) return { content: [{ type: 'text', text: 'that' }], stopReason: 'end_turn' };
+    const message = String(request.messages[0]?.content ?? '');
+    this.transcripts.push(message);
+    const said = message.split('says to you now:').at(-1) ?? '';
+    this.asked.push(said);
+    const text = /503|five hundred three/.test(said) ? 'Service unavailable: the server is overloaded or down.' : '';
+    if (text) onText(text);
+    return { content: text ? [{ type: 'text', text }] : [], stopReason: 'end_turn' };
+  }
+}
+class SpokenMeeting extends DemoMeeting {
+  readonly spoken: string[] = [];
+  override async speak(message: string): Promise<void> {
+    this.spoken.push(message);
+    this.events.push({ type: 'speak', text: message });
+  }
+}
+const ASK = 'Sorry, did someone ask me something?';
+async function swallowRoom(on: boolean) {
+  const model = new RoomModel();
+  const meeting = new SpokenMeeting('m');
+  let time = 1_000_000;
+  const later: Array<{ work: () => void | Promise<void>; delay: number }> = [];
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['lead', 'engineer'])), agent: model },
+  { now: () => time, schedule: (work, delay) => { later.push({ work, delay }); return 0; }, cancel: () => undefined,
+    floor: { resumeAfterMs: 20, talkingMs: 20 }, roomNoiseGuard: true, swallowedQuestion: on });
+  await engine.startSession('s', meeting);
+  let n = 0;
+  const say = async (text: string, actor = lead) => {
+    const result = await engine.onUtterance('s', { text, eventId: String(++n), actor });
+    await new Promise(resolve => setImmediate(resolve));
+    return result;
+  };
+  const wait = async (ms: number) => {
+    time += ms;
+    for (const item of later.splice(0)) if (item.delay === 4_000) await item.work();
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  return { model, meeting, say, wait };
+}
+
+test('swallowed question: her name came through but the question did not, so she asks at once', async () => {
+  const r = await swallowRoom(true);
+  await r.say('Nogita, -- the --', engineer);
+  assert.deepEqual(r.meeting.spoken, [ASK]);
+  assert.equal(r.model.asked.length, 0);
+  // The asker's next words are for her even without her name.
+  await r.say('What does HTTP status 503 mean?', engineer);
+  assert.deepEqual(r.meeting.spoken, [ASK, 'Service unavailable: the server is overloaded or down.']);
+});
+
+test('swallowed question: a question whose start was lost in crosstalk gets a short ask, once, and is not answered later', async () => {
+  const r = await swallowRoom(true);
+  await r.say('Did anyone book the room for Thursday afternoon?', engineer);
+  await r.say('I think the client wanted delivery after all. Did anyone book the route for Thursday afternoon? -- status five hundred three mean?');
+  assert.deepEqual(r.meeting.spoken, [ASK]);
+  assert.equal(r.model.asked.length, 0);
+  await r.wait(5_000);
+  await r.say('Oh, wait. I think I booked it myself. -- the server starts where?');
+  assert.deepEqual(r.meeting.spoken, [ASK], 'asked once, not on every noisy turn');
+  // Side talk with a whole question after the break, or no question at all, is the room's.
+  await r.wait(40_000);
+  await r.say('on the first floor is supposed to -- Wait. Is that the really big file? Yeah. The huge one.', engineer);
+  await r.say('on the first floor is supposed to be -- Okay. Moving on to the design review.', engineer);
+  assert.deepEqual(r.meeting.spoken, [ASK]);
+  // The topic closed; a later question to her never brings the lost one back.
+  await r.say('Nogita, which file has the main meeting engine?', engineer);
+  const transcript = r.model.transcripts.at(-1) ?? '';
+  assert.doesNotMatch(transcript, /five hundred three/);
+  assert.match(transcript, /\[lost in crosstalk\]/);
+});
+
+test('swallowed question: only her name, and no question in a few seconds, gets a short ask', async () => {
+  const r = await swallowRoom(true);
+  await r.say('Nogita.', engineer);
+  assert.deepEqual(r.meeting.spoken, []);
+  await r.wait(4_000);
+  assert.deepEqual(r.meeting.spoken, [ASK]);
+
+  const followed = await swallowRoom(true);
+  await followed.say('Nogita.', engineer);
+  await followed.say('What does HTTP status 503 mean?', engineer);
+  await followed.wait(4_000);
+  assert.deepEqual(followed.meeting.spoken, ['Service unavailable: the server is overloaded or down.']);
+});
+
+test('swallowed question: off unless set (NOGITA_SWALLOWED_QUESTION)', async () => {
+  const r = await swallowRoom(false);
+  await r.say('Nogita.', engineer);
+  await r.wait(4_000);
+  await r.say('I think the client wanted delivery after all. -- status five hundred three mean?');
+  assert.deepEqual(r.meeting.spoken, []);
+  assert.equal(swallowedQuestion({}), false);
+  assert.equal(swallowedQuestion({ NOGITA_SWALLOWED_QUESTION: 'false' }), false);
+  assert.equal(swallowedQuestion({ NOGITA_SWALLOWED_QUESTION: 'true' }), true);
+  assert.throws(() => swallowedQuestion({ NOGITA_SWALLOWED_QUESTION: 'yes' }), /must be true or false/);
 });
