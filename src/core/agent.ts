@@ -11,7 +11,7 @@ import { checkCompletion, type CompletionReport, type GateCall } from './complet
 import { checkProofLevels, CITE_SOURCES_PROMPT, EvidenceLedger, linkSources, tagSources, type EvidenceSource,
   type ProofCheck } from './evidence.ts';
 import { PROOF_LEVELS_PROMPT } from './agent-prompt.ts';
-import { digestResult, MORE_OF_RESULT, MORE_OF_RESULT_SPEC, resultPage } from './result-digest.ts';
+import { digestResultWithStats, MORE_OF_RESULT, MORE_OF_RESULT_SPEC, resultPage } from './result-digest.ts';
 
 export type AgentContent =
   | { type: 'text'; text: string }
@@ -110,6 +110,14 @@ export interface AgentResult {
   interrupted?: 'deadline' | 'cut_off';
   /** With `evidenceLedger`: every source the tool results rested on, in the order found. */
   evidence?: AgentEvidence;
+  /** Large tool results represented by a digest, without retaining their contents in the operational trace. */
+  resultTruncations?: ResultTruncation[];
+}
+export interface ResultTruncation {
+  tool: string;
+  resultId: string;
+  omittedItems: number;
+  omittedLines: number;
 }
 export interface AgentEvidence {
   sources: EvidenceSource[];
@@ -224,6 +232,7 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
   const stored = new Map<string, string>();
   const toolbox = turn.digestResults ? withResultPaging(turn.toolbox, stored) : turn.toolbox;
   const ledger = turn.evidenceLedger ? new EvidenceLedger() : undefined;
+  const resultTruncations: ResultTruncation[] = [];
   const citeSources = ledger !== undefined && !turn.onSpeech;
   const resultContent = (name: string, outcome: ToolOutcome, sources: readonly EvidenceSource[]): string => {
     const content = citeSources && sources.length ? tagSources(outcome.content || '(empty)', sources) : outcome.content || '(empty)';
@@ -232,13 +241,15 @@ export async function runAgent(model: ChatModel, turn: AgentTurn): Promise<Agent
     }
     const id = `r${stored.size + 1}`;
     stored.set(id, content);
-    return digestResult(content, id);
+    const digest = digestResultWithStats(content, id);
+    resultTruncations.push({ tool: name, resultId: id, omittedItems: digest.omittedItems, omittedLines: digest.omittedLines });
+    return digest.text;
   };
   let answer = '';
   let steps = 0;
   const result = (stoppedEarly: boolean): AgentResult =>
     ({ answer, preface: prefaces.join(' '), toolCalls, lookups, steps, stoppedEarly, stops,
-      completion: checkCompletion(turn.request, gateCalls) });
+      completion: checkCompletion(turn.request, gateCalls), ...(resultTruncations.length ? { resultTruncations: [...resultTruncations] } : {}) });
   const withEvidence = (done: AgentResult): AgentResult => {
     if (!ledger) return done;
     if (!citeSources || !done.answer) return { ...done, evidence: { sources: ledger.list(), cited: [] } };

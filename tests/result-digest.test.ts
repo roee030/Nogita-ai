@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgent, type AgentContent, type AgentToolbox, type ChatModel, type ChatModelRequest,
   type ChatModelResponse, type ToolOutcome } from '../src/core/agent.ts';
-import { digestResult, MORE_OF_RESULT, resultPage } from '../src/core/result-digest.ts';
+import { digestResult, digestResultWithStats, MORE_OF_RESULT, resultPage } from '../src/core/result-digest.ts';
 
 const authors = ['dana', 'roee', 'moshe'];
 /** A week of activity in the shape `repo_activity` returns, long enough to be past the 14,000-character cut. */
@@ -62,10 +62,12 @@ test('slack messages are grouped by channel; code search matches are counted by 
 
 test('plain text (a long file or patch) shows its first lines and where the rest starts', () => {
   const text = Array.from({ length: 2_000 }, (_, i) => `line ${i} of a long generated file with some content`).join('\n');
-  const digest = digestResult(text, 'r1');
+  const result = digestResultWithStats(text, 'r1');
+  const digest = result.text;
   assert.ok(digest.length <= 6_000);
   assert.match(digest, /line 0 of a long/);
   assert.match(digest, /\.\.\. \d+ more lines from offset \d+/);
+  assert.deepEqual({ omittedItems: result.omittedItems, omittedLines: result.omittedLines }, { omittedItems: 0, omittedLines: 1_994 });
 });
 
 test('a page starts at a line boundary, ends on one, and says where to continue', () => {
@@ -137,6 +139,11 @@ test('on: the model gets the digest and reads the rest with more_of_result', asy
   assert.match(missing!.content, /No large result "r9" in this turn; there is r1\./);
   assert.equal(result.answer, 'Two hundred commits landed.');
   assert.deepEqual(result.toolCalls, ['repo_activity', MORE_OF_RESULT, MORE_OF_RESULT]);
+  assert.equal(result.resultTruncations?.length, 1);
+  assert.equal(result.resultTruncations![0]!.tool, 'repo_activity');
+  assert.equal(result.resultTruncations![0]!.resultId, 'r1');
+  assert.equal(result.resultTruncations![0]!.omittedLines, 0);
+  assert.ok(result.resultTruncations![0]!.omittedItems > 0);
 });
 
 test('on: small results and errors are passed as before', async () => {
