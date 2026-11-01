@@ -89,6 +89,7 @@ const githubRefreshQueue = new GitHubRefreshQueue(async sha => {
   error: error instanceof Error ? error.message : 'unknown error' })));
 const attendeeHourlyPrice = Number(env.ATTENDEE_USD_PER_HOUR ?? '0.50');
 const sessionBudgetEnabled = env.NOGITA_SESSION_BUDGET === 'true';
+const usageLogEnabled = env.NOGITA_USAGE_LOG === 'true';
 const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
   Number(env.DEEPGRAM_NOVA3_MULTILINGUAL_USD_PER_MINUTE ?? '0.0058'),
   Number(env.DEEPGRAM_AURA2_USD_PER_THOUSAND_CHARACTERS ?? '0.03'), {
@@ -216,7 +217,9 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
         turnLog.record(sessionId, buildTurnTrace({ ...(activity.questionId !== undefined ? { id: activity.questionId } : {}),
           model: activity.model, ms: activity.ms, result: activity.result, toolUses: activity.toolUses, stepMs: activity.stepMs,
           ...(activity.error ? { error: activity.error } : {}) }));
-        sessionUsage.report(sessionId, dependencies.brain.usageFor?.(sessionId));
+        const usage = sessionUsage.report(sessionId, dependencies.brain.usageFor?.(sessionId));
+        if (usageLogEnabled && usage) turnLog.record(sessionId, { type: 'usage', totalEstimatedUsd: usage.totalEstimatedUsd,
+          durationSeconds: usage.durationSeconds, ...(usage.ai ? { modelCalls: usage.ai.modelCalls } : {}) });
       } else presence.waiting(sessionId, activity.waiting);
     },
     onSpeech: (sessionId, event) => turnLog.record(sessionId, { type: 'speech', id: event.questionId, playbackId: event.playbackId, phase: event.phase,

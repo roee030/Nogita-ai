@@ -29,6 +29,8 @@ export type TurnLogEvent =
   | { type: 'ui'; state: string; status: string; open: number }
   | { type: 'stale_question'; id: number }
   | { type: 'mission'; id: string; status: string; activity?: string }
+  /** With NOGITA_USAGE_LOG: the meeting's running cost after each agent turn; the last one is the meeting's total. */
+  | { type: 'usage'; totalEstimatedUsd: number; durationSeconds: number; modelCalls?: number }
   | { type: 'error'; code: string };
 
 export interface AgentTraceEvent {
