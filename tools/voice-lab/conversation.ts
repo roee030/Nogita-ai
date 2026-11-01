@@ -4,6 +4,7 @@
  */
 import { OVERLAP_PROGRESS, STILL_WORKING, agentProgressPhrases, progressPhrases } from '../../src/core/engine.ts';
 import { concat, msToSamples } from './audio.ts';
+import { speechIntervals } from './conversation-metrics.ts';
 import { createPerturbation } from './noise.ts';
 import type { LabEvent, VoiceRig } from './rig.ts';
 import { micOf, type Scenario, type Turn } from './scenarios.ts';
@@ -49,7 +50,40 @@ export interface TurnRecord {
   spokeAfterUtterance: number;
   /** A hand-raise line was posted to chat before this turn started. */
   handRaisedBefore: boolean;
+  /** Two-speed answers: the full answer a research mission found after the short line, wherever it landed. */
+  fullAnswer?: FullAnswer;
   events: LabEvent[];
+}
+
+export interface FullAnswer {
+  /** Ms after the last word when the full answer was in chat. */
+  at: number;
+  /** Ms after the last word when it started aloud; undefined when it stayed in chat (no opening came). */
+  spokenAt?: number;
+  /** It started while someone was mid-sentence. */
+  overPeople: boolean;
+}
+
+/** What carries each research question's full answer: its chat post and the speech that read it out. */
+interface Delivery { chat?: LabEvent; speech: LabEvent[]; mirrors: LabEvent[] }
+
+/**
+ * Two-speed answers, by question id. The short line is reported as "short answer; M-..."; the full answer is posted
+ * in chat ("About today's commits: ..." or `Roee asked "...": ...`) and spoken under the same question id.
+ */
+export function fullAnswers(events: readonly LabEvent[]): Map<number, Delivery> {
+  const deliveries = new Map<number, Delivery>();
+  for (const short of events.filter(event => event.type === 'question' && /^#\d+ \w+(?: \[[^\]]*\])?: short answer;/.test(event.detail ?? ''))) {
+    const id = short.questionId;
+    if (id === undefined) continue;
+    const chat = events.find(event => event.type === 'chat' && event.t > short.t && /^(?:About [^:]+|.+ asked ".*"): /s.test(event.text ?? ''));
+    const speech = events.filter(event => event.type === 'speak_call' && event.questionId === id && event.t > (chat?.t ?? short.t));
+    const texts = new Set(speech.map(event => event.text));
+    const mirrors = events.filter(event => event.type === 'chat' && event !== chat && texts.has(event.text) &&
+      event.t >= (speech[0]?.t ?? Infinity));
+    deliveries.set(id, { chat, speech, mirrors });
+  }
+  return deliveries;
 }
 
 export async function synthesizeTurn(turn: Turn, voice: string, synthesize: Synthesize): Promise<Float32Array> {
@@ -217,14 +251,28 @@ export function record(events: LabEvent[], turn: Turn, index: number, mark: { st
       timing.bargeInStop = stop ? Math.round(stop.t - mark.start) : undefined;
     }
   }
-  const spoken = window.filter(event => event.type === 'speak_call' && event.t >= mark.end).map(event => event.text ?? '');
+  // A full answer to an earlier question that lands in this turn's window is that question's, not this turn's.
+  const deliveries = fullAnswers(events);
+  const own = opened?.questionId !== undefined ? deliveries.get(opened.questionId) : undefined;
+  const elsewhere = new Set([...deliveries].filter(([id]) => id !== opened?.questionId)
+    .flatMap(([, delivery]) => [...(delivery.chat ? [delivery.chat] : []), ...delivery.speech, ...delivery.mirrors]));
+  let fullAnswer: FullAnswer | undefined;
+  if (own?.chat) {
+    const spokenStart = own.speech[0] && (events.find(event => event.type === 'playback_received' && event.questionId === opened!.questionId &&
+      event.t >= own.speech[0]!.t) ?? events.find(event => event.type === 'audio_start' && event.t >= own.speech[0]!.t));
+    const intervals = speechIntervals(events);
+    fullAnswer = { at: Math.round(own.chat.t - mark.end), ...(spokenStart ? { spokenAt: Math.round(spokenStart.t - mark.end) } : {}),
+      overPeople: !!spokenStart && intervals.some(([start, end]) => spokenStart.t > start + 300 && spokenStart.t < end) };
+  }
+  const spoken = window.filter(event => event.type === 'speak_call' && event.t >= mark.end && !elsewhere.has(event)).map(event => event.text ?? '');
   return {
     index, turn, script: (Array.isArray(turn.say) ? turn.say : [turn.say]).join(' '), timing,
     heard: utterances.length ? utterances.map(event => event.text).join(' ')
       : finals.length ? finals.map(event => event.text).join(' ') : undefined,
     spoken,
-    chat: window.filter(event => event.type === 'chat' && event.t >= mark.end && !spoken.includes(event.text ?? ''))
+    chat: window.filter(event => event.type === 'chat' && event.t >= mark.end && !spoken.includes(event.text ?? '') && !elsewhere.has(event))
       .map(event => event.text ?? ''),
+    ...(fullAnswer ? { fullAnswer } : {}),
     writes: window.filter(event => event.type === 'write').map(event => event.text ?? ''),
     tools: window.filter(event => event.type === 'tool').map(event => event.text ?? ''),
     questionStatus,
