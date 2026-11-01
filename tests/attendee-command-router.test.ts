@@ -159,6 +159,61 @@ test('a semantic completed turn is processed without another quiet-window delay'
   assert.equal(f.emitted.length, 1);
   assert.equal(jobs.length, 0);
 });
+test('explicit turn-end mode reports every semantic completed turn', async () => {
+  const ended: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    explicitTurnEnd: true,
+    onTurnEnded: (sessionId, speakerUuid) => ended.push(`${sessionId}:${speakerUuid}`),
+  });
+  router.beginSession('s', owner);
+
+  await router.acceptCompletedTurn({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-b',
+    utterance: { eventId: 'completed', actor: owner, text: 'Nogita, can you clarify?' } });
+
+  assert.deepEqual(ended, ['s:speaker-b']);
+});
+test('completed turns do not report explicit turn end by default', async () => {
+  const ended: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    onTurnEnded: (sessionId, speakerUuid) => ended.push(`${sessionId}:${speakerUuid}`),
+  });
+  router.beginSession('s', owner);
+
+  await router.acceptCompletedTurn({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-b',
+    utterance: { eventId: 'completed', actor: owner, text: 'Nogita, can you clarify?' } });
+
+  assert.deepEqual(ended, []);
+});
+test('explicit turn-end mode closes an unverified provider-final turn after its quiet window', async () => {
+  jobs.length = 0;
+  const ended: string[] = [];
+  const router = new AttendeeCommandRouter(async () => {}, async () => {}, {
+    explicitTurnEnd: true,
+    schedule: work => { jobs.push(work); return work; },
+    cancel: handle => { const index = jobs.indexOf(handle as () => void | Promise<void>); if (index >= 0) jobs.splice(index, 1); },
+    onTurnEnded: (sessionId, speakerUuid) => ended.push(`${sessionId}:${speakerUuid}`),
+  });
+  router.beginSession('s', owner);
+
+  const accepted = router.acceptFinal({ sessionId: 's', botId: 'bot_1', speakerUuid: 'guest',
+    utterance: { eventId: 'guest-final', actor: { id: 'guest', displayName: 'Guest', verified: false }, text: 'hello' } });
+  while (jobs.length) await jobs.shift()!();
+  await accepted;
+
+  assert.deepEqual(ended, ['s:guest']);
+});
+test('explicit completed turns tell the engine their floor lock is already closed', async () => {
+  const contexts: Array<{ turnEnded?: boolean }> = [];
+  const router = new AttendeeCommandRouter(async (_sessionId, _utterance, context) => { contexts.push(context); }, async () => {}, {
+    explicitTurnEnd: true,
+  });
+  router.beginSession('s', owner);
+
+  await router.acceptCompletedTurn({ sessionId: 's', botId: 'bot_1', speakerUuid: 'speaker-b',
+    utterance: { eventId: 'completed-context', actor: owner, text: 'Nogita, answer me.' } });
+
+  assert.deepEqual(contexts, [{ speakerKey: 'speaker-b', turnEnded: true }]);
+});
 test('router records transcript-to-chat acknowledgement without retaining speech', async () => {
   const samples: Array<{ sessionId: string; durationMs: number }> = [];
   const router = new AttendeeCommandRouter(async () => {}, async () => {}, {

@@ -32,6 +32,8 @@ export interface SpeechFloorOptions {
   cancel?: (handle: unknown) => void;
   /** How long a person counts as still talking after their last recognized speech. */
   talkingMs?: number;
+  /** When enabled, a person keeps the floor until `noteTalking(speaker, true)` explicitly ends their turn. */
+  explicitTurnEnd?: boolean;
   /** After she was cut off: silence before she finishes the answer (time to hear what was said). */
   resumeAfterMs?: number;
   /** A lead-in older than this is skipped. */
@@ -131,9 +133,11 @@ export class SpeechFloor {
   }
 
   /** A person is talking (live recognition); `ended` when their turn reached Nogita. */
-  noteTalking(speaker: string, ended = false): void {
+  noteTalking(speaker: string, ended = false, confirmed = false): void {
     if (ended) this.talking.delete(speaker);
-    else this.talking.set(speaker, this.now() + (this.options.talkingMs ?? 1_000));
+    else this.talking.set(speaker, this.options.explicitTurnEnd && confirmed
+      ? Number.POSITIVE_INFINITY
+      : this.now() + (this.options.talkingMs ?? 1_000));
     if (ended && this.interruptedOwner !== undefined) this.heardSinceInterrupt = true;
     this.pump();
   }

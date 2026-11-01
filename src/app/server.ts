@@ -159,7 +159,7 @@ const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
   ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
-    floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000 },
+    floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000, explicitTurnEnd: turnTakingV2 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
     receipts: actionReceipts,
     onQuestion: (sessionId, event) => {
@@ -236,7 +236,8 @@ const attendeeCommands = new AttendeeCommandRouter(
     let result = 'error';
     try {
       result = await nogita.onUtterance(sessionId, utterance, { speakerKey: context.speakerKey,
-        ...(context.speculation ? { speculation: context.speculation as Speculation } : {}) });
+        ...(context.speculation ? { speculation: context.speculation as Speculation } : {}),
+        ...(context.turnEnded ? { turnEnded: true } : {}) });
     } finally {
       turnLog.record(sessionId, { type: 'turn', speaker: turnLog.person(utterance.actor.displayName),
         addressed: directlyAddressesNogita(utterance.text), words: utterance.text.trim().split(/\s+/).length, result,
@@ -252,6 +253,7 @@ const attendeeCommands = new AttendeeCommandRouter(
     onChatAck: (sessionId, durationMs) => sessionUsage.recordResponseStage(sessionId, 'transcript_to_chat_ack', durationMs),
     onSpeechActivity: (sessionId, speakerUuid) => nogita.cancelProgressForSpeechActivity(sessionId, speakerUuid),
     onTurnEnded: (sessionId, speakerUuid) => nogita.noteTurnEnded(sessionId, speakerUuid),
+    explicitTurnEnd: turnTakingV2,
     chatAck: !realtimeAudioEnabled,
     incompleteTurnHoldMs: Number(env.NOGITA_INCOMPLETE_TURN_HOLD_MS || 0),
     earlyCommitMs: Number(env.NOGITA_EARLY_COMMIT_MS || 0),
@@ -326,8 +328,10 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
         attendeeCommands.acceptEagerTurn(transcriptRequest(sessionId, participantUuid, text, participant, inputTurnId));
       },
       onTurnResumed: (sessionId, participantUuid) => attendeeCommands.resumeTurn(sessionId, participantUuid),
-      onTurnTiming: (sessionId, participantUuid, event) => turnLog.record(sessionId,
-        { type: 'eot', speaker: turnLog.person(participantUuid), ...event }),
+      onTurnTiming: (sessionId, participantUuid, event) => {
+        turnLog.record(sessionId, { type: 'eot', speaker: turnLog.person(participantUuid), ...event });
+        if (turnTakingV2 && event.phase === 'confirmed') nogita.noteTurnEnded(sessionId, participantUuid);
+      },
       onVoice: (sessionId, participantUuid) => {
         nogita.noteVoice(sessionId, participantUuid);
         attendeeCommands.noteOwnVoice(sessionId, participantUuid);

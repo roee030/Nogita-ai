@@ -133,7 +133,7 @@ export interface NogitaEngineOptions {
    */
   receipts?: Map<string, ActionReceipt>;
   /** Speech floor timing (tests use shorter waits). */
-  floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
+  floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'explicitTurnEnd' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
 
 /** "Stop", "wait", "hold on": stop talking now (the answer stays in chat). */
@@ -577,7 +577,7 @@ export class NogitaEngine {
   cancelProgressForSpeechActivity(sessionId: string, speakerKey?: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.ending) return;
-    if (speakerKey) session.floor?.noteTalking(speakerKey);
+    if (speakerKey) session.floor?.noteTalking(speakerKey, false, this.floorOptions.explicitTurnEnd === true);
     if (session.progressTimer !== undefined) this.clearProgressTimer(session);
   }
 
@@ -1151,7 +1151,7 @@ export class NogitaEngine {
    * `speculation` is the early start for these words, adopted when they match.
    */
   async onUtterance(sessionId: string, utterance: Utterance,
-    context: { speakerKey?: string; speculation?: Speculation } = {}): Promise<ProcessResult> {
+    context: { speakerKey?: string; speculation?: Speculation; turnEnded?: boolean } = {}): Promise<ProcessResult> {
     const processingStartedAt = performance.now();
     let adopted = false;
     let released = false;
@@ -1229,7 +1229,7 @@ export class NogitaEngine {
       const compoundStop = splitLeadingStop(voiceText);
       const command = this.handleVoiceCommand(sessionId, s, utterance.actor.id,
         compoundStop?.stop ?? voiceText, directlyAddressed);
-      if (context.speakerKey) s.floor.noteTalking(context.speakerKey, true);
+      if (context.speakerKey && !context.turnEnded) s.floor.noteTalking(context.speakerKey, true);
       if (command && compoundStop?.remainder) {
         current = compoundStop.remainder;
       } else
