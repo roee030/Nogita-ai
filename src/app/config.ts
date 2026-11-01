@@ -68,6 +68,22 @@ export function missionStatus(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_PENDING_APPROVALS: 'true' tells each turn which writes the speaker's missions wait on, so "approve it" works after a
+ *  restart or in a new chat thread; blank or 'false' leaves it off. */
+export function pendingApprovals(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_PENDING_APPROVALS?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_PENDING_APPROVALS must be true or false');
+  return value === 'true';
+}
+
+/** NOGITA_WHATS_LEFT_DIRECT: 'true' lets mission_status answer for requests done in the turn itself, not only missions;
+ *  blank or 'false' leaves it off. */
+export function whatsLeftDirect(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_WHATS_LEFT_DIRECT?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_WHATS_LEFT_DIRECT must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {
