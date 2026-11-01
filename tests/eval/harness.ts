@@ -116,7 +116,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy, agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
-    research: options.research, ...(runner ? { missions: runner, missionStatus: true } : {}),
+    research: options.research, ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
   engine = newEngine();
   const actor = SPEAKERS[item.speaker ?? 'roee'];

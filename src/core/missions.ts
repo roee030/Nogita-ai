@@ -190,6 +190,19 @@ export function missionReport(mission: Mission, maxSources = 8): MissionReport {
     sources: missionSources(mission, maxSources) };
 }
 
+/**
+ * With NOGITA_PENDING_APPROVALS: the writes this person's missions wait on, for the turn's prompt. After a restart or in a
+ * new chat thread the conversation does not show the question, so without this "approve it" finds nothing to approve.
+ */
+export function pendingApprovalsPrompt(missions: readonly Mission[], speaker: string): string {
+  const waiting = missions.filter(mission => mission.status === 'awaiting_approval' && mission.pending).slice(0, 5);
+  if (!waiting.length) return '';
+  return [`Waiting for ${speaker}'s approval (asked earlier, maybe in another meeting or chat, or before a restart):`,
+    ...waiting.map(mission => `- ${mission.id}: ${mission.pending!.summary.slice(0, 200)} (mission: ${mission.goal.slice(0, 160)})`),
+    `If ${speaker} approves ("approve it", "yes, go ahead", "do it") or declines, call decide_mission with that mission_id` +
+      `${waiting.length > 1 ? ', asking which one when it is unclear' : ''}. Do not say nothing is waiting.`].join('\n');
+}
+
 function missionSources(mission: Mission, max: number): EvidenceSource[] {
   const ledger = new EvidenceLedger();
   const writes = new Set(mission.steps.filter(step => step.kind === 'write_started' && step.tool).map(step => step.tool!));
