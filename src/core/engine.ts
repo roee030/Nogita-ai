@@ -4,7 +4,7 @@ import { runAgent, type AgentResult, type ChatModel, type ChatModelRequest } fro
 import { auditedPorts, buildToolbox, LimitReachedError, type LimitsPort, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
 import { ProviderUnavailableError } from './provider-health.ts';
-import { missionReport, OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
+import { missionReport, OPEN_MISSION, pendingApprovalsPrompt, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
@@ -161,6 +161,9 @@ export interface NogitaEngineOptions {
   /** mission_status (NOGITA_MISSION_STATUS): "what's left of what I asked?" answered from the mission store, with what
    *  was done, what failed and what is still open, and its sources. Needs `missions`. Off unless set. */
   missionStatus?: boolean;
+  /** NOGITA_PENDING_APPROVALS: each turn's prompt lists the writes this person's missions wait on, so "approve it" works
+   *  after a restart or in a new chat thread. Needs `missions`. Off unless set. */
+  pendingApprovals?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -398,6 +401,7 @@ export class NogitaEngine {
   private readonly swallowedQuestion: boolean;
   private readonly twoSpeed: boolean;
   private readonly missionStatus: boolean;
+  private readonly pendingApprovals: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -448,6 +452,7 @@ export class NogitaEngine {
     this.swallowedQuestion = options.swallowedQuestion === true;
     this.twoSpeed = options.twoSpeed === true && options.missions !== undefined;
     this.missionStatus = options.missionStatus === true && options.missions !== undefined;
+    this.pendingApprovals = options.pendingApprovals === true && options.missions !== undefined;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -1077,10 +1082,12 @@ export class NogitaEngine {
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
           chatName: authorized ? this.dependencies.chat?.name : undefined, proofLevels: this.research.proofLevels }),
-        turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), team: this.team(), followUp: pending !== undefined,
+        turnSystem: [turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), team: this.team(), followUp: pending !== undefined,
           raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`),
           ...(this.research.researchTemplates && authorized
             ? { research: { request, tools: toolbox.specs.map(spec => spec.name), voice } } : {}) }),
+          this.pendingApprovals && authorized ? pendingApprovalsPrompt(this.missions!.list({ ownerId: utterance.actor.id }), speaker) : '',
+        ].filter(Boolean).join('\n'),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, toolStepMaxTokens: voice ? 2_000 : 4_000,
