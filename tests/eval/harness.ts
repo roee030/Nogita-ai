@@ -13,7 +13,8 @@ import type { ChatModel, ChatModelRequest, ChatModelResponse } from '../../src/c
 import type { ActionReceipt, Capability, SpeakOptions } from '../../src/core/contracts.ts';
 import { EvidenceLedger } from '../../src/core/evidence.ts';
 import { buildToolbox } from '../../src/core/agent-tools.ts';
-import { MemoryMissionStore, MissionRunner } from '../../src/core/missions.ts';
+import { MemoryMissionStore, MissionRunner, type Mission } from '../../src/core/missions.ts';
+import type { MemoryBoard } from '../../src/adapters/memory.ts';
 import { DIMENSIONS, type CaseRun, type Check, type Dimension, type EvalCase, type TurnRecord, type WriteMethod, said } from './cases.ts';
 import { NOW, SPEAKERS, TEAM, evalWorld, isWrite } from './world.ts';
 
@@ -103,7 +104,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const receipts = new Map<string, ActionReceipt>();
   const missionStore = new MemoryMissionStore();
   const missionReceipts: ActionReceipt[] = [];
-  const policy = new AllowlistPolicy(new Set(['roee']));
+  const policy = new AllowlistPolicy(new Set(['roee', 'dana']));
   let engine: NogitaEngine;
   // Missions use the owner's tools, as tools/mission.ts builds them; an approved write runs without the request check.
   const newRunner = () => item.missions ? new MissionRunner({ model: traced, store: missionStore, now,
@@ -116,27 +117,29 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy, agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
-    research: options.research, ...(runner ? { missions: runner, missionStatus: true } : {}),
+    research: options.research, ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true, whatsLeftDirect: true, shortSpokenResults: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
   engine = newEngine();
-  const actor = SPEAKERS[item.speaker ?? 'roee'];
+  const speakerAt = (index: number) => SPEAKERS[item.speakers?.[index] ?? item.speaker ?? 'roee'];
+  if (item.interruptedWrite) await seedInterruptedWrite(item.interruptedWrite, speakerAt(0), sessionId, world.board, missionStore, now());
   const run: CaseRun = { turns: [], receipts: meeting.receipts, calls: world.calls, tools: traced.tools, stops: traced.stops,
     board: world.board, posted: world.chat.posted, sources: [], evidence: traced.evidence, ms: 0 };
   /** Waits until no mission is in the middle of a round: it is waiting for approval, settled, or out of time. */
   const settle = async () => {
     if (runner) await Promise.race([runner.idle(), new Promise(resolve => setTimeout(resolve, MISSION_WAIT_MS).unref())]);
   };
-  const deliver = async (text: string, eventId: string) => {
+  const deliver = async (text: string, eventId: string, index: number) => {
     meeting.spoken = [];
     meeting.chat = [];
-    const result = await engine.onUtterance(sessionId, { eventId, text, actor });
+    const result = await engine.onUtterance(sessionId, { eventId, text, actor: speakerAt(index) });
     await settle();
     run.turns.push({ text, result, spoken: meeting.spoken, chat: meeting.chat, tasksAfter: world.board.tasks.length });
   };
+  if (item.interruptedWrite) await runner?.resumeAll();
   await engine.startSession(sessionId, meeting);
   try {
     for (const [index, text] of item.turns.entries()) {
-      await deliver(text, `${item.id}-${index}`);
+      await deliver(text, `${item.id}-${index}`, index);
       if (item.restartAfter === index) {
         // The process is gone: a new engine and runner, and the missions come back from their store.
         await engine.endSession(sessionId);
@@ -163,7 +166,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
         engine = newEngine();
         await engine.startSession(sessionId, meeting);
       }
-      await deliver(item.turns.at(-1)!, `${item.id}-${item.turns.length - 1}`);
+      await deliver(item.turns.at(-1)!, `${item.id}-${item.turns.length - 1}`, item.turns.length - 1);
     }
   } catch (error) {
     run.error = error instanceof Error ? error.message : String(error);
@@ -176,6 +179,23 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
     await engine.endSession(sessionId);
   }
   return run;
+}
+
+/**
+ * The store and board as a process left them when it died right after an approved write landed: the task is on the
+ * board, the mission's last step is write_started, and the model's create_task call has no result.
+ */
+async function seedInterruptedWrite(seed: { goal: string; title: string }, owner: { id: string; displayName: string },
+  sessionId: string, board: MemoryBoard, store: MemoryMissionStore, at: number): Promise<void> {
+  await board.createTask({ title: seed.title, description: `Asked by ${owner.displayName}.`, requestId: 'interrupted-write' });
+  const summary = `create the task "${seed.title}"`;
+  const mission: Mission = { id: 'M-INT1', goal: seed.goal, doneWhen: 'The task exists, read back.', owner: { id: owner.id, displayName: owner.displayName },
+    sessionId, status: 'executing', createdAt: at - 120_000, updatedAt: at - 60_000, attempts: 0, rounds: 1, activity: 'Creating a task',
+    steps: [{ at: at - 120_000, kind: 'started', text: seed.goal }, { at: at - 90_000, kind: 'approval_requested', text: summary, tool: 'create_task' },
+      { at: at - 60_000, kind: 'approved', text: `Approved: ${summary}` }, { at: at - 60_000, kind: 'write_started', text: summary, tool: 'create_task' }],
+    messages: [{ role: 'user', content: `Mission: ${seed.goal}` },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'interrupted-1', name: 'create_task', input: { title: seed.title, description: `Asked by ${owner.displayName}.` } }] }] };
+  await store.save(mission);
 }
 
 /** A claim she made that a source can confirm: a pull request, commit, task key, file or link. */

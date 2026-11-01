@@ -46,6 +46,7 @@ export const PEOPLE = [
 export const SPEAKERS = {
   roee: { id: 'roee', displayName: 'Roee Angel', verified: true },
   guest: { id: 'guest', displayName: 'Guest', verified: true },
+  dana: { id: 'dana', displayName: 'Dana Katz', verified: true },
 };
 
 export interface PortCall { port: 'code' | 'board' | 'chat'; method: string; args: unknown[] }

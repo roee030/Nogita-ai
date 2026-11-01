@@ -25,11 +25,11 @@ class ScriptedModel implements ChatModel {
 const byId = (id: string): EvalCase => CASES.find(item => item.id === id)!;
 const failed = (score: ReturnType<typeof scoreCase>) => score.checks.filter(check => !check.pass).map(check => check.name);
 
-test('the set has 80 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research and missions', () => {
-  assert.equal(CASES.length, 80);
-  assert.equal(new Set(CASES.map(item => item.id)).size, 80);
+test('the set has 100 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research, missions, noisy transcripts and several speakers', () => {
+  assert.equal(CASES.length, 100);
+  assert.equal(new Set(CASES.map(item => item.id)).size, 100);
   const groups = (group: EvalCase['group']) => CASES.filter(item => item.group === group).length;
-  assert.deepEqual([groups('research'), groups('cross_source'), groups('ci'), groups('missions')], [12, 10, 8, 10]);
+  assert.deepEqual([groups('research'), groups('cross_source'), groups('ci'), groups('missions'), groups('noisy_transcript'), groups('multi_speaker')], [12, 10, 8, 16, 8, 6]);
   const missions = CASES.filter(item => item.missions);
   assert.ok(missions.some(item => item.restartAfter !== undefined) && missions.some(item => item.chatAfter !== undefined));
   assert.ok(missions.some(item => item.turns.length >= 3));
@@ -255,4 +255,17 @@ test('"what\'s left?" asked in a chat thread after the meeting is answered from 
     { tools: [{ name: 'delegate_mission', input: { goal: 'Check KAN-6.' } }] }, { text: 'On it.' }, { text: 'It is merged.' },
   ], [{ tools: [{ name: 'finish_mission', input: { summary: 'Done.', evidence: [] } }] }]), item);
   assert.ok(failed(scoreCase(item, guessed)).includes('answered "what\'s left" from the mission store'));
+});
+
+test('each turn comes from its own speaker: Dana\'s "for me" task is hers', async () => {
+  const model = new ScriptedModel([
+    { tools: [{ name: 'create_task', input: { title: 'Cache headers', description: 'From Roee.' } }] },
+    { text: 'Opened KAN-7.' },
+    { tools: [{ name: 'create_task', input: { title: 'Retry backoff', description: 'From Dana.', assignee: 'me' } }] },
+    { text: 'Opened KAN-8 for you.' },
+  ]);
+  const item = byId('two-people-two-tasks');
+  const run = await runCase(model, item);
+  assert.deepEqual(run.board.tasks.slice(6).map(task => [task.title, task.assigneeId ?? null]), [['Cache headers', null], ['Retry backoff', 'dana']]);
+  assert.deepEqual(failed(scoreCase(item, run)), []);
 });

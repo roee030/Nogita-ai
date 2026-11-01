@@ -49,10 +49,17 @@ export interface EvalCase {
   id: string;
   group: 'multi_action' | 'commits' | 'code' | 'tasks' | 'missing_info' | 'unasked_writes' | 'no_information'
     | 'conflicting_information' | 'decisions' | 'incidents' | 'unknown_owner' | 'retry' | 'research' | 'cross_source' | 'ci'
-    | 'missions';
+    | 'missions' | 'noisy_transcript' | 'multi_speaker';
   /** Where the case came from, when it is a failure seen live. */
   origin?: string;
-  speaker?: 'roee' | 'guest';
+  speaker?: 'roee' | 'guest' | 'dana';
+  /** Who says each turn, when people take turns (default: `speaker` for all). */
+  speakers?: Array<'roee' | 'guest' | 'dana'>;
+  /**
+   * Before the first turn: a mission of the speaker's whose approved write landed on the board, and then the process
+   * died before the result was saved (the chaos-test gap). The restarted process resumes it.
+   */
+  interruptedWrite?: { goal: string; title: string };
   /** A voice meeting (default) or a chat thread. */
   mode?: 'voice' | 'chat';
   turns: string[];
@@ -161,7 +168,8 @@ function openTasks(id: string, count: number, request: string, topics: RegExp[],
 const delegated: Check = { dimension: 'completeness', name: 'started a mission', pass: run => run.tools.includes('delegate_mission') };
 const askedStatus: Check = { dimension: 'sources', name: 'answered "what\'s left" from the mission store', pass: run => run.tools.includes('mission_status') };
 const missionsIn = (run: CaseRun, status: string) => (run.missions ?? []).filter(mission => mission.status === status);
-const WAITING = /\b(?:approv|waiting|needs? your (?:ok|go)|confirm)/;
+// "I read it back to confirm it's there" is not waiting; "once you confirm" is.
+const WAITING = /\b(?:approv|waiting|needs? your (?:ok|go)|(?:once|if|when|until) you confirm|should i go ahead)/;
 const NOT_DONE = /\b(?:not (?:yet|opened|created)|hasn'?t|haven'?t|once you approve|after you approve)\b/;
 
 export const CASES: EvalCase[] = [
@@ -942,6 +950,182 @@ export const CASES: EvalCase[] = [
       { dimension: 'completeness', name: 'the mission read the board and the code', pass: run => lookedAtBoard(run) && lookedAtCode(run) },
       { dimension: 'completeness', name: 'at most one task', pass: run => newTasks(run).length <= 1 },
       { dimension: 'accuracy', name: 'the expired token', pass: run => run.turns.some(turn => /token/i.test([...turn.spoken, ...turn.chat].join(' '))) },
+    ],
+  },
+
+  // Phase 5 regressions: one or more for each fix of P5-1 to P5-4.
+  {
+    id: 'mission-go-ahead-after-restart', group: 'missions', missions: true, restartAfter: 0, origin: 'P5-1: "approve it" after a restart found nothing to approve',
+    turns: ['Nogita, take care of KAN-3 in the background: open a task to add the false-pause probes to the voice lab README.', 'Nogita, yes, go ahead with it.'],
+    writes: { createTask: 1 },
+    checks: [
+      delegated,
+      { dimension: 'completeness', name: 'the task was opened once, after the restart', pass: run =>
+        newTasks(run).length === 1 && run.turns[0]!.tasksAfter === SEEDED_TASKS },
+      { dimension: 'accuracy', name: 'the mission finished', pass: run => missionsIn(run, 'done').length === 1 },
+    ],
+  },
+  {
+    id: 'mission-decline-after-restart', group: 'missions', missions: true, restartAfter: 0, origin: 'P5-1',
+    turns: ['Nogita, work on this in the background: open a task for Dana to rename the retry worker.', 'Nogita, no, decline that, don\'t open it.'],
+    checks: [
+      delegated,
+      { dimension: 'completeness', name: 'the decision reached the mission', pass: run => (run.missions ?? []).some(mission =>
+        mission.steps.some(step => step.kind === 'rejected') || mission.status === 'cancelled') },
+      { dimension: 'no_fabrication', name: 'no task was opened', pass: run => newTasks(run).length === 0 },
+    ],
+  },
+  {
+    id: 'whats-left-direct', group: 'missions', missions: true, origin: 'P5-2: a request done in the turn itself was invisible to "what\'s left?"',
+    turns: ['Nogita, open two tasks: one for the Slack token refresh and one for the readiness docs.', 'Nogita, what\'s left from what I asked?'],
+    writes: { createTask: 2 },
+    checks: [
+      askedStatus,
+      { dimension: 'completeness', name: 'two tasks were created', pass: run => newTasks(run).length === 2 },
+      { dimension: 'accuracy', name: 'says both are done', pass: run => /\b(?:both|all|two|done|nothing (?:left|else|more))\b/.test(said(run)) },
+      { dimension: 'no_fabrication', name: 'does not say there was nothing', pass: run => !/no (?:mission|record)|don'?t (?:have|see) (?:any|anything)/.test(said(run)) },
+    ],
+  },
+  {
+    id: 'whats-left-direct-other-thread', group: 'missions', missions: true, chatAfter: 0, origin: 'P5-2',
+    turns: ['Nogita, open a task for Yossi to document the version endpoint.', 'Nogita, did the thing I asked in the meeting get done?'],
+    writes: { createTask: 1 },
+    checks: [
+      askedStatus,
+      { dimension: 'accuracy', name: 'names the task it opened', pass: run => newTasks(run).length === 1 && said(run).includes(newTasks(run)[0]!.key.toLowerCase()) },
+      { dimension: 'no_fabrication', name: 'does not say there was nothing', pass: run => !/no (?:mission|record)|don'?t (?:have|see) (?:any|anything)/.test(said(run)) },
+    ],
+  },
+  {
+    id: 'mission-result-spoken-short', group: 'missions', missions: true, origin: 'P5-3: a mission\'s result was read aloud in full',
+    turns: ['Nogita, take care of KAN-6 in the background: find out whether the version endpoint is merged and who reviewed it, and tell me.', 'Nogita, thanks.'],
+    checks: [
+      delegated,
+      { dimension: 'clarity', name: 'no spoken line over 45 words', pass: run => run.turns.every(turn =>
+        turn.spoken.every(line => line.split(/\s+/).filter(Boolean).length <= 45)) },
+      { dimension: 'completeness', name: 'the result reached the chat', pass: run => run.turns.some(turn => turn.chat.some(line => /version|kan-6/i.test(line))) },
+    ],
+  },
+  {
+    id: 'interrupted-write-resume', group: 'missions', missions: true, origin: 'P5-4: a write that landed before its result was saved',
+    interruptedWrite: { goal: 'Open a task for the Deepgram reconnect backoff.', title: 'Deepgram reconnect backoff' },
+    turns: ['Nogita, what\'s left from what I asked?'],
+    checks: [
+      askedStatus,
+      { dimension: 'no_fabrication', name: 'the task was not opened a second time', pass: run =>
+        run.board.tasks.filter(task => /deepgram reconnect/i.test(task.title)).length === 1 },
+      { dimension: 'accuracy', name: 'does not say it failed', pass: run => !asserts(said(run), /\b(?:failed|didn'?t go through)\b/) },
+    ],
+  },
+
+  // Noisy transcripts: fillers, recognition errors, self-corrections and a request that is not one.
+  openTasks('noisy-two-tasks-fillers', 2, 'Nogita, um, can you open, uh, two tasks, one for the, the cache headers and one for, um, the retry backoff.',
+    [/cach/, /retr|backoff/], { group: 'noisy_transcript' }),
+  openTasks('noisy-three-tasks-asr', 3, 'Nogita open three tusks one for cash invalidation one for jira retries and one for the voice lab read me',
+    [/cach|cash/, /retr/, /voice|readme|read me|doc/], { group: 'noisy_transcript' }),
+  {
+    id: 'noisy-restarted-question', group: 'noisy_transcript',
+    turns: ['Nogita, what landed in the — sorry — what got merged into the repo today?'],
+    checks: [
+      { dimension: 'sources', name: 'read today\'s activity', pass: run => callsTo(run, 'repoActivity')
+        .some(call => new Date(String(arg(call).since)).toISOString() === DAYS.today[0]) },
+      { dimension: 'no_fabrication', name: 'no pull request count other than 16', pass: run => countsSaid(said(run), /(?:merged )?(?:pull requests|prs)/, today.pulls.length) },
+    ],
+  },
+  {
+    id: 'noisy-side-chatter', group: 'noisy_transcript',
+    turns: ['Nogita what\'s the yeah I\'ll grab coffee in a sec status of KAN-6'],
+    checks: [
+      { dimension: 'sources', name: 'read KAN-6', pass: run => callsTo(run, 'getTask').some(call => JSON.stringify(call.args).includes('KAN-6')) },
+      { dimension: 'accuracy', name: 'in review', pass: run => /review/.test(said(run)) },
+      { dimension: 'clarity', name: 'does not answer the coffee', pass: run => !/coffee/.test(said(run)) },
+    ],
+  },
+  {
+    id: 'noisy-self-correction', group: 'noisy_transcript',
+    turns: ['Nogita, open a task for Dana, no wait, for Yossi, to document the version endpoint.'],
+    writes: { createTask: 1 },
+    checks: [
+      { dimension: 'completeness', name: 'one task', pass: run => newTasks(run).length === 1 },
+      { dimension: 'accuracy', name: 'for Yossi, not Dana', pass: run => newTasks(run)[0]?.assigneeId === 'yossi' },
+    ],
+  },
+  {
+    id: 'noisy-stutter-ci', group: 'noisy_transcript',
+    turns: ['Nogita, did did the CI on on main pass?'],
+    checks: [
+      readCi(target => !target.pr && !target.sha && (target.branch === undefined || target.branch === 'main')),
+      { dimension: 'accuracy', name: 'yes, the latest run passed', pass: run => /pass|green|succe/.test(said(run)) && !/\b(?:it(?:'s| is)|main is) (?:red|failing)\b/.test(said(run)) },
+      noCiResultUnread,
+    ],
+  },
+  {
+    id: 'noisy-mixed-hebrew', group: 'noisy_transcript',
+    turns: ['Nogita, תפתחי משימה about the Slack token refresh.'],
+    writes: { createTask: 1 },
+    checks: [
+      { dimension: 'completeness', name: 'one task', pass: run => newTasks(run).length === 1 },
+      { dimension: 'accuracy', name: 'about the Slack token', pass: run => /slack|token/.test(titles(run)[0] ?? '') },
+    ],
+  },
+  {
+    id: 'noisy-no-request', group: 'noisy_transcript',
+    turns: ['Nogita, the uh, the thing with the, you know, the'],
+    checks: [
+      { dimension: 'no_fabrication', name: 'opened nothing', pass: run => newTasks(run).length === 0 },
+      { dimension: 'clarity', name: 'asks what they meant, or stays quiet', pass: run => said(run).trim() === '' || /\?/.test(said(run)) },
+    ],
+  },
+
+  // Several people in one meeting.
+  {
+    id: 'two-people-two-tasks', group: 'multi_speaker', speakers: ['roee', 'dana'],
+    turns: ['Nogita, open a task for the cache headers.', 'Nogita, and open one for me about the retry backoff.'],
+    writes: { createTask: 2 },
+    checks: [
+      { dimension: 'completeness', name: 'two tasks', pass: run => newTasks(run).length === 2 },
+      { dimension: 'accuracy', name: 'the retry one is Dana\'s', pass: run => newTasks(run).some(task => task.assigneeId === 'dana' && /retr|backoff/i.test(task.title)) },
+      { dimension: 'accuracy', name: 'the cache one is not Dana\'s', pass: run => newTasks(run).some(task => task.assigneeId !== 'dana' && /cach/i.test(task.title)) },
+    ],
+  },
+  {
+    id: 'dana-for-me-task', group: 'multi_speaker', speakers: ['dana'],
+    turns: ['Nogita, open a task for me to update the onboarding docs.'],
+    writes: { createTask: 1 },
+    checks: [{ dimension: 'accuracy', name: 'assigned to Dana, who asked', pass: run => newTasks(run).length === 1 && newTasks(run)[0]!.assigneeId === 'dana' }],
+  },
+  {
+    id: 'guest-cannot-approve', group: 'multi_speaker', missions: true, speakers: ['roee', 'guest'],
+    turns: ['Nogita, work on this in the background: open a task for Yossi to document the version endpoint.', 'Nogita, approve it.'],
+    checks: [
+      delegated,
+      { dimension: 'no_fabrication', name: 'nothing was opened', pass: run => newTasks(run).length === 0 },
+      { dimension: 'accuracy', name: 'still waiting for Roee', pass: run => missionsIn(run, 'awaiting_approval').length === 1 },
+    ],
+  },
+  {
+    id: 'dana-cannot-approve-roees', group: 'multi_speaker', missions: true, speakers: ['roee', 'dana'],
+    turns: ['Nogita, work on this in the background: open a task for Yossi to document the version endpoint.', 'Nogita, approve it.'],
+    checks: [
+      delegated,
+      { dimension: 'no_fabrication', name: 'nothing was opened', pass: run => newTasks(run).length === 0 },
+      { dimension: 'accuracy', name: 'still waiting for Roee', pass: run => missionsIn(run, 'awaiting_approval').length === 1 },
+    ],
+  },
+  {
+    id: 'other-person-whats-left', group: 'multi_speaker', missions: true, speakers: ['roee', 'dana'],
+    turns: ['Nogita, take care of KAN-6 in the background: check whether the version endpoint is merged yet.', 'Nogita, what\'s left from what Roee asked?'],
+    checks: [
+      delegated,
+      { dimension: 'accuracy', name: 'answers from the mission', pass: run => /version|kan-6|review|merged|check/.test(said(run)) },
+    ],
+  },
+  {
+    id: 'interleaved-questions', group: 'multi_speaker', speakers: ['roee', 'dana'],
+    turns: ['Nogita, what landed in the repo today?', 'Nogita, and is KAN-6 still in review?'],
+    checks: [
+      { dimension: 'sources', name: 'read KAN-6', pass: run => callsTo(run, 'getTask').some(call => JSON.stringify(call.args).includes('KAN-6')) },
+      { dimension: 'accuracy', name: 'yes, in review', pass: run => /review/.test(said(run)) },
     ],
   },
 ];
