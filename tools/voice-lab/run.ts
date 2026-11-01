@@ -5,23 +5,25 @@
  *
  *   npm run voice-lab -- [--scenario quiet-standup,stump] [--judge] [--stt flux-english] [--live-writes]
  *                        [--noise cafe] [--snr 5] [--router-quiet-ms 1200] [--frame-ms 20] [--eager 0.5]
- *                        [--warmup production|cold] [--research] [--room-noise-guard] [--swallowed-question] [--list]
+ *                        [--warmup production|cold] [--research] [--room-noise-guard] [--swallowed-question] [--two-speed] [--list]
  *
  * Needs NOGITA_MODE=live, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY and AUTHORIZED_ACTOR_IDS in .env.
  * Output: .voice-lab/reports/<time>/ (report.html, transcript.md, report.md, report.json, one WAV per scenario).
  */
 import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
-import { ALL_RESEARCH_FEATURES, createDependencies, loadDotEnv, researchFeatures, roomNoiseGuard, swallowedQuestion } from '../../src/app/config.ts';
+import { ALL_RESEARCH_FEATURES, createDependencies, loadDotEnv, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from '../../src/app/config.ts';
 import { DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from '../../src/app/attendee-realtime-audio.ts';
 import { AllowlistPolicy } from '../../src/core/policy.ts';
+import { buildToolbox } from '../../src/core/agent-tools.ts';
+import { MemoryMissionStore, MissionRunner } from '../../src/core/missions.ts';
 import type { ActionReceipt, ChatPort } from '../../src/core/contracts.ts';
 import { playScenario, synthesizeTurn } from './conversation.ts';
 import { createNoise, type NoiseKind } from './noise.ts';
 import { summarize, writeReport, type ScenarioResult } from './report.ts';
 import { VoiceRig, parseWarmupMode } from './rig.ts';
 import { BACKGROUND_LINES, BACKGROUND_VOICES, SCENARIOS, type Scenario } from './scenarios.ts';
-import { judge, scoreTurn } from './score.ts';
+import { judge, scoreTurn, stats } from './score.ts';
 import { deepgramSynthesizer } from './tts.ts';
 
 const { values } = parseArgs({ options: {
@@ -31,7 +33,7 @@ const { values } = parseArgs({ options: {
   'live-writes': { type: 'boolean', default: false }, eot: { type: 'string' }, eager: { type: 'string' },
   'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
   research: { type: 'boolean', default: false }, 'room-noise-guard': { type: 'boolean', default: false },
-  'swallowed-question': { type: 'boolean', default: false },
+  'swallowed-question': { type: 'boolean', default: false }, 'two-speed': { type: 'boolean', default: false },
 } });
 
 if (values.list) {
@@ -79,6 +81,14 @@ const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(env)
 const noiseGuard = values['room-noise-guard'] || roomNoiseGuard(env);
 // --swallowed-question turns on NOGITA_SWALLOWED_QUESTION for this run.
 const askSwallowed = values['swallowed-question'] || swallowedQuestion(env);
+// --two-speed turns on NOGITA_TWO_SPEED for every scenario; the two-speed scenarios turn it on for themselves.
+const allTwoSpeed = values['two-speed'] || twoSpeed(env);
+/** The research missions of two-speed answers, with the speaker's tools on the lab's (traced) ports. */
+const missionRunner = () => new MissionRunner({ model: dependencies.agent!, store: new MemoryMissionStore(),
+  toolbox: (mission, callId) => buildToolbox({ actor: { ...mission.owner, verified: true }, request: mission.goal,
+    sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`, policy: dependencies.policy,
+    code: dependencies.code, board: dependencies.board, chat, people: dependencies.people, completed: new Map(),
+    onReceipt: async () => undefined }).toolbox });
 
 // Writes are logged on the running rig. By default they never leave the lab and get a placeholder receipt;
 // with --live-writes they really create the task or post the message.
@@ -107,7 +117,8 @@ function traceReads(port: object, tools: Record<string, string>): void {
     };
   }
 }
-traceReads(dependencies.code, { findEvidence: 'search_code', readFile: 'read_file', listFiles: 'list_files', recentCommits: 'recent_commits' });
+traceReads(dependencies.code, { findEvidence: 'search_code', readFile: 'read_file', listFiles: 'list_files', recentCommits: 'recent_commits',
+  repoActivity: 'repo_activity' });
 traceReads(dependencies.board, { searchTasks: 'search_tasks', getTask: 'get_task' });
 const realChat = dependencies.chat;
 const chat: ChatPort | undefined = realChat && { name: realChat.name,
@@ -140,7 +151,7 @@ const startedAt = new Date().toISOString();
 const settings = { stt: sttMode, model: dependencies.agent.agentModel, tts: env.DEEPGRAM_TTS_MODEL ?? 'aura-2-thalia-en',
   routerQuietMs: String(routerQuietMs ?? 1200), frameMs: String(frameMs), writes: liveWrites ? 'live' : 'intercepted',
   eot: values.eot ?? '0.8', eager, incompleteHoldMs: String(incompleteTurnHoldMs), earlyCommitMs: String(earlyCommitMs), turnTaking,
-  warmup,
+  warmup, twoSpeed: allTwoSpeed ? 'on' : 'per scenario',
   thinking: env.ANTHROPIC_AGENT_THINKING === 'on' ? 'on' : 'off' };
 const results: ScenarioResult[] = [];
 for (const scenario of scenarios) {
@@ -153,7 +164,8 @@ for (const scenario of scenarios) {
     warmup,
     eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
     // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
-    engineOptions: { handRaiseFallback: 'chat', research, roomNoiseGuard: noiseGuard, swallowedQuestion: askSwallowed } });
+    engineOptions: { handRaiseFallback: 'chat', research, roomNoiseGuard: noiseGuard, swallowedQuestion: askSwallowed,
+      ...(scenario.twoSpeed || allTwoSpeed ? { missions: missionRunner(), twoSpeed: true } : {}) } });
   const errors: string[] = [];
   let records: Awaited<ReturnType<typeof playScenario>> = [];
   try {
@@ -199,5 +211,14 @@ console.log(`Answer itself p50 ${summary.meaningfulGap.p50} ms; questions ${c.qu
   `spoke over someone ${c.spokeOverPeople}`);
 if (summary.falsePauses.total) console.log(`False pauses ${summary.falsePauses.pauses}/${summary.falsePauses.total}; ` +
   `95% upper bound ${Math.round((summary.falsePauses.upper95 ?? 0) * 1000) / 10}%; p90 duration ${summary.falsePauses.duration.p90 ?? 'n/a'} ms`);
+const twoSpeedTurns = results.flatMap(result => result.turns).filter(({ record }) => record.turn.expect.fullAnswerWithinMs !== undefined);
+if (twoSpeedTurns.length) {
+  const short = stats(twoSpeedTurns.map(({ record }) => record.timing.firstContentAudio));
+  const full = stats(twoSpeedTurns.map(({ record }) => record.fullAnswer?.at));
+  const spoken = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.spokenAt !== undefined).length;
+  const over = twoSpeedTurns.filter(({ record }) => record.fullAnswer?.overPeople).length;
+  console.log(`Two speeds: short answer p50 ${short.p50 ?? 'n/a'} ms; full answer p50 ${full.p50 ?? 'n/a'} ms (${full.count}/${twoSpeedTurns.length} arrived), ` +
+    `spoken ${spoken}, started over someone ${over}`);
+}
 console.log(`Report: ${join(out, 'report.html')}`);
 process.exit(0);

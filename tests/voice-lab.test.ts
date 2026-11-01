@@ -514,3 +514,66 @@ test('a transcript arriving after the next speaker starts stays with the speaker
   assert.equal(result.timing.utterance, 110);
   assert.equal(nextResult.heard, 'Let us discuss the launch.');
 });
+
+test('two-speed scenarios ask a research question and then keep talking, with timing for both answers', () => {
+  const scenarios = SCENARIOS.filter(scenario => scenario.twoSpeed);
+  assert.deepEqual(scenarios.map(scenario => scenario.name), ['two-speed', 'two-speed-busy-room']);
+  for (const scenario of scenarios) {
+    const [ask, ...rest] = scenario.turns;
+    assert.ok(ask!.expect.contentWithinMs && ask!.expect.fullAnswerWithinMs, scenario.name);
+    assert.ok(rest.length >= 3 && rest.every(turn => turn.expect.respond === 'silent'), scenario.name);
+  }
+  assert.equal(scenarios[0]!.turns[0]!.expect.fullAnswerSpoken, 'spoken');
+  assert.equal(scenarios[1]!.turns[0]!.expect.fullAnswerSpoken, 'any');
+});
+
+/** Roee asks at 0-1000; the short line at 1500; Dana talks 3000-5000; the full answer lands in chat at 4000 and is
+ *  spoken at `spokenAt` (or not at all). */
+function twoSpeedEvents(spokenAt?: number) {
+  const events = [
+    { t: 0, type: 'speech_start' as const, participant: 'roee' },
+    { t: 1_000, type: 'speech_end' as const, participant: 'roee' },
+    { t: 1_100, type: 'utterance' as const, participant: 'lab_roee', text: 'Nogita, what landed in the repo today?' },
+    { t: 1_150, type: 'question' as const, participant: 'lab_roee', questionId: 1, detail: '#1 working' },
+    { t: 1_500, type: 'speak_call' as const, questionId: 1, text: "Checking today's commits." },
+    { t: 1_600, type: 'audio_start' as const },
+    { t: 2_400, type: 'question' as const, participant: 'lab_roee', questionId: 1, detail: '#1 answered: short answer; M-AB12 researches the full answer' },
+    { t: 3_000, type: 'speech_start' as const, participant: 'dana' },
+    { t: 4_000, type: 'chat' as const, text: "About today's commits: 40 commits and 16 pull requests, mostly turn taking." },
+    { t: 5_000, type: 'speech_end' as const, participant: 'dana' },
+    { t: 5_200, type: 'utterance' as const, participant: 'lab_dana', text: 'While she looks, did the design review move?' },
+  ];
+  if (spokenAt !== undefined) events.push(
+    { t: spokenAt, type: 'speak_call' as const, questionId: 1, text: "About today's commits, 40 commits and 16 pull requests." },
+    { t: spokenAt + 5, type: 'chat' as const, text: "About today's commits, 40 commits and 16 pull requests." },
+    { t: spokenAt + 50, type: 'audio_start' as const });
+  return events.sort((a, b) => a.t - b.t);
+}
+
+test('the full answer is timed on the question that asked it, and is not counted as speech in the next turn', () => {
+  const [ask, chatter] = SCENARIOS.find(scenario => scenario.name === 'two-speed')!.turns;
+  const events = twoSpeedEvents(6_000);
+  const asked = recordEvents(events, ask!, 0, { start: 0, end: 1_000 }, 3_000, 'roee');
+  assert.deepEqual(asked.fullAnswer, { at: 3_000, spokenAt: 5_050, overPeople: false });
+  assert.deepEqual(asked.spoken, ["Checking today's commits."]);
+  const failed = scoreTurn({ ...asked, heard: 'Nogita, what landed in the repo today?', tools: ['repo_activity: today'] })
+    .checks.filter(check => !check.ok).map(check => check.name);
+  assert.deepEqual(failed, []);
+  const next = recordEvents(events, chatter!, 1, { start: 3_000, end: 5_000 }, undefined, 'dana');
+  assert.deepEqual([next.spoken, next.chat, next.fullAnswer], [[], [], undefined]);
+  assert.equal(scoreTurn({ ...next, heard: 'While she looks' }).passed, true);
+});
+
+test('a full answer started while someone talks fails; one left in chat passes only where chat is allowed', () => {
+  const [ask] = SCENARIOS.find(scenario => scenario.name === 'two-speed')!.turns;
+  const [busyAsk] = SCENARIOS.find(scenario => scenario.name === 'two-speed-busy-room')!.turns;
+  const fails = (turn: Turn, events: ReturnType<typeof twoSpeedEvents>) => scoreTurn({
+    ...recordEvents(events, turn, 0, { start: 0, end: 1_000 }, 3_000, 'roee'), heard: 'Nogita, a research question?', tools: ['repo_activity: today'] })
+    .checks.filter(check => !check.ok).map(check => check.name);
+  // Over Dana, who has been talking since 3000.
+  assert.deepEqual(fails(ask!, twoSpeedEvents(4_200)), ['full answer not over people']);
+  assert.deepEqual(fails(ask!, twoSpeedEvents()), ['full answer spoken']);
+  assert.deepEqual(fails(busyAsk!, twoSpeedEvents()), []);
+  // No full answer at all.
+  assert.deepEqual(fails(busyAsk!, twoSpeedEvents().filter(event => event.type !== 'chat')), ['full answer within 90 s']);
+});

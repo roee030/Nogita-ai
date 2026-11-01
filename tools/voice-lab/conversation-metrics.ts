@@ -66,7 +66,7 @@ export function questionLedger(events: readonly LabEvent[]): QuestionEntry[] {
 }
 
 /** When each participant was speaking, from the lab's speech marks. */
-function speechIntervals(events: readonly LabEvent[]): Array<[number, number]> {
+export function speechIntervals(events: readonly LabEvent[]): Array<[number, number]> {
   const open = new Map<string, number>();
   const intervals: Array<[number, number]> = [];
   for (const event of [...events].sort((a, b) => a.t - b.t)) {
