@@ -491,3 +491,26 @@ test('machine tells: what gives her away as a bot in what she said aloud', () =>
   assert.deepEqual(machineTells(["Avi is addressing Roy, not me, so I'll stay quiet on this one."], 'Dana'), ['reasons aloud']);
   assert.deepEqual(machineTells(['Nogita speaks only when someone addresses it by name.'], 'Roee'), ['calls herself Nogita']);
 });
+
+test('a transcript arriving after the next speaker starts stays with the speaker who said it', () => {
+  const first: Turn = { speaker: 'roee', say: 'Nogita, what changed?', expect: { respond: 'speak' } };
+  const second: Turn = { speaker: 'dana', say: 'Let us discuss the launch.', expect: { respond: 'silent' } };
+  const events = [
+    { t: 100, type: 'speech_start' as const, participant: 'roee' },
+    { t: 200, type: 'speech_end' as const, participant: 'roee' },
+    { t: 250, type: 'speech_start' as const, participant: 'roee' },
+    { t: 300, type: 'stt_final' as const, participant: 'lab_roee', text: 'Nogita, what changed?' },
+    { t: 310, type: 'utterance' as const, participant: 'lab_roee', text: 'Nogita, what changed?' },
+    { t: 400, type: 'speech_end' as const, participant: 'roee' },
+    { t: 450, type: 'stt_final' as const, participant: 'lab_roee', text: 'Let us discuss the launch.' },
+    { t: 460, type: 'utterance' as const, participant: 'lab_roee', text: 'Let us discuss the launch.' },
+  ];
+
+  const result = recordEvents(events, first, 0, { start: 100, end: 200 }, 250, 'roee', { next: second });
+  const nextResult = recordEvents(events, second, 1, { start: 250, end: 400 }, undefined, 'roee', { previous: first });
+
+  assert.equal(result.heard, 'Nogita, what changed?');
+  assert.equal(result.timing.sttFinal, 100);
+  assert.equal(result.timing.utterance, 110);
+  assert.equal(nextResult.heard, 'Let us discuss the launch.');
+});

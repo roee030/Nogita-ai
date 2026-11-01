@@ -137,19 +137,44 @@ export async function playScenario(rig: VoiceRig, scenario: Scenario, audio: Flo
   }
   await Promise.all(ends);
   await settle(rig, 1_500, options.answerTimeoutMs ?? 45_000);
-  return scenario.turns.map((turn, index) => record(rig.events, turn, index, marks[index]!, marks[index + 1]?.start,
-    micOf(scenario, turn.speaker)));
+  return scenario.turns.map((turn, index) => {
+    const mic = micOf(scenario, turn.speaker);
+    const previous = scenario.turns[index - 1];
+    const next = scenario.turns[index + 1];
+    return record(rig.events, turn, index, marks[index]!, marks[index + 1]?.start, mic, {
+      previous: previous && micOf(scenario, previous.speaker) === mic ? previous : undefined,
+      next: next && micOf(scenario, next.speaker) === mic ? next : undefined,
+    });
+  });
 }
 
 export function record(events: LabEvent[], turn: Turn, index: number, mark: { start: number; end: number }, nextStart?: number,
-  mic = turn.speaker): TurnRecord {
+  mic = turn.speaker, adjacent: { previous?: Turn; next?: Turn } = {}): TurnRecord {
   const window = events.filter(event => event.t >= mark.start && (nextStart === undefined || event.t < nextStart));
   const participantUuid = `lab_${mic}`;
+  const script = (candidate: Turn) => (Array.isArray(candidate.say) ? candidate.say : [candidate.say]).join(' ');
+  const affinity = (text: string | undefined, candidate: Turn) => {
+    const words = (value: string) => value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+    const heard = words(text ?? '');
+    const expected = new Set(words(script(candidate)));
+    return heard.length ? heard.filter(word => expected.has(word)).length / heard.length : 0;
+  };
+  const ownsTranscript = (event: LabEvent) => {
+    const own = affinity(event.text, turn);
+    if (adjacent.previous && affinity(event.text, adjacent.previous) > own) return false;
+    if (nextStart !== undefined && event.t >= nextStart && adjacent.next && affinity(event.text, adjacent.next) >= own) return false;
+    return true;
+  };
+  const laterOwnStarts = nextStart === undefined ? [] : events.filter(event => event.type === 'speech_start' &&
+    event.participant === mic && event.t >= nextStart);
+  const transcriptEnd = adjacent.next ? laterOwnStarts[1]?.t : laterOwnStarts[0]?.t;
   const after = (type: LabEvent['type'], from: number, predicate: (event: LabEvent) => boolean = () => true) =>
     events.find(event => event.type === type && event.t >= from && (nextStart === undefined || event.t < nextStart) && predicate(event));
-  const finals = window.filter(event => event.type === 'stt_final' && event.participant === participantUuid);
+  const finals = events.filter(event => event.t >= mark.start && (!transcriptEnd || event.t < transcriptEnd) && event.type === 'stt_final' &&
+    event.participant === participantUuid && ownsTranscript(event));
   // A turn can reach the engine in pieces (Flux ends a turn at "Agreed." and starts another); all are this speaker's.
-  const utterances = window.filter(event => event.type === 'utterance' && event.participant === participantUuid);
+  const utterances = events.filter(event => event.t >= mark.start && (!transcriptEnd || event.t < transcriptEnd) && event.type === 'utterance' &&
+    event.participant === participantUuid && ownsTranscript(event));
   const utterance = utterances.find(event => event.t >= mark.end) ?? utterances.at(-1);
   const firstSpeak = after('speak_call', mark.end);
   const firstAudio = after('audio_start', mark.end);
