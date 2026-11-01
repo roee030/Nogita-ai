@@ -46,12 +46,59 @@ test('a damaged mission snapshot is reported by id instead of disappearing from 
     await mkdir(missions);
     await writeFile(join(missions, 'M-BROKEN.json'), '{"id":"M-BROKEN",', 'utf8');
 
+    await new FileMissionStore(directory).save(openMission('M-HEALTHY'));
     const issues: string[] = [];
-    const recovered = await new FileMissionStore(directory, issue => issues.push(issue.missionId)).list();
+    const recovered = await new FileMissionStore(directory, async issue => {
+      issues.push(issue.missionId ?? 'directory');
+      throw new Error('chat unavailable');
+    }).list();
 
-    assert.deepEqual(recovered, []);
+    assert.deepEqual(recovered.map(mission => mission.id), ['M-HEALTHY']);
     assert.deepEqual(issues, ['M-BROKEN']);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('an unreadable missions directory is reported while a missing one is a clean first start', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nogita-mission-store-'));
+  try {
+    const issues: string[] = [];
+    const store = new FileMissionStore(directory, issue => { issues.push(issue.reason); });
+    assert.deepEqual(await store.list(), []);
+    assert.deepEqual(issues, []);
+
+    await writeFile(join(directory, 'missions'), 'not a directory', 'utf8');
+    assert.deepEqual(await store.list(), []);
+    assert.deepEqual(issues, ['directory_unreadable']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('valid JSON with no mission shape is reported as a lost snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'nogita-mission-store-'));
+  try {
+    const missions = join(directory, 'missions');
+    await mkdir(missions);
+    await writeFile(join(missions, 'M-EMPTY.json'), '{}', 'utf8');
+    const issues: string[] = [];
+
+    assert.deepEqual(await new FileMissionStore(directory, issue => { issues.push(issue.missionId ?? 'directory'); }).list(), []);
+    assert.deepEqual(issues, ['M-EMPTY']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('mission recovery issues are posted to the configured team chat', async () => {
+  const posts: Array<{ channel: string; text: string }> = [];
+  const report = FileMissionStore.reportToChat({
+    postMessage: async (channel, text) => { posts.push({ channel, text }); return 'https://chat.test/1'; },
+  }, 'mission-alerts');
+
+  await report({ missionId: 'M-BROKEN', reason: 'snapshot_unreadable' });
+
+  assert.deepEqual(posts, [{ channel: 'mission-alerts',
+    text: 'Mission M-BROKEN could not be resumed after restart because its saved snapshot was unreadable. Its unfinished work may have been lost.' }]);
 });
