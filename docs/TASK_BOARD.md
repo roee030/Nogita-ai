@@ -109,7 +109,7 @@
 | [ ] | P3-16 | לחבר את שלב 3 למנוע: `ci_status`, תקציר תוצאות, Evidence Ledger, רמות הוכחה ותבניות מחקר מגיעים מ-env (`NOGITA_CI_STATUS`, `NOGITA_RESULT_DIGEST`, `NOGITA_EVIDENCE_LEDGER`, `NOGITA_PROOF_LEVELS`, `NOGITA_RESEARCH_TEMPLATES`) דרך config ו-engine לכל תורה, בצ'אט ובקול; `npm run eval` ו-voice lab מדליקים אותם עם דגל; כבויים כברירת מחדל; השער: 8 מקרי ה-CI ב-eval עוברים | Claude | `src/app/config.ts`, `src/core/engine.ts`, `src/app/server.ts`, `.env.example`, `tests/research-wiring.test.ts` | - |
 | [ ] | P3-13 | לא לענות לרעש ולשיחות צד: תמלול מקוטע או מעורבב (דיבור רקע, שני קולות על מיקרופון אחד) בלי פנייה אליה לא מקבל תשובה בקול, וחלון ה-follow-up לא תופס שאלה שאדם בחדר שאל אדם אחר; flag כבוי; השער: תורות ה-silent ב-`meeting-room` ו-`room-crosstalk` עוברות | Claude | `src/core/policy.ts`, `src/core/speech-guard.ts`, `tests/addressing.test.ts`, `tests/speech-guard.test.ts` | P3-11 |
 | [ ] | P3-14 | שאלה שנבלעה חוזרת מהר: כשנשמע השם שלה אבל השאלה מקוטעת או אבדה בדיבור חופף, היא שואלת קצר תוך כמה שניות ("מישהו שאל אותי משהו?") ולא נזכרת 25 שניות אחר כך; flag כבוי; השער: `room-crosstalk` ו-`meeting-room` בלי שאלה שנענתה אחרי שהנושא נסגר | Claude | `src/core/engine.ts`, `tests/engine.test.ts` | P3-13 |
-| [ ] | P3-15 | תיקון ניקוד ב-voice lab: תמלול שמגיע אחרי שהדובר הבא התחיל משויך לתור של מי שאמר אותו, ולא נכשל ב-"no transcript" | Claude | `tools/voice-lab/conversation.ts`, `tests/voice-lab.test.ts` | P3-11 |
+| [ ] | P3-15 | תיקון ניקוד ב-voice lab: תמלול שמגיע אחרי שהדובר הבא התחיל משויך לתור של מי שאמר אותו, ולא נכשל ב-"no transcript" | Codex | `tools/voice-lab/conversation.ts`, `tests/voice-lab.test.ts` | P3-11 |
 
 ### שלב 4, שבועות 6–7: עבודה ברקע והמשכיות
 
@@ -127,3 +127,15 @@
 | [ ] | P4-7 | סט ההערכה מגיע ל-80 מקרים: mission ארוכה, "מה נשאר", מעבר ערוץ, שאלה אחרי restart; כולל הרצה עם ניתוב מודלים מול בלי | Claude | `tests/eval/` | P4-1, P4-4, P4-5 |
 | [ ] | P4-8 | תרחישי voice lab לשתי מהירויות: זמן עד התשובה הקצרה, זמן עד התשובה המלאה, ותשובה מלאה שלא נאמרת מעל אנשים | Codex | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tests/voice-lab.test.ts` | P4-2 |
 | [ ] | P4-9 | פגישה חיה #5 עם תסריט שער שלב 4: מחקר ארוך באמצע פגישה, "מה נשאר?", המשך ב-Slack | רועי | | P4-7, P4-8 |
+
+### שלב 6 (מוקדם), שבועות 11–12: מוכנות לפיילוט
+
+**שער:** צוות חיצוני מחובר ומשתמש בלי שינוי ידני בקוד. המשימות כאן לא תלויות בשלב 4 ובשלב 5, ולכן נכנסות מוקדם, כדי ש-Codex לא יחכה ל-P4-2.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P6-0 | משימות מוקדמות של שלב 6, ו-P3-15 עובר ל-Codex | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P6-1 | audit log: כל כתיבה (Jira, Slack, GitHub) נרשמת עם מי ביקש, מאיזו פגישה או ערוץ, מה נשלח והתוצאה; קובץ append-only ב-state dir ו-endpoint מוגן לקריאה | Codex | `src/app/audit-log.ts`, `src/app/action-receipts.ts`, `src/app/server.ts`, `tests/audit-log.test.ts` | - |
+| [ ] | P6-2 | התנהגות כשספק נופל: כש-Jira, GitHub, Slack, Anthropic או Deepgram נכשלים או איטיים, היא אומרת בקצרה מה לא זמין, בלי סערת retries (circuit breaker לכל ספק), וחוזרת לבד כשהספק חוזר; flag כבוי | Codex | `src/core/provider-health.ts`, `src/app/config.ts`, `tests/provider-outage.test.ts` | - |
+| [ ] | P6-3 | rate limits: תקרה לכל אדם ולכל פגישה על כתיבות ועל קריאות מודל, הודעה ברורה כשמגיעים אליה, ומונה ב-readiness; flag כבוי | Codex | `src/app/rate-limits.ts`, `src/app/session-usage.ts`, `tests/rate-limits.test.ts` | - |
+| [ ] | P6-4 | dashboard לאיכות ולשימוש: `npm run dashboard` בונה HTML מ-turn logs ומדוחות voice lab ו-eval: שאלות שאבדו, זמני תגובה p50/p95, טענות מגובות במקור, עלות לפגישה, ומגמה בין ריצות | Codex | `tools/dashboard/`, `tests/dashboard.test.ts`, `package.json` | - |
