@@ -62,11 +62,15 @@ export function digestResultWithStats(text: string, id: string, budget = DIGEST_
   const sections = text.includes('\n---\n') ? blockSections(lines, text.length) : paragraphSections(lines, text.length);
   // A leading plain section is the result's own header ("3 commits, 2 merged pull requests."): keep it as is.
   const preamble: string[] = [];
+  let preambleOmittedLines = 0;
   if (sections[0] && !sections[0].items) {
     const first = sections.shift()!;
     const lines = [...(first.heading ? [first.heading] : []), ...first.lines];
     preamble.push(...lines.slice(0, MAX_PREAMBLE_LINES).map(line => clip(line.text)));
-    if (lines.length > MAX_PREAMBLE_LINES) preamble.push(`... ${lines.length - MAX_PREAMBLE_LINES} more lines from offset ${lines[MAX_PREAMBLE_LINES].offset}`);
+    if (lines.length > MAX_PREAMBLE_LINES) {
+      preambleOmittedLines = lines.length - MAX_PREAMBLE_LINES;
+      preamble.push(`... ${preambleOmittedLines} more lines from offset ${lines[MAX_PREAMBLE_LINES].offset}`);
+    }
   }
   const blocks = sections.map(section => ({ section, summary: summarize(section), shown: [] as string[], next: 0 }));
   // What is always shown: the banner, the preamble, and per section its summary and room for its "... more" line.
@@ -105,7 +109,7 @@ export function digestResultWithStats(text: string, id: string, budget = DIGEST_
     out.push('', `... ${blocks.length - kept} more sections from offset ${blocks[kept].section.heading?.offset ?? blocks[kept].section.lines[0]?.offset ?? 0}`);
   }
   let omittedItems = 0;
-  let omittedLines = 0;
+  let omittedLines = preambleOmittedLines;
   for (const block of listed) {
     const omitted = entriesOf(block.section).length - block.next;
     if (block.section.items) omittedItems += omitted; else omittedLines += omitted;

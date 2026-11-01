@@ -62,7 +62,7 @@ export function buildTurnTrace(input: { id?: number; model: string; ms: number; 
   const research = evidence || resultTruncations.length ? {
     sources: evidence?.sources.map(source => ({ id: source.id, kind: source.kind, tool: source.tool, step: source.step,
       cited: evidence.cited.includes(source.id) })) ?? [],
-    claims: evidence ? claimCoverage(input.result?.answer ?? '') : { total: 0, sourced: 0 },
+    claims: evidence ? claimCoverage(input.result?.answer ?? '', evidence.cited.length) : { total: 0, sourced: 0 },
     truncatedResults: resultTruncations,
   } : undefined;
   return {
@@ -73,10 +73,15 @@ export function buildTurnTrace(input: { id?: number; model: string; ms: number; 
   };
 }
 
-function claimCoverage(answer: string): { total: number; sourced: number } {
+function claimCoverage(answer: string, citedSources: number): { total: number; sourced: number } {
   const body = answer.split(/\n\s*Sources:\s*\n/i)[0] ?? '';
-  const claims = body.split(/(?<=[.!?…])(?:["')\]]*)\s+/).map(part => part.trim()).filter(part => /[\p{L}\p{N}]/u.test(part));
-  return { total: claims.length, sourced: claims.filter(claim => /\[\d+(?:\s*,\s*\d+)*\](?:[.!?…])?$/.test(claim)).length };
+  const claims = body.split('\n').flatMap(line => {
+    const item = line.trim().replace(/^(?:[-*•]|\d+[.)])\s+/, '');
+    return item.match(/.*?[.!?…]+(?:\s*\[\d+(?:\s*,\s*\d+)*\])?(?=\s|$)|.+$/g) ?? [];
+  }).map(part => part.trim()).filter(part => /[\p{L}\p{N}]/u.test(part));
+  const sourced = claims.filter(claim => [...claim.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)].some(match =>
+    match[1]!.split(',').map(value => Number(value.trim())).some(value => value >= 1 && value <= citedSources))).length;
+  return { total: claims.length, sourced };
 }
 
 function shortenInput(value: Record<string, unknown>): string {

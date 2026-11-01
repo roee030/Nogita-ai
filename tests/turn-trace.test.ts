@@ -74,6 +74,17 @@ test('research trace records source coverage and omitted result items without an
   assert.doesNotMatch(JSON.stringify(trace), /retry fix|deployment status|abc1234/);
 });
 
+test('research claim coverage validates citations and treats sentence citations and bullets as separate claims', () => {
+  const trace = buildTurnTrace({ model: 'claude-sonnet', ms: 20, toolUses: [], stepMs: [20], result: {
+    answer: 'The fix shipped. [1] The build passed. [1]\n- No citation claim\n- Another uncited claim [99]',
+    preface: '', lookups: [], toolCalls: [], steps: 1, stoppedEarly: false,
+    stops: [{ step: 0, stopReason: 'end_turn', maxTokens: 600 }], completion: { complete: true, createdTasks: 0, missing: [] },
+    evidence: { sources: [{ id: 'S1', kind: 'commit', label: 'commit abc1234', tool: 'repo_activity', step: 0 }], cited: ['S1'] },
+  } });
+
+  assert.deepEqual(trace.research?.claims, { total: 4, sourced: 2 });
+});
+
 test('release report summarizes traced turns and truncations', () => {
   const report = analyse('meeting', [{
     at: 1, type: 'agent_trace', model: 'claude-sonnet', ms: 321, steps: 2, stoppedEarly: false,
