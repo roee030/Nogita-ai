@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SlackMissionHandoffs } from '../src/app/slack-conversations.ts';
-import { dispatchSlackMissionReply } from '../src/app/slack-socket-events.ts';
+import { FileMissionStore } from '../src/app/mission-store.ts';
+import { bindSlackMissionHandoff, dispatchSlackMissionReply, missionHandoffRequested } from '../src/app/slack-socket-events.ts';
 
 test('a meeting mission update is delivered to its bound Slack thread', async () => {
   const handoffs = new SlackMissionHandoffs(true);
-  handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  await handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' });
   const sent: Array<{ channel: string; threadTs: string; text: string }> = [];
 
@@ -19,7 +23,7 @@ test('a meeting mission update is delivered to its bound Slack thread', async ()
 
 test('a reply in the handoff thread is routed to the same mission', async () => {
   const handoffs = new SlackMissionHandoffs(true);
-  handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  await handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' });
   const replies: Array<{ missionId: string; actorId: string; text: string }> = [];
 
@@ -35,7 +39,7 @@ test('a reply in the handoff thread is routed to the same mission', async () => 
 
 test('handoff behavior is off by default and unrelated threads stay on the normal Slack path', async () => {
   const disabled = new SlackMissionHandoffs();
-  assert.equal(disabled.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  assert.equal(await disabled.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' }), false);
   assert.equal(await disabled.deliver('M-7ABC', 'secret', async () => assert.fail('must not post')), false);
 
@@ -48,11 +52,11 @@ test('handoff behavior is off by default and unrelated threads stay on the norma
   assert.equal(called, false);
 });
 
-test('moving a mission to another Slack thread removes the stale route', () => {
+test('moving a mission to another Slack thread removes the stale route', async () => {
   const handoffs = new SlackMissionHandoffs(true);
-  handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  await handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' });
-  handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  await handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C2:172.002', channel: 'C2', threadTs: '172.002' });
 
   assert.equal(handoffs.missionForThread('slack:T1:C1:171.001'), undefined);
@@ -61,7 +65,7 @@ test('moving a mission to another Slack thread removes the stale route', () => {
 
 test('an unmapped Slack user cannot send guidance into a meeting mission', async () => {
   const handoffs = new SlackMissionHandoffs(true);
-  handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+  await handoffs.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
     slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' });
   let called = false;
 
@@ -71,4 +75,38 @@ test('an unmapped Slack user cannot send guidance into a meeting mission', async
 
   assert.equal(routed, false);
   assert.equal(called, false);
+});
+
+test('a handoff is restored from the mission state directory after restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'nogita-slack-handoff-'));
+  const store = new FileMissionStore(root);
+  const first = await SlackMissionHandoffs.restore(true, store);
+  await first.bind({ missionId: 'M-7ABC', meetingSessionId: 'meet:daily',
+    slackSessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001' });
+
+  const restarted = await SlackMissionHandoffs.restore(true, new FileMissionStore(root));
+
+  assert.equal(restarted.missionForThread('slack:T1:C1:171.001'), 'M-7ABC');
+  const sent: string[] = [];
+  assert.equal(await restarted.deliver('M-7ABC', 'finished', async (_channel, _thread, text) => { sent.push(text); }), true);
+  assert.deepEqual(sent, ['finished']);
+});
+
+test('only the mission owner can start a handoff by naming it in Slack', () => {
+  const mission = { id: 'M-7ABC', owner: { id: 'roee' }, sessionId: 'meet:daily' };
+  assert.equal(missionHandoffRequested('Nogita, continue M-7ABC here', { id: 'roee', verified: true }, id => id === mission.id ? mission : undefined), 'M-7ABC');
+  assert.equal(missionHandoffRequested('Nogita, continue M-7ABC here', { id: 'other', verified: true }, () => mission), undefined);
+  assert.equal(missionHandoffRequested('Nogita, continue M-7ABC here', { id: 'roee', verified: false }, () => mission), undefined);
+  assert.equal(missionHandoffRequested('Nogita, hello', { id: 'roee', verified: true }, () => mission), undefined);
+});
+
+test('the Slack event boundary binds the named meeting mission to the originating thread', async () => {
+  const handoffs = new SlackMissionHandoffs(true);
+  const mission = { id: 'M-7ABC', owner: { id: 'roee' }, sessionId: 'meet:daily' };
+  const request = { sessionId: 'slack:T1:C1:171.001', channel: 'C1', threadTs: '171.001',
+    utterance: { eventId: 'Ev5', actor: { id: 'roee', displayName: 'Roee', verified: true },
+      text: 'Nogita, continue M-7ABC here' } };
+
+  assert.equal(await bindSlackMissionHandoff(request, handoffs, id => id === mission.id ? mission : undefined), 'M-7ABC');
+  assert.equal(handoffs.missionForThread(request.sessionId), 'M-7ABC');
 });

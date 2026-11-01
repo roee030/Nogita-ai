@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Mission, MissionStore } from '../core/missions.ts';
+import type { SlackMissionHandoff, SlackMissionHandoffStore } from './slack-conversations.ts';
 
 export interface MissionRecoveryIssue {
   missionId?: string;
@@ -54,10 +55,11 @@ function isMission(value: unknown, id: string): value is Mission {
     Array.isArray(mission.messages) && mission.messages.every(isMessage);
 }
 
-export class FileMissionStore implements MissionStore {
+export class FileMissionStore implements MissionStore, SlackMissionHandoffStore {
   private readonly directory: string;
   private ready?: Promise<void>;
   private readonly writes = new Map<string, Promise<void>>();
+  private handoffWrite = Promise.resolve();
 
   constructor(stateDirectory: string, private readonly reportRecoveryIssue?: RecoveryReporter) {
     this.directory = join(stateDirectory, 'missions');
@@ -122,5 +124,31 @@ export class FileMissionStore implements MissionStore {
       else void this.report({ missionId: name.slice(0, -5), reason: 'snapshot_unreadable' });
     }
     return missions;
+  }
+
+  async saveSlackHandoffs(handoffs: readonly SlackMissionHandoff[]): Promise<void> {
+    const snapshot = JSON.stringify(handoffs);
+    this.handoffWrite = this.handoffWrite.catch(() => undefined).then(async () => {
+      this.ready ??= mkdir(this.directory, { recursive: true, mode: 0o700 }).then(() => undefined);
+      await this.ready;
+      const file = join(this.directory, 'slack-handoffs.json');
+      const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+      await writeFile(temporary, snapshot, { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, file);
+    });
+    await this.handoffWrite;
+  }
+
+  async loadSlackHandoffs(): Promise<SlackMissionHandoff[]> {
+    try {
+      const value: unknown = JSON.parse(await readFile(join(this.directory, 'slack-handoffs.json'), 'utf8'));
+      if (!Array.isArray(value)) return [];
+      return value.filter((item): item is SlackMissionHandoff => record(item) &&
+        typeof item.missionId === 'string' && MISSION_ID.test(item.missionId) &&
+        typeof item.meetingSessionId === 'string' && Boolean(item.meetingSessionId) &&
+        typeof item.slackSessionId === 'string' && item.slackSessionId.startsWith('slack:') &&
+        typeof item.channel === 'string' && Boolean(item.channel) &&
+        typeof item.threadTs === 'string' && Boolean(item.threadTs));
+    } catch { return []; }
   }
 }

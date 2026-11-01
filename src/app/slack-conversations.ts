@@ -17,26 +17,43 @@ export interface SlackMissionHandoff {
 
 export type SlackThreadPoster = (channel: string, threadTs: string, text: string) => Promise<void> | void;
 
+export interface SlackMissionHandoffStore {
+  saveSlackHandoffs(handoffs: readonly SlackMissionHandoff[]): Promise<void>;
+  loadSlackHandoffs(): Promise<SlackMissionHandoff[]>;
+}
+
 /** Feature-gated routing between a delegated meeting mission and one Slack thread. */
 export class SlackMissionHandoffs {
   private readonly byMission = new Map<string, SlackMissionHandoff>();
   private readonly byThread = new Map<string, string>();
 
-  constructor(private readonly enabled = false) {}
+  constructor(private readonly enabled = false, private readonly store?: SlackMissionHandoffStore) {}
 
-  bind(handoff: SlackMissionHandoff): boolean {
+  static async restore(enabled = false, store?: SlackMissionHandoffStore): Promise<SlackMissionHandoffs> {
+    const handoffs = new SlackMissionHandoffs(enabled, store);
+    if (!enabled || !store) return handoffs;
+    for (const handoff of await store.loadSlackHandoffs()) handoffs.index(handoff);
+    return handoffs;
+  }
+
+  async bind(handoff: SlackMissionHandoff): Promise<boolean> {
     if (!this.enabled) return false;
     if (!/^M-[A-Z0-9]{1,20}$/.test(handoff.missionId) || !handoff.meetingSessionId ||
         !handoff.slackSessionId.startsWith('slack:') || !handoff.channel || !handoff.threadTs) {
       throw new Error('invalid Slack mission handoff');
     }
+    this.index(handoff);
+    await this.store?.saveSlackHandoffs([...this.byMission.values()]);
+    return true;
+  }
+
+  private index(handoff: SlackMissionHandoff): void {
     const previous = this.byMission.get(handoff.missionId);
     if (previous) this.byThread.delete(previous.slackSessionId);
     const displaced = this.byThread.get(handoff.slackSessionId);
     if (displaced) this.byMission.delete(displaced);
     this.byMission.set(handoff.missionId, { ...handoff });
     this.byThread.set(handoff.slackSessionId, handoff.missionId);
-    return true;
   }
 
   missionForThread(slackSessionId: string): string | undefined {
