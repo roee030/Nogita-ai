@@ -6,7 +6,8 @@
  *   npm run eval                          all cases once
  *   npm run eval -- --case live-repo-today --repeat 5
  *   npm run eval -- --group missions      one group of cases
- *   npm run eval -- --json out.json       also write every run and score
+ *   npm run eval -- --json out.json       write every run and score there (default: .eval/<time>.json, which
+ *                                         npm run dashboard reads for the trend); --no-json writes nothing
  *   npm run eval -- --research            phase 3 research on (ci_status, digests, ledger, proof levels, templates);
  *                                         without it each follows its NOGITA_* flag in .env, off by default
  *   npm run eval -- --routing compare     every case with model routing off, then on, and the two side by side;
@@ -15,7 +16,8 @@
  *
  * Needs ANTHROPIC_API_KEY (from .env or the environment); ANTHROPIC_AGENT_MODEL picks the model as in production.
  */
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ALL_RESEARCH_FEATURES, loadDotEnv, researchFeatures } from '../../src/app/config.ts';
 import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../../src/adapters/anthropic.ts';
@@ -24,7 +26,7 @@ import { runCase, scoreCase, summarize, type CaseScore, type Summary } from './h
 
 const { values } = parseArgs({ options: {
   case: { type: 'string', multiple: true }, group: { type: 'string', multiple: true }, repeat: { type: 'string', default: '1' },
-  json: { type: 'string' }, research: { type: 'boolean', default: false }, routing: { type: 'string' },
+  json: { type: 'string' }, 'no-json': { type: 'boolean', default: false }, research: { type: 'boolean', default: false }, routing: { type: 'string' },
 } });
 loadDotEnv();
 const key = process.env.ANTHROPIC_API_KEY?.trim();
@@ -107,8 +109,10 @@ if (passes.length === 2) {
     if (score.passed !== other.passed) process.stdout.write(`  ${other.passed ? 'passes only with routing' : 'fails only with routing'}: ${score.id}\n`);
   }
 }
-if (values.json) {
-  writeFileSync(values.json, `${JSON.stringify({ research, at: new Date().toISOString(),
+const jsonPath = values['no-json'] ? undefined : values.json ?? join('.eval', `${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+if (jsonPath) {
+  mkdirSync(dirname(jsonPath), { recursive: true });
+  writeFileSync(jsonPath, `${JSON.stringify({ research, at: new Date().toISOString(),
     passes: passes.map(pass => ({ routing: pass.routing, model: pass.model, summary: pass.summary, ms: pass.ms, runs: pass.runs })) }, null, 1)}\n`);
-  process.stdout.write(`wrote ${values.json}\n`);
+  process.stdout.write(`wrote ${jsonPath}\n`);
 }
