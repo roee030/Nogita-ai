@@ -259,7 +259,8 @@ export class VoiceRig {
     this.engine = new NogitaEngine(this.options.dependencies, { ...this.options.engineOptions,
       agentCacheWarmup: warmup === 'production',
       floor: { ...this.options.engineOptions?.floor,
-        talkingMs: this.options.engineOptions?.floor?.talkingMs ?? (this.options.turnTakingV2 === false ? 1_000 : 3_000) },
+        talkingMs: this.options.engineOptions?.floor?.talkingMs ?? (this.options.turnTakingV2 === false ? 1_000 : 3_000),
+        explicitTurnEnd: this.options.engineOptions?.floor?.explicitTurnEnd ?? this.options.turnTakingV2 !== false },
       onActivity: (sessionId, activity) => {
         this.options.engineOptions?.onActivity?.(sessionId, activity);
         if (activity.kind === 'model_first_text') this.log('model_first_text', {
@@ -288,6 +289,7 @@ export class VoiceRig {
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
       onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),
       onTurnEnded: (sessionId, speakerUuid) => this.engine.noteTurnEnded(sessionId, speakerUuid),
+      explicitTurnEnd: this.options.turnTakingV2 !== false,
       chatAck: false,
       ...(this.options.eagerThreshold !== undefined ? { speculate: (sessionId: string, utterance: Utterance) => {
         const handle = this.engine.speculate(sessionId, utterance);

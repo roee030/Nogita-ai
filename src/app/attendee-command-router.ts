@@ -52,6 +52,8 @@ export interface AttendeeCommandRouterOptions {
   onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
   /** The speaker's turn is over without a new utterance (an early commit's confirmation): the floor stops waiting. */
   onTurnEnded?: (sessionId: string, speakerUuid: string) => void;
+  /** Report every semantic completed turn, so an explicit speech floor never opens on a lease timeout. */
+  explicitTurnEnd?: boolean;
   /** Starts an answer from an early end-of-turn; nothing may be said or changed until the turn is confirmed. */
   speculate?: (sessionId: string, utterance: Utterance) => EarlyStart | undefined;
 }
@@ -95,6 +97,7 @@ export class AttendeeCommandRouter {
   private readonly onChatAck?: (sessionId: string, durationMs: number) => void;
   private readonly onSpeechActivity?: (sessionId: string, speakerUuid: string) => void;
   private readonly onTurnEnded?: (sessionId: string, speakerUuid: string) => void;
+  private readonly explicitTurnEnd: boolean;
   private readonly speculate?: AttendeeCommandRouterOptions['speculate'];
   private sequence = 0;
 
@@ -123,6 +126,7 @@ export class AttendeeCommandRouter {
     this.onChatAck = options.onChatAck;
     this.onSpeechActivity = options.onSpeechActivity;
     this.onTurnEnded = options.onTurnEnded;
+    this.explicitTurnEnd = options.explicitTurnEnd ?? false;
     this.speculate = options.speculate;
   }
 
@@ -183,6 +187,7 @@ export class AttendeeCommandRouter {
   acceptCompletedTurn(request: AttendeeTranscriptRequest): Promise<void> {
     const state = this.sessions.get(request.sessionId);
     if (!state || state.acceptedEventIds.has(request.utterance.eventId)) return Promise.resolve();
+    if (this.explicitTurnEnd) this.onTurnEnded?.(request.sessionId, request.speakerUuid);
     const committed = state.committed.get(request.speakerUuid);
     if (committed) state.committed.delete(request.speakerUuid);
     if (committed && (request.utterance.inputTurnIds ?? []).some(id => committed.turnIds.includes(id))) {
@@ -191,7 +196,7 @@ export class AttendeeCommandRouter {
       const rest = remainderAfter(committed.text, request.utterance.text);
       if (rest === '') {
         state.acceptedEventIds.add(request.utterance.eventId);
-        this.onTurnEnded?.(request.sessionId, request.speakerUuid);
+        if (!this.explicitTurnEnd) this.onTurnEnded?.(request.sessionId, request.speakerUuid);
         return Promise.resolve();
       }
       if (rest !== undefined) request = { ...request, utterance: { ...request.utterance, text: rest } };

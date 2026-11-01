@@ -133,7 +133,7 @@ export interface NogitaEngineOptions {
    */
   receipts?: Map<string, ActionReceipt>;
   /** Speech floor timing (tests use shorter waits). */
-  floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
+  floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'explicitTurnEnd' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
 }
 
 /** "Stop", "wait", "hold on": stop talking now (the answer stays in chat). */
