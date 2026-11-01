@@ -49,6 +49,10 @@ export interface ToolboxContext {
   leave?: () => void;
   /** With NOGITA_SHORT_SPOKEN_RESULTS in a voice meeting: a long result goes to chat whole, and the spoken reply stays short. */
   postDetails?: (text: string) => Promise<void>;
+  /** NOGITA_TASK_FROM_TOPIC: create_task says a named topic is enough to create the task. */
+  taskFromTopic?: boolean;
+  /** NOGITA_NOISY_TASK_REQUESTS: the explicit-request check reads through fillers, a misheard task noun and Hebrew. */
+  noisyTaskRequests?: boolean;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -172,19 +176,40 @@ function isInformationQuestion(t: string): boolean {
   if (/^(?:can|could|would|will) you\b|^please\b/.test(lead)) return false;
   return /^(?:what|what's|whats|which|who|whom|when|where|why|how|did|does|do|is|are|was|were|has|have|any)\b/.test(lead);
 }
+/** Hebrew asks to create a task ("תפתחי משימה", "פתחו שתי משימות"); the completion gate counts them too. */
+export const HE_TASK = String.raw`(?:משימה|משימות|טיקט|טיקטים|באג|באגים)`;
+export const HE_CREATE = String.raw`(?:^|[\s,.;:!?"'(])(?:ו?(?:ת?פתח(?:י|ו)?|פתחי|ת?יצר(?:י|ו)?|צור|צרי|צרו|ת?וסיפ(?:י|ו)?|הוסיפ(?:י|ו)?|הוסף|תרשמ(?:י|ו)?|רשמ(?:י|ו)?))(?=[\s,.;:!?"')]|$)`;
 const TASK_NOUN = String.raw`(?:task|tasks|ticket|tickets|issue|issues|bug|bugs|story|stories|card|cards|todo|to-do)`;
+/** How speech recognition has written the task nouns (the eval: "open three tusks"). Never a real word for other work. */
+const MISHEARD_TASK_NOUN = String.raw`(?:tusks?|tascs?|tass|taks|tikets?|tickits?|isues?)`;
+const FILLERS = /\b(?:u+m+|u+h+m*|e+r+m*|h+m+|you know|i mean)\b/g;
 
-/** A direct request to make a ticket. Wider than the legacy planner check, still deterministic. */
-export function requestsTaskWrite(request: string): boolean {
+/**
+ * The words as a meeting transcript gives them, made matchable (NOGITA_NOISY_TASK_REQUESTS): fillers and the commas
+ * around them dropped, a word said twice ("the, the") once. "Can you open, uh, two tasks" then reads as asked.
+ */
+function denoise(text: string): string {
+  return text.replace(FILLERS, ' ').replace(/\s*[,;—–]\s*|\s+-\s+/g, ' ').replace(/\s+/g, ' ')
+    .replace(/\b(\w+)(?: \1\b)+/g, '$1').trim();
+}
+
+/**
+ * A direct request to make a ticket. Wider than the legacy planner check, still deterministic. With `noisy`
+ * (NOGITA_NOISY_TASK_REQUESTS) it also reads a request through fillers, a misheard task noun and Hebrew.
+ */
+export function requestsTaskWrite(request: string, options: { noisy?: boolean } = {}): boolean {
   // A follow-up carries the earlier request on its own line ("what did we merge today?" / "open a task for each
   // one" / "Yes, please"): any line may be the ask, and a question on one line must not veto another.
-  if (request.includes('\n')) return request.split('\n').some(line => requestsTaskWrite(line));
-  const t = request.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (request.includes('\n')) return request.split('\n').some(line => requestsTaskWrite(line, options));
+  const lower = request.toLowerCase().replace(/\s+/g, ' ').trim();
+  const t = options.noisy ? denoise(lower) : lower;
   if (isInformationQuestion(t)) return false;
-  if (/\b(?:pr|pull request)\b/.test(t) && !new RegExp(`\\b${TASK_NOUN}\\b`).test(t)) return false;
+  const noun = options.noisy ? `(?:${TASK_NOUN}|${MISHEARD_TASK_NOUN})` : TASK_NOUN;
+  if (/\b(?:pr|pull request)\b/.test(t) && !new RegExp(`\\b${noun}\\b`).test(t)) return false;
+  if (options.noisy && new RegExp(`${HE_CREATE}.*${HE_TASK}`).test(t)) return true;
   // "open" right before a plural noun after a determiner is an adjective: "the open issues", "any open tasks".
   const cleaned = t.replace(/\b(?:the|any|all|our|their|my|your|which|what|many|more|of|are|is|for|with)\s+open\s+(?:tasks|tickets|issues|bugs|stories|items)\b/g, '');
-  return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${TASK_NOUN}\\b`).test(cleaned) ||
+  return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${noun}\\b`).test(cleaned) ||
     // "And open one for me to write tests for ...", right after a task was opened.
     /\b(?:create|open|add|file|log|make)\s+(?:another\s+)?one\s+(?:for|to|about|on)\b/.test(cleaned) ||
     /\b(?:add|put|move|log)\s+(?:it|this|that|these|those|them|both)\b.{0,40}\b(?:backlog|jira|board|sprint)\b/.test(cleaned) ||
@@ -522,8 +547,14 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       let volunteered = false;
       let unassignedBecause: string | undefined;
       const target = board.boards ? str(input.board, 40) : undefined;
-      const wanted = str(input.assignee, 100);
+      let wanted = str(input.assignee, 100);
       const lines = context.transcript?.() ?? [];
+      // Asking for a task does not make you its owner: with NOGITA_TASK_FROM_TOPIC the model sometimes assigned the asker
+      // anyway (the eval's noisy-three-tasks-asr, 1 run in 4), so the speaker owns it only when their words say so.
+      if (wanted && context.taskFromTopic && meansSpeaker(wanted, context.actor.displayName) &&
+          // "the voice lab read me" is a README, not "me".
+          !SPEAKER_OWNS.test(context.request.replace(/\bread\s+me\b/gi, 'readme')) &&
+          (isSpeaker(wanted) || !context.request.toLowerCase().includes(wanted.toLowerCase()))) wanted = undefined;
       if (wanted) {
         const resolved = await resolveAssignee(wanted, context, target);
         // "Open one for me" from someone the board does not know: the task matters more than its owner (the voice
@@ -612,11 +643,11 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     const boardProperty = board.boards ? { board: { type: 'string', enum: board.boards.map(item => item.id),
       description: `Only if they named one: ${board.boards.map(item => item.name).join(', ')}. The first is the default.` } } : {};
 
-    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.`,
+    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.${context.taskFromTopic ? ' When they said what it is about, that is enough: create it now from their words; do not ask what it should say first.' : ''}`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
         ...boardProperty }, required: ['title', 'description'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
+      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true })) {
         return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
       }
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
@@ -631,7 +662,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' }, ...boardProperty },
         required: ['title', 'description'] } } }, required: ['tasks'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request)) {
+      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true })) {
         return { content: 'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.', isError: true };
       }
       const list = batchItems(input.tasks);
@@ -873,6 +904,14 @@ async function taskFilter(input: Record<string, unknown>, context: ToolboxContex
 }
 
 function isSpeaker(name: string): boolean { return /^(?:me|myself|i)$/i.test(name.trim()); }
+/** "me", or the speaker's own name or first name. */
+function meansSpeaker(name: string, speaker: string): boolean {
+  const wanted = name.trim().toLowerCase();
+  const full = speaker.trim().toLowerCase();
+  return isSpeaker(name) || wanted === full || (wanted.length > 1 && wanted === full.split(/\s+/)[0]);
+}
+/** Words in which the speaker takes the task: "for me", "my", "mine", "myself", "פתחי לי", "שלי". */
+const SPEAKER_OWNS = /\b(?:me|my|mine|myself)\b|(?:^|[\s,.;:!?"'(])(?:לי|שלי|אליי|עליי)(?=[\s,.;:!?"')]|$)/i;
 
 async function resolveAssignee(name: string, context: ToolboxContext, board?: string):
   Promise<{ id: string; displayName: string } | { problem: string }> {

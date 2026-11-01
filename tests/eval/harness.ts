@@ -89,7 +89,7 @@ class EvalMeeting extends DemoMeeting {
 /** A mission round with the real model takes seconds; a mission that is still running after this is left as it is. */
 const MISSION_WAIT_MS = 180_000;
 
-export async function runCase(model: ChatModel, item: EvalCase, options: { research?: ResearchFeatures } = {}): Promise<CaseRun> {
+export async function runCase(model: ChatModel, item: EvalCase, options: { research?: ResearchFeatures; taskFromTopic?: boolean; noisyTaskRequests?: boolean } = {}): Promise<CaseRun> {
   const world = evalWorld();
   const traced = new TracedModel(model);
   const voice = (item.mode ?? 'voice') === 'voice';
@@ -117,7 +117,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy, agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
-    research: options.research, ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true, whatsLeftDirect: true, shortSpokenResults: true } : {}),
+    research: options.research, ...(options.taskFromTopic ? { taskFromTopic: true } : {}), ...(options.noisyTaskRequests ? { noisyTaskRequests: true } : {}), ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true, whatsLeftDirect: true, shortSpokenResults: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
   engine = newEngine();
   const speakerAt = (index: number) => SPEAKERS[item.speakers?.[index] ?? item.speaker ?? 'roee'];

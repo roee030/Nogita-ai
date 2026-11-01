@@ -9,7 +9,7 @@
  * - When the request asks to create tasks, at least that many were created: the number it names ("open three tasks",
  *   "פתחי חמש משימות"), or one when it names none.
  */
-import { requestsTaskWrite } from './agent-tools.ts';
+import { HE_CREATE, HE_TASK, requestsTaskWrite } from './agent-tools.ts';
 import type { ToolOutcome } from './agent.ts';
 
 export interface GateCall { name: string; input: Record<string, unknown>; outcome: ToolOutcome; write: boolean }
@@ -31,8 +31,6 @@ const HE_NUMBERS: Record<string, number> = { 'אחת': 1, 'אחד': 1, 'שתי':
   'שלושה': 3, 'ארבע': 4, 'ארבעה': 4, 'חמש': 5, 'חמישה': 5, 'שש': 6, 'שישה': 6, 'שבע': 7, 'שבעה': 7, 'שמונה': 8,
   'תשע': 9, 'תשעה': 9, 'עשר': 10, 'עשרה': 10 };
 const EN_TASK = String.raw`(?:task|tasks|ticket|tickets|issue|issues|bug|bugs|story|stories|card|cards|todo|todos)`;
-const HE_TASK = String.raw`(?:משימה|משימות|טיקט|טיקטים|באג|באגים)`;
-const HE_CREATE = String.raw`(?:^|[\s,.;:!?"'(])(?:ו?(?:ת?פתח(?:י|ו)?|פתחי|ת?יצר(?:י|ו)?|צור|צרי|צרו|ת?וסיפ(?:י|ו)?|הוסיפ(?:י|ו)?|הוסף|תרשמ(?:י|ו)?|רשמ(?:י|ו)?))(?=[\s,.;:!?"')]|$)`;
 // Hebrew letters are not \w, so word edges are spelled out.
 const HE_EDGE_BEFORE = String.raw`(?:^|[\s,.;:!?"'(])`;
 const HE_EDGE_AFTER = String.raw`(?=[\s,.;:!?"')]|$)`;
