@@ -47,6 +47,8 @@ export interface ToolboxContext {
   missions?: MissionPort;
   /** Leaves the meeting once this reply is over. Live meetings only. */
   leave?: () => void;
+  /** With NOGITA_SHORT_SPOKEN_RESULTS in a voice meeting: a long result goes to chat whole, and the spoken reply stays short. */
+  postDetails?: (text: string) => Promise<void>;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -757,17 +759,20 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
           `Asked directly ${Math.max(1, Math.round((now() - item.at) / 60_000))} min ago and handled in that turn: "${item.request}"`,
           ...section('Done', item.done), ...section('Not done', item.failed),
           ...(item.done.length || item.failed.length ? [] : ['Nothing was changed.'])]);
-        if (!found) {
-          if (direct.length) return { content: direct.join('\n') };
+        if (!found && !direct.length) {
           return { content: id ? `No mission ${id} of yours.` : 'You have no mission I am working on or finished lately.' };
         }
-        return { content: [`${found.id} [${found.status}] ${found.goal}`,
+        const content = (found ? [`${found.id} [${found.status}] ${found.goal}`,
           ...section('Done', found.done), ...section('Failed', found.failed), ...section('Still open', found.open),
           ...(found.done.length || found.failed.length || found.open.length ? [] : ['Nothing done or failed yet.']),
           ...section('Found', found.findings),
           ...section('Sources', found.sources.map(source => `${source.label}${source.title ? ` (${source.title.slice(0, 80)})` : ''}${source.url ? `: ${source.url}` : ''}`)),
-          ...direct,
-        ].join('\n') };
+          ...direct] : direct).join('\n');
+        if (!context.postDetails) return { content };
+        // Read out in full this ran long; the whole report goes to chat and the spoken reply is the gist.
+        const posted = await context.postDetails(content).then(() => true, () => false);
+        return { content: `${content}\n\n${posted ? 'This full report is now in the meeting chat. ' : ''}` +
+          'Answer aloud in one or two short sentences: what failed or is still open first, then whether the rest is done. No lists, links or sources.' };
       });
     }
     add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one, including an approval asked in an earlier meeting or chat. Only when they clearly said so. mission_id may be left out when only one mission fits.',
