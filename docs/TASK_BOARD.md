@@ -103,9 +103,27 @@
 | [ ] | P3-7 | רענון אינדקס הקוד: webhook של push מ-GitHub מרענן את ה-snapshot מיד, ו-readiness מראה את ה-SHA של האינדקס מול ה-head של ה-branch | Codex | `src/app/server.ts`, `src/app/github-webhook.ts`, `src/adapters/github.ts`, `tests/github-webhook.test.ts` | P3-1 |
 | [ ] | P3-8 | מדידת שער המחקר: "מה נכנס היום" ו-"מה נכנס השבוע" דרך לולאת ה-agent מול ריפו אמיתי, זמן עד תשובה מלאה, ובדיקה שכל commit ו-PR מ-`git log` של התקופה מופיע | Codex | `tools/research-bench/`, `tests/research-bench.test.ts`, `package.json` | - |
 | [ ] | P3-9 | trace למחקר: מקורות לכל תשובה, אילו תוצאות קוצרו וכמה פריטים נשארו בחוץ, ו-`turn-report` מראה כמה מהטענות מגובות במקור | Codex | `src/app/turn-log.ts`, `tools/turn-report.ts`, `tests/turn-trace.test.ts` | P3-3 |
-| [ ] | P3-10 | פגישה חיה #4 עם תסריט שער המחקר: "מה נכנס היום", "מה נכנס השבוע", "ה-CI על main עבר?", ושאלה שחוצה Jira ו-Slack | רועי | | P3-5, P3-8 |
+| [ ] | P3-10 | פגישה חיה #4 עם תסריט שער המחקר: "מה נכנס היום", "מה נכנס השבוע", "ה-CI על main עבר?", ושאלה שחוצה Jira ו-Slack | רועי | | P3-5, P3-8, P3-16 |
 | [ ] | P3-11 | voice lab לחדר ישיבות: כמה אנשים על מיקרופון אחד, אנשים שנקטעים באמצע מילה, דיבור אחד על השני (גם על אותו מיקרופון), ועצירות ארוכות באמצע שאלה | Claude | `tools/voice-lab/`, `tests/voice-lab.test.ts`, `docs/VOICE_LAB.md` | - |
 | [ ] | P3-12 | לא לדבר על אנשים: כשמשתתף אחר מדבר, כל תשובה (גם שאלת הבהרה על קטע שנקטע) מחכה שהוא יסיים; קטע שמישהו קטע לא מקבל הבהרה בקול בזמן שהשני מדבר; flag כבוי; השער: `cut-off` ו-`meeting-room` ב-voice lab בלי "spoke over someone" | Codex | `src/core/speech-floor.ts`, `src/app/attendee-command-router.ts`, `tests/speech-floor.test.ts`, `tests/attendee-command-router.test.ts` | P3-11 |
+| [ ] | P3-16 | לחבר את שלב 3 למנוע: `ci_status`, תקציר תוצאות, Evidence Ledger, רמות הוכחה ותבניות מחקר מגיעים מ-env (`NOGITA_CI_STATUS`, `NOGITA_RESULT_DIGEST`, `NOGITA_EVIDENCE_LEDGER`, `NOGITA_PROOF_LEVELS`, `NOGITA_RESEARCH_TEMPLATES`) דרך config ו-engine לכל תורה, בצ'אט ובקול; `npm run eval` ו-voice lab מדליקים אותם עם דגל; כבויים כברירת מחדל; השער: 8 מקרי ה-CI ב-eval עוברים | Claude | `src/app/config.ts`, `src/core/engine.ts`, `src/app/server.ts`, `.env.example`, `tests/research-wiring.test.ts` | - |
 | [ ] | P3-13 | לא לענות לרעש ולשיחות צד: תמלול מקוטע או מעורבב (דיבור רקע, שני קולות על מיקרופון אחד) בלי פנייה אליה לא מקבל תשובה בקול, וחלון ה-follow-up לא תופס שאלה שאדם בחדר שאל אדם אחר; flag כבוי; השער: תורות ה-silent ב-`meeting-room` ו-`room-crosstalk` עוברות | Claude | `src/core/policy.ts`, `src/core/speech-guard.ts`, `tests/addressing.test.ts`, `tests/speech-guard.test.ts` | P3-11 |
 | [ ] | P3-14 | שאלה שנבלעה חוזרת מהר: כשנשמע השם שלה אבל השאלה מקוטעת או אבדה בדיבור חופף, היא שואלת קצר תוך כמה שניות ("מישהו שאל אותי משהו?") ולא נזכרת 25 שניות אחר כך; flag כבוי; השער: `room-crosstalk` ו-`meeting-room` בלי שאלה שנענתה אחרי שהנושא נסגר | Claude | `src/core/engine.ts`, `tests/engine.test.ts` | P3-13 |
 | [ ] | P3-15 | תיקון ניקוד ב-voice lab: תמלול שמגיע אחרי שהדובר הבא התחיל משויך לתור של מי שאמר אותו, ולא נכשל ב-"no transcript" | Claude | `tools/voice-lab/conversation.ts`, `tests/voice-lab.test.ts` | P3-11 |
+
+### שלב 4, שבועות 6–7: עבודה ברקע והמשכיות
+
+**שער:** משימה מורכבת נמשכת כמה דקות או עוברת ערוץ בלי לאבד מצב. "מה נשאר מהבקשה הקודמת?" מקבלת תשובה מדויקת.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P4-0 | שלב 4 בלוח המשימות, ומשימת החיבור P3-16 | Claude | `docs/TASK_BOARD.md` | - |
+| [ ] | P4-1 | ניתוב מודלים: שאלת מחקר או בקשה של כמה פעולות עוברת למודל חזק (Sonnet), תשובה קולית מהירה נשארת ב-Haiku; הבחירה לפי צעד, בתוך תקציב הפגישה, וה-trace מראה איזה מודל ולמה; flag כבוי | Codex | `src/adapters/anthropic.ts`, `src/app/connection-probes.ts`, `tests/model-routing.test.ts` | - |
+| [ ] | P4-2 | תשובה בשתי מהירויות: בקול, שאלה שצריכה מחקר מקבלת מיד תשובה קצרה ("בודקת את ה-commits של היום"), ממשיכה כ-mission ברקע, והתשובה המלאה נאמרת כשהחדר שקט או נשלחת לצ'אט; flag כבוי | Claude | `src/core/engine.ts`, `src/core/missions.ts`, `tests/two-speed.test.ts` | P3-16 |
+| [ ] | P4-3 | resume אחרי restart: missions פתוחות נשמרות ב-state dir, ובעלייה הן ממשיכות או מדווחות בצ'אט מה אבד; בלי דיסק קבוע זה עובד מקומית ובדיקה מראה את זה | Codex | `src/app/mission-store.ts`, `src/app/state-storage.ts`, `tests/mission-store.test.ts` | - |
+| [ ] | P4-4 | "מה נשאר מהבקשה הקודמת?": כלי `mission_status` שעונה מה-mission store, מה בוצע, מה נכשל ומה עוד רץ, עם מקורות מה-ledger | Claude | `src/core/agent-tools.ts`, `src/core/missions.ts`, `tests/mission-status.test.ts` | P4-2 |
+| [ ] | P4-5 | מעבר מפגישה ל-Slack: mission שהתחילה בפגישה ממשיכה ב-thread של Slack, התוצאה נשלחת לשם, ותגובה ב-thread מגיעה לאותה mission | Codex | `src/app/slack-conversations.ts`, `src/app/slack-socket-events.ts`, `tests/slack-handoff.test.ts` | P4-3 |
+| [ ] | P4-6 | בדיקת כאוס ל-missions: הורגים את התהליך באמצע mission עם כתיבות, מעלים מחדש, ובודקים אפס כתיבות כפולות ואפס פעולות שאבדו בלי דיווח | Codex | `tools/mission-chaos/`, `tests/mission-chaos.test.ts` | P4-2, P4-3 |
+| [ ] | P4-7 | סט ההערכה מגיע ל-80 מקרים: mission ארוכה, "מה נשאר", מעבר ערוץ, שאלה אחרי restart; כולל הרצה עם ניתוב מודלים מול בלי | Claude | `tests/eval/` | P4-1, P4-4, P4-5 |
+| [ ] | P4-8 | תרחישי voice lab לשתי מהירויות: זמן עד התשובה הקצרה, זמן עד התשובה המלאה, ותשובה מלאה שלא נאמרת מעל אנשים | Codex | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tests/voice-lab.test.ts` | P4-2 |
+| [ ] | P4-9 | פגישה חיה #5 עם תסריט שער שלב 4: מחקר ארוך באמצע פגישה, "מה נשאר?", המשך ב-Slack | רועי | | P4-7, P4-8 |
