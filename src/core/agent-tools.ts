@@ -56,6 +56,56 @@ export interface ToolboxContext {
   ciStatus?: boolean;
   /** Offers mission_status (what a mission did, what failed and what is still open, with sources). Off unless set. */
   missionStatus?: boolean;
+  /** Told of every write this toolbox makes, after it succeeded or failed (the audit log). */
+  audit?: (write: WriteAudit) => void;
+}
+
+/** One write to Jira, Slack or GitHub: who asked, where, what was sent, and what came of it. */
+export interface WriteAudit {
+  action: 'create_task' | 'update_task' | 'post_message' | 'open_draft';
+  actor: { id: string; displayName: string };
+  /** The meeting, Slack thread or mission ("mission-M-...") the request came from. */
+  sessionId: string;
+  eventId: string;
+  sent: Record<string, unknown>;
+  ok: boolean;
+  receipt?: ActionReceipt;
+  error?: string;
+}
+
+/** The write ports with each write reported to `audit`; reads pass through untouched. */
+export function auditedPorts(context: Pick<ToolboxContext, 'actor' | 'sessionId' | 'eventId' | 'board' | 'chat' | 'drafts'>,
+  audit: (write: WriteAudit) => void): { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort } {
+  const report = async <T extends ActionReceipt>(action: WriteAudit['action'], sent: Record<string, unknown>, work: () => Promise<T>) => {
+    const base = { action, actor: { id: context.actor.id, displayName: context.actor.displayName }, sessionId: context.sessionId, eventId: context.eventId, sent };
+    try {
+      const receipt = await work();
+      try { audit({ ...base, ok: true, receipt }); } catch { /* The log never fails a write that happened. */ }
+      return receipt;
+    } catch (error) {
+      try { audit({ ...base, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : 'unknown error' }); } catch { /* as above */ }
+      throw error;
+    }
+  };
+  const wrap = <P extends object>(port: P, writes: Partial<Record<keyof P, (port: P, ...args: never[]) => Promise<ActionReceipt>>>) =>
+    new Proxy(port, { get(target, name, receiver) {
+      const write = writes[name as keyof P];
+      if (write) return (...args: never[]) => write(target, ...args);
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  const board = wrap<BoardPort>(context.board, {
+    createTask: (port, input: Parameters<BoardPort['createTask']>[0]) => report('create_task', { ...input }, () => port.createTask(input)),
+    ...(context.board.updateTask ? { updateTask: (port: BoardPort, input: Parameters<NonNullable<BoardPort['updateTask']>>[0]) =>
+      report('update_task', { ...input }, () => port.updateTask!(input)) } : {}),
+  });
+  const chat = context.chat && wrap<ChatPort>(context.chat, {
+    postMessage: (port, channel: string, text: string) => report('post_message', { channel, text }, () => port.postMessage(channel, text)),
+  });
+  const drafts = context.drafts && wrap<PullRequestPort>(context.drafts, {
+    openDraft: (port, input: Parameters<PullRequestPort['openDraft']>[0]) => report('open_draft', { ...input }, () => port.openDraft(input)),
+  });
+  return { board, ...(chat ? { chat } : {}), ...(drafts ? { drafts } : {}) };
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -221,7 +271,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const report: ToolboxReport = { codeReferences: [], receipts: [], wroteSomething: false };
   const mayRead = context.policy.mayReadCode(context.actor);
   const mayWrite = context.policy.mayWriteTask(context.actor);
-  const { code, board, chat } = context;
+  const ports = context.audit ? auditedPorts(context, context.audit) : context;
+  const { code } = context;
+  const { board, chat } = ports;
   let writes = 0;
   let taskIndex = 0;
   const specs: AgentToolSpec[] = [];
@@ -607,7 +659,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   }
 
   if (context.drafts && context.policy.mayDraftPR(context.actor)) {
-    const drafts = context.drafts;
+    const drafts = ports.drafts ?? context.drafts;
     let prIndex = 0;
     add({ name: 'open_draft_pr', description: `Open a draft pull request on ${drafts.name}: a new branch with a note describing the change, for a developer to build on. Only when the person explicitly asked for a PR or pull request in this request. You do not write the code. Title it like a commit; in the description say what should change, why, where in the code (files you found), and how to know it works, from the conversation.`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'description'] } },
