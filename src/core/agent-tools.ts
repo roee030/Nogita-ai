@@ -49,6 +49,8 @@ export interface ToolboxContext {
   leave?: () => void;
   /** With NOGITA_SHORT_SPOKEN_RESULTS in a voice meeting: a long result goes to chat whole, and the spoken reply stays short. */
   postDetails?: (text: string) => Promise<void>;
+  /** NOGITA_TASK_FROM_TOPIC: create_task says a named topic is enough to create the task. */
+  taskFromTopic?: boolean;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -612,7 +614,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     const boardProperty = board.boards ? { board: { type: 'string', enum: board.boards.map(item => item.id),
       description: `Only if they named one: ${board.boards.map(item => item.name).join(', ')}. The first is the default.` } } : {};
 
-    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.`,
+    add({ name: 'create_task', description: `Create a ${board.name} task. Only when the person explicitly asked you to create/open/log a task. Write a clear title and a description that captures what was discussed (who asked, why, acceptance details). If they named an owner, pass it as assignee (a person's name, or "me" for the speaker); never guess an owner.${context.taskFromTopic ? ' When they said what it is about, that is enough: create it now from their words; do not ask what it should say first.' : ''}`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
         ...boardProperty }, required: ['title', 'description'] } },
     async input => {

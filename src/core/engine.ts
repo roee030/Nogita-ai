@@ -170,6 +170,8 @@ export interface NogitaEngineOptions {
   /** NOGITA_SHORT_SPOKEN_RESULTS: a mission's result and a mission_status answer are spoken in a sentence or two; the full
    *  text goes to chat. Off unless set. */
   shortSpokenResults?: boolean;
+  /** NOGITA_TASK_FROM_TOPIC: "open a task about X" creates it from what was said instead of asking what it should say. Off unless set. */
+  taskFromTopic?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -414,6 +416,7 @@ export class NogitaEngine {
   private readonly pendingApprovals: boolean;
   private readonly whatsLeftDirect: boolean;
   private readonly shortSpokenResults: boolean;
+  private readonly taskFromTopic: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -469,6 +472,7 @@ export class NogitaEngine {
     this.pendingApprovals = options.pendingApprovals === true && options.missions !== undefined;
     this.whatsLeftDirect = options.whatsLeftDirect === true && this.missionStatus;
     this.shortSpokenResults = options.shortSpokenResults === true;
+    this.taskFromTopic = options.taskFromTopic === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -536,7 +540,7 @@ export class NogitaEngine {
       // The same prompt and tool list a turn sends, or the cached prefix would not match.
       await agent.warmCache!({ stableSystem: stableAgentPrompt({ voice: true,
         repository: repository && { name: this.dependencies.code.name, ...repository },
-        boardName: this.dependencies.board.name, chatName: this.dependencies.chat?.name, proofLevels: this.research.proofLevels }),
+        boardName: this.dependencies.board.name, chatName: this.dependencies.chat?.name, proofLevels: this.research.proofLevels, taskFromTopic: this.taskFromTopic }),
       tools: this.research.resultDigest ? [...toolbox.specs, MORE_OF_RESULT_SPEC] : toolbox.specs, usageContext: sessionId });
     };
     const loop = () => {
@@ -977,7 +981,7 @@ export class NogitaEngine {
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
-      ciStatus: this.research.ciStatus, missionStatus: this.missionStatus,
+      ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => s.meeting.sendStatus(text) } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),
@@ -1098,7 +1102,7 @@ export class NogitaEngine {
         stableSystem: stableAgentPrompt({ voice,
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
-          chatName: authorized ? this.dependencies.chat?.name : undefined, proofLevels: this.research.proofLevels }),
+          chatName: authorized ? this.dependencies.chat?.name : undefined, proofLevels: this.research.proofLevels, taskFromTopic: this.taskFromTopic }),
         turnSystem: [turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), team: this.team(), followUp: pending !== undefined,
           raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`),
           ...(this.research.researchTemplates && authorized
