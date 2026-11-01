@@ -4,7 +4,7 @@ import { runAgent, type AgentResult, type ChatModel, type ChatModelRequest } fro
 import { auditedPorts, buildToolbox, LimitReachedError, type LimitsPort, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
 import { ProviderUnavailableError } from './provider-health.ts';
-import { missionReport, OPEN_MISSION, pendingApprovalsPrompt, type Mission, type MissionRunner } from './missions.ts';
+import { missionReport, OPEN_MISSION, pendingApprovalsPrompt, type DirectRequest, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
@@ -164,7 +164,14 @@ export interface NogitaEngineOptions {
   /** NOGITA_PENDING_APPROVALS: each turn's prompt lists the writes this person's missions wait on, so "approve it" works
    *  after a restart or in a new chat thread. Needs `missions`. Off unless set. */
   pendingApprovals?: boolean;
+  /** NOGITA_WHATS_LEFT_DIRECT: mission_status also answers for requests done in the turn itself (what was changed, what
+   *  was not), kept per person for a few hours in memory. Needs `missionStatus`. Off unless set. */
+  whatsLeftDirect?: boolean;
 }
+
+/** How long, and how many, direct requests per person "what's left?" can see. */
+const DIRECT_REQUEST_MS = 3 * 60 * 60_000;
+const DIRECT_REQUESTS_KEPT = 5;
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
 export interface ResearchFeatures {
@@ -402,6 +409,9 @@ export class NogitaEngine {
   private readonly twoSpeed: boolean;
   private readonly missionStatus: boolean;
   private readonly pendingApprovals: boolean;
+  private readonly whatsLeftDirect: boolean;
+  /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
+  private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -453,6 +463,7 @@ export class NogitaEngine {
     this.twoSpeed = options.twoSpeed === true && options.missions !== undefined;
     this.missionStatus = options.missionStatus === true && options.missions !== undefined;
     this.pendingApprovals = options.pendingApprovals === true && options.missions !== undefined;
+    this.whatsLeftDirect = options.whatsLeftDirect === true && this.missionStatus;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -1092,6 +1103,8 @@ export class NogitaEngine {
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, toolStepMaxTokens: voice ? 2_000 : 4_000,
         maxSteps: voice ? 5 : 8,
+        // The completion gate counts what was asked for only when it has the words; "what's left?" needs that count.
+        ...(this.whatsLeftDirect && authorized ? { request: writeScope } : {}),
         digestResults: this.research.resultDigest, evidenceLedger: this.research.evidenceLedger, proofLevels: this.research.proofLevels,
         onToolUse, signal: q?.abort.signal, beforeWrite: q ? () => q.gate : undefined,
         onFirstText: (step, ms) => this.onActivity?.(sessionId, { kind: 'model_first_text',
@@ -1129,6 +1142,7 @@ export class NogitaEngine {
     }
     this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}),
       model: agent.agentModel, ms: Math.max(0, this.now() - agentStartedAt), result, toolUses, stepMs });
+    if (this.whatsLeftDirect && authorized) this.noteDirectRequest(utterance.actor.id, request, report.receipts, result.completion?.missing ?? []);
     if (stillWorking !== undefined) { this.cancel(stillWorking); stillWorking = undefined; }
     stillWorkingUsed = true;
     // A speculative answer waits here until the turn is confirmed (or rolled back).
@@ -1275,6 +1289,15 @@ export class NogitaEngine {
     } });
   }
 
+  /** Keeps a turn that changed something, or did not do what was asked, for "what's left?". Plain answers are not kept. */
+  private noteDirectRequest(actorId: string, request: string, receipts: readonly ActionReceipt[], missing: readonly string[]): void {
+    if (!receipts.length && !missing.length) return;
+    const list = (this.directRequests.get(actorId) ?? []).filter(item => this.now() - item.at < DIRECT_REQUEST_MS);
+    list.unshift({ at: this.now(), request: request.slice(0, 200),
+      done: receipts.map(receipt => `${receipt.label}${receipt.url ? `: ${receipt.url}` : ''}`), failed: [...missing] });
+    this.directRequests.set(actorId, list.slice(0, DIRECT_REQUESTS_KEPT));
+  }
+
   /** Missions as one conversation turn may use them, bound to the person speaking. */
   private missionPort(sessionId: string, actor: Utterance['actor']): MissionPort {
     const runner = this.missions!;
@@ -1287,6 +1310,8 @@ export class NogitaEngine {
           ...(m.pending ? { pending: m.pending.summary } : {}),
           ...(m.steps.filter(step => step.kind === 'finding').at(-1) ? { lastFinding: m.steps.filter(step => step.kind === 'finding').at(-1)!.text } : {}),
           ...(m.result ? { result: m.result.summary } : m.blockedReason ? { result: `blocked: ${m.blockedReason}` } : {}) })),
+      ...(this.whatsLeftDirect ? { recent: () => (this.directRequests.get(actor.id) ?? [])
+        .filter(item => this.now() - item.at < DIRECT_REQUEST_MS) } : {}),
       report: id => {
         const visible = (m: Mission) => m.owner.id === actor.id || m.sessionId === sessionId;
         const mission = id ? runner.get(id) : runner.list().find(visible);
