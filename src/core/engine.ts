@@ -172,6 +172,9 @@ export interface NogitaEngineOptions {
   shortSpokenResults?: boolean;
   /** NOGITA_TASK_FROM_TOPIC: "open a task about X" creates it from what was said instead of asking what it should say. Off unless set. */
   taskFromTopic?: boolean;
+  /** NOGITA_NOISY_TASK_REQUESTS: a task request with fillers ("open, uh, two tasks"), a misheard noun ("tusks") or in Hebrew
+   *  passes the explicit-request check. Off unless set. */
+  noisyTaskRequests?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -417,6 +420,7 @@ export class NogitaEngine {
   private readonly whatsLeftDirect: boolean;
   private readonly shortSpokenResults: boolean;
   private readonly taskFromTopic: boolean;
+  private readonly noisyTaskRequests: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -473,6 +477,7 @@ export class NogitaEngine {
     this.whatsLeftDirect = options.whatsLeftDirect === true && this.missionStatus;
     this.shortSpokenResults = options.shortSpokenResults === true;
     this.taskFromTopic = options.taskFromTopic === true;
+    this.noisyTaskRequests = options.noisyTaskRequests === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -982,6 +987,7 @@ export class NogitaEngine {
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
+      noisyTaskRequests: this.noisyTaskRequests,
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => s.meeting.sendStatus(text) } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),

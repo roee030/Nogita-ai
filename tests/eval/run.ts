@@ -11,6 +11,7 @@
  *   npm run eval -- --research            phase 3 research on (ci_status, digests, ledger, proof levels, templates);
  *                                         without it each follows its NOGITA_* flag in .env, off by default
  *   npm run eval -- --task-from-topic     a task whose topic was said is created at once (NOGITA_TASK_FROM_TOPIC)
+ *   npm run eval -- --noisy-task-requests a task request through fillers, a misheard noun or Hebrew (NOGITA_NOISY_TASK_REQUESTS)
  *   npm run eval -- --routing compare     every case with model routing off, then on, and the two side by side;
  *                                         --routing on|off runs one (default: NOGITA_MODEL_ROUTING). The stronger
  *                                         model is ANTHROPIC_ROUTING_MODEL, else Sonnet.
@@ -28,7 +29,7 @@ import { runCase, scoreCase, summarize, type CaseScore, type Summary } from './h
 const { values } = parseArgs({ options: {
   case: { type: 'string', multiple: true }, group: { type: 'string', multiple: true }, repeat: { type: 'string', default: '1' },
   json: { type: 'string' }, 'no-json': { type: 'boolean', default: false }, research: { type: 'boolean', default: false }, routing: { type: 'string' },
-  'task-from-topic': { type: 'boolean', default: false },
+  'task-from-topic': { type: 'boolean', default: false }, 'noisy-task-requests': { type: 'boolean', default: false },
 } });
 loadDotEnv();
 const key = process.env.ANTHROPIC_API_KEY?.trim();
@@ -51,6 +52,7 @@ if (!['on', 'off', 'compare'].includes(routing)) {
 const routingModel = process.env.ANTHROPIC_ROUTING_MODEL?.trim() || 'claude-sonnet-5-5';
 const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(process.env);
 const taskFromTopic = values['task-from-topic'] || process.env.NOGITA_TASK_FROM_TOPIC === 'true';
+const noisyTaskRequests = values['noisy-task-requests'] || process.env.NOGITA_NOISY_TASK_REQUESTS === 'true';
 const researchOn = Object.entries(research).filter(([, on]) => on).map(([feature]) => feature);
 
 interface Pass { routing: boolean; model: string; summary: Summary; ms: number; scores: CaseScore[]; runs: unknown[] }
@@ -66,7 +68,7 @@ async function runAll(routed: boolean): Promise<Pass> {
   const began = Date.now();
   for (const item of cases) {
     for (let attempt = 0; attempt < repeat; attempt++) {
-      const run = await runCase(model, item, { research, taskFromTopic });
+      const run = await runCase(model, item, { research, taskFromTopic, noisyTaskRequests });
       const score = scoreCase(item, run);
       scores.push(score);
       runs.push({ id: item.id, turns: run.turns, tools: run.tools, stops: run.stops, writes: run.calls.filter(call =>
