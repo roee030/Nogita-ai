@@ -1,14 +1,15 @@
 /**
- * Shared state for the agents working on this repository (docs/TASK_BOARD.md has the rules).
+ * Shared state for work on this repository (docs/TASK_BOARD.md has the rules).
  *
- *   npm run board -- --agent claude|codex [--chain]
+ *   npm run board                 Claude in chain mode (the default: Claude is the only agent)
+ *   npm run board -- --agent claude|codex [--no-chain]
  *
  * The board file says what the tasks are: owner, files and dependencies. GitHub says where each one stands, so
  * nobody has to remember to update a status: a merged PR means done, an open draft means taken, a ready PR means
  * waiting for review. The board is read from origin/main, so an old branch never hides new tasks. Prints what this
  * agent should do next and what is waiting on Roee.
  *
- * With --chain an agent working alone does not wait for Roee to merge: its own PRs waiting for review count as
+ * In chain mode an agent working alone does not wait for Roee to merge: its own PRs waiting for review count as
  * done for what depends on them, and the next task starts from origin/main with those PRs merged in.
  */
 import { execFileSync } from 'node:child_process';
@@ -203,8 +204,8 @@ export function formatReport(report: BoardReport, agent: Owner): string {
 
 function main(): void {
   const at = process.argv.indexOf('--agent');
-  const agent = OWNERS[(process.argv[at + 1] ?? '').toLowerCase()];
-  if (at < 0 || !agent || agent === 'roee') throw new Error('usage: npm run board -- --agent claude|codex [--chain]');
+  const agent = at < 0 ? 'claude' : OWNERS[(process.argv[at + 1] ?? '').toLowerCase()];
+  if (!agent || agent === 'roee') throw new Error('usage: npm run board -- [--agent claude|codex] [--no-chain]');
   // The board on origin/main, not this folder's copy: a branch made before the last board change still sees today's tasks.
   let board: string;
   try {
@@ -216,7 +217,7 @@ function main(): void {
   }
   const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'all', '--limit', '200', '--json',
     'number,title,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup,files,url'], { encoding: 'utf8' })) as PullRequest[];
-  console.log(formatReport(buildReport(parseBoard(board), prs, agent, { chain: process.argv.includes('--chain') }), agent));
+  console.log(formatReport(buildReport(parseBoard(board), prs, agent, { chain: !process.argv.includes('--no-chain') }), agent));
 }
 
 if (process.argv[1]?.endsWith('board.ts')) main();
