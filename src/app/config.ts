@@ -38,6 +38,13 @@ export function researchFeatures(env: NodeJS.ProcessEnv = process.env): Research
   return features;
 }
 
+/** NOGITA_ROOM_NOISE_GUARD: 'true' keeps room noise and side talk from getting a spoken reply; blank or 'false' leaves it off. */
+export function roomNoiseGuard(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_ROOM_NOISE_GUARD?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_ROOM_NOISE_GUARD must be true or false');
+  return value === 'true';
+}
+
 /** Every research feature on, for `npm run eval -- --research` and `npm run voice-lab -- --research`. */
 export const ALL_RESEARCH_FEATURES: Required<ResearchFeatures> = { ciStatus: true, resultDigest: true, evidenceLedger: true,
   proofLevels: true, researchTemplates: true };

@@ -9,8 +9,8 @@ import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { PhrasePicker, toSpoken } from './spoken.ts';
-import { stripReasoningAloud } from './speech-guard.ts';
-import { directlyAddressesNogita, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
+import { stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
+import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
 interface Session {
@@ -137,6 +137,11 @@ export interface NogitaEngineOptions {
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'explicitTurnEnd' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
   /** Phase 3 research features for every agent turn, in chat and voice. Each is off unless set. */
   research?: ResearchFeatures;
+  /**
+   * Room noise and side talk get no spoken reply (NOGITA_ROOM_NOISE_GUARD): without her name, a mixed or fragmentary
+   * transcript, a question for the room, or a remark that asks nothing is not a follow-up to her answer. Off unless set.
+   */
+  roomNoiseGuard?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -338,6 +343,7 @@ export class NogitaEngine {
   private readonly actionItemRecap: boolean;
   private readonly agentCacheWarmup: boolean;
   private readonly research: ResearchFeatures;
+  private readonly roomNoiseGuard: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -380,6 +386,7 @@ export class NogitaEngine {
     this.actionItemRecap = options.actionItemRecap === true;
     this.agentCacheWarmup = options.agentCacheWarmup !== false;
     this.research = options.research ?? {};
+    this.roomNoiseGuard = options.roomNoiseGuard === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -937,9 +944,12 @@ export class NogitaEngine {
         if (!await this.deliverStreamedSpeech(sessionId, s.meeting, text)) interrupted = true;
       });
     };
+    // Words nobody addressed to her never get "that cut out, can you repeat?" back.
+    const unaddressed = this.roomNoiseGuard && voice && pending?.kind === 'conversation';
+    const spokenPart = (text: string) => unaddressed ? stripRepeatRequests(stripReasoningAloud(text)) : stripReasoningAloud(text);
     const onSpeech = (chunk: string, step: number) => {
       // Deliberation is not speech: dropped before it counts as having spoken.
-      const raw = stripReasoningAloud(chunk);
+      const raw = spokenPart(chunk);
       if (!raw) return;
       if (!spoke) {
         spoke = true;
@@ -1046,7 +1056,7 @@ export class NogitaEngine {
     if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
     if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
     // Only deliberation ("not addressed to me, so I'll stay quiet") is no reply: nothing goes to chat or history.
-    let answer = stripReasoningAloud(result.answer);
+    let answer = spokenPart(result.answer);
     if (!answer && result.stoppedEarly) answer = 'This is taking me too long. Can you narrow it down a bit?';
     if (floor && q && answer && !result.answer) queueSpeech(answer, result.steps);
     await speech;
@@ -1167,7 +1177,17 @@ export class NogitaEngine {
    */
   private followUpRuledOut(s: Session, pending: NonNullable<Session['pendingFollowUp']>, text: string, actorId: string): boolean {
     if (addressesSomeoneElse(text, this.otherNames(s, actorId))) return true;
+    if (this.roomNoiseGuard && s.floor) {
+      if (this.isRoomNoise(s, text)) return true;
+      // After an answer, words that ask nothing ("Yeah, the huge one. I opened it last week.") are the room talking.
+      if (pending.kind === 'conversation' && !looksLikeRequest(text) && !looksLikeCorrection(text)) return true;
+    }
     return pending.kind === 'conversation' && (pending.intervened === true || isBackchannel(text));
+  }
+
+  /** Spoken in the meeting: several voices mixed into one transcript, chatter caught mid-sentence, or a question for the room. */
+  private isRoomNoise(s: Session, text: string): boolean {
+    return this.roomNoiseGuard && s.floor !== undefined && (looksLikeCrosstalk(text) || asksTheRoom(text));
   }
 
   /**
@@ -1218,7 +1238,7 @@ export class NogitaEngine {
     // first was only the start of the question, so that answer is dropped and the whole question answered.
     let wholeRequest: string | undefined;
     if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current) &&
-        !isBackchannel(current) && !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id))) {
+        !isBackchannel(current) && !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id)) && !this.isRoomNoise(s, current)) {
       // A correction ("no, I meant the mobile app") replaces the speaker's open question even well after it was asked,
       // and stops what she is saying about the old one.
       const correction = looksLikeCorrection(current);

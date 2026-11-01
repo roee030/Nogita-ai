@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isReasoningAloud, refersToSelfInThirdPerson, stripReasoningAloud } from '../src/core/speech-guard.ts';
+import { isReasoningAloud, isRepeatRequest, refersToSelfInThirdPerson, stripReasoningAloud, stripRepeatRequests } from '../src/core/speech-guard.ts';
 
 // Said aloud in the voice lab (2026-10-31 broad baselines): the model's deliberation, not an answer.
 const deliberation = [
@@ -57,4 +57,13 @@ test('talking about herself as "Nogita" or "it" is caught', () => {
   assert.equal(refersToSelfInThirdPerson('Nogita answers only when called by name.'), true);
   assert.equal(refersToSelfInThirdPerson('I speak only when someone says my name.'), false);
   assert.equal(refersToSelfInThirdPerson('The Nogita repo has a Dockerfile.'), false);
+});
+
+test('asking the room to repeat is recognized; answers that mention cuts or repeats are not', () => {
+  for (const sentence of ['The rest of what you said cut out, so I\'m not sure what you\'re asking about the client demo.',
+    'Sounds like the sentence got cut off again.', "Sorry, I didn't catch that.", 'Could you say that again?',
+    'Can you repeat the question?', 'What were you asking?']) assert.equal(isRepeatRequest(sentence), true, sentence);
+  for (const sentence of ['The retry loop repeats three times.', 'The cutover is on Thursday.', 'It cuts the payload at 14,000 characters.',
+    'Repeat offenders get rate-limited.']) assert.equal(isRepeatRequest(sentence), false, sentence);
+  assert.equal(stripRepeatRequests("Sounds like that got cut off. It's engine.test.ts."), "It's engine.test.ts.");
 });
