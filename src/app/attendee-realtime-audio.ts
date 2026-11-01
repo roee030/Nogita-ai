@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
+import type { CircuitBreaker } from '../core/provider-health.ts';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { SpeechInterruptedError, type SpeechTrace } from '../core/contracts.ts';
 
@@ -136,6 +137,8 @@ export interface RealtimeAudioOptions {
   deepgramApiKey: string;
   /** Exclude meeting audio, transcripts, TTS text and synthesized audio from Deepgram model improvement. Default true. */
   deepgramMipOptOut?: boolean;
+  /** Deepgram TTS behind a circuit breaker: while it is down, speak() fails at once (the chat mirror still has the words). */
+  ttsBreaker?: CircuitBreaker;
   sttMode?: SttMode;
   /** Language hints for Nova-3 multilingual (default English). */
   languages?: readonly string[];
@@ -385,7 +388,8 @@ export class AttendeeRealtimeAudioHub {
     });
     let tts: WebSocket;
     try {
-      tts = await Promise.race([this.openTts(session), cancelled]);
+      const breaker = this.options.ttsBreaker;
+      tts = await Promise.race([breaker ? breaker.run(() => this.openTts(session)) : this.openTts(session), cancelled]);
       preparation.abort.signal.throwIfAborted();
       if (session.closed || session.attendeeSocket?.readyState !== WebSocket.OPEN) throw new Error('Attendee realtime audio disconnected');
     } catch (error) {
@@ -400,6 +404,7 @@ export class AttendeeRealtimeAudioHub {
       let pending!: NonNullable<RealtimeSession['ttsPending']>;
       const timeout = setTimeout(() => {
         if (session.ttsPending !== pending) return;
+        this.options.ttsBreaker?.failure();
         pending.reject(new Error('Deepgram TTS timed out'));
       }, this.options.ttsSynthesisTimeoutMs ?? 20_000);
       const settle = (error?: Error) => {

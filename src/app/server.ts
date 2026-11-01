@@ -6,7 +6,7 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, loadDotEnv, missionStatus, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { createDependencies, guardProviders, loadDotEnv, missionStatus, providerBreakers, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -37,6 +37,7 @@ import { StateStorageError, claimStateDirectory, persistentStateRequired } from 
 import { FileMeetingMemory } from './meeting-memory.ts';
 import { FileActionReceipts } from './action-receipts.ts';
 import { FileAuditLog } from './audit-log.ts';
+import { ProviderHealth } from '../core/provider-health.ts';
 import { auditedPorts } from '../core/agent-tools.ts';
 import { acceptGitHubWebhook, GitHubRefreshQueue, githubWebhookConfigured } from './github-webhook.ts';
 
@@ -71,6 +72,11 @@ try {
     dependencies = createDependencies({ ...safeEnv, IDENTITY_MAP_JSON: '[]' });
   }
 }
+/** Opt-in (NOGITA_PROVIDER_BREAKER): a provider that keeps failing gets one short line instead of retries, and comes back
+ *  on its own after a trial call works. */
+const providerHealth = providerBreakers(env) ? new ProviderHealth({}, (provider, state) =>
+  console.log(state === 'open' ? 'provider_down' : 'provider_up', provider)) : undefined;
+if (providerHealth) dependencies = guardProviders(dependencies, providerHealth);
 if (dependencies.code.prepare) {
   void dependencies.code.prepare().catch(() => console.error('repository_index_warmup_failed'));
 }
@@ -333,6 +339,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       signingSecret: env.ATTENDEE_WEBHOOK_SECRET,
       deepgramApiKey: env.DEEPGRAM_API_KEY,
       deepgramMipOptOut: env.DEEPGRAM_MIP_OPT_OUT !== 'false',
+      ...(providerHealth ? { ttsBreaker: providerHealth.breaker('deepgram', 'my voice service') } : {}),
       sttMode: stt.mode, languages: meetingLanguages,
       ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true, turnTakingV2,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
