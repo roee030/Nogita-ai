@@ -3,7 +3,8 @@ import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedErr
 import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
 import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
-import { OPEN_MISSION, type MissionRunner } from './missions.ts';
+import { OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
+import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
@@ -150,6 +151,12 @@ export interface NogitaEngineOptions {
    * lost words are not answered later. Off unless set.
    */
   swallowedQuestion?: boolean;
+  /**
+   * Two-speed answers (NOGITA_TWO_SPEED): in a voice meeting, a research question ("what landed today?") gets a short
+   * spoken line at once ("Checking today's commits."), goes on as a mission in the background, and its full answer is
+   * spoken when the room has an opening, or stays in chat when none comes. Needs `missions`. Off unless set.
+   */
+  twoSpeed?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -247,6 +254,20 @@ const MAX_SPOKEN_WORDS = 60;
 const DETAIL_SPOKEN_WORDS = 120;
 function wantsDetail(request: string): boolean {
   return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
+}
+/** The short spoken answer to a research question that goes on in the background. */
+export function researchAck(match: ResearchMatch): string {
+  const periods: Record<string, string> = { today: "today's", yesterday: "yesterday's", this_week: "this week's",
+    last_week: "last week's", last_7_days: "the last seven days'" };
+  const period = match.period ? periods[match.period] : undefined;
+  const doing = {
+    changes: period ? `Checking ${period} commits.` : 'Checking the recent changes.',
+    feature_status: 'Checking where that stands.',
+    incident_cause: 'Looking into what broke.',
+    open_tasks: 'Checking the open tasks.',
+    version_diff: 'Comparing the two versions.',
+  }[match.kind];
+  return `${doing} I'll tell you when I have it.`;
 }
 export const STILL_WORKING = ['Still digging, one more sec.', 'Almost there.', 'Still on it.', 'Nearly got it.'];
 /** Whole sentences up to about `max` words (at least the first sentence). */
@@ -371,6 +392,7 @@ export class NogitaEngine {
   private readonly research: ResearchFeatures;
   private readonly roomNoiseGuard: boolean;
   private readonly swallowedQuestion: boolean;
+  private readonly twoSpeed: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -415,6 +437,7 @@ export class NogitaEngine {
     this.research = options.research ?? {};
     this.roomNoiseGuard = options.roomNoiseGuard === true;
     this.swallowedQuestion = options.swallowedQuestion === true;
+    this.twoSpeed = options.twoSpeed === true && options.missions !== undefined;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -855,6 +878,8 @@ export class NogitaEngine {
     const request = removeAddress(current);
     // "Stop. Just tell me..." is handled when the turn is confirmed: the stop first, then the rest as its own question.
     if (!request || isCancelCommand(request) || isStopCommand(request) || splitLeadingStop(request) || isExplicitLeaveRequest(request)) return undefined;
+    // A research question answers in two speeds once the turn is confirmed; an early start would answer it in one.
+    if (this.backgroundResearch(request, utterance.actor)) return undefined;
     const key = questionKey(request);
     if (s.questions.some(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id && q.key === key)) return undefined;
     // The asker cut off their own answer and is already asking something new: they moved on, even if these early
@@ -1154,6 +1179,62 @@ export class NogitaEngine {
     void s.floor?.say(0, text).finally(() => s.floor?.release(0));
   }
 
+  /** The research question goes on in the background (NOGITA_TWO_SPEED), or undefined to answer it in one turn. */
+  private backgroundResearch(request: string, actor: Utterance['actor']): ResearchMatch | undefined {
+    if (!this.twoSpeed || !this.dependencies.policy.mayReadCode(actor)) return undefined;
+    return matchResearchTemplate(request);
+  }
+
+  /**
+   * Two speeds: the short line is spoken now and the question is answered; a research mission finds the full answer,
+   * which is posted in chat and spoken at the next opening (the floor drops it when none comes, so it stays in chat).
+   */
+  private async answerInTwoSpeeds(sessionId: string, s: Session, q: Question, match: ResearchMatch): Promise<ProcessResult> {
+    const floor = s.floor!;
+    this.clearQuestionProgress(q);
+    this.ensureTopic(sessionId, q);
+    let mission: Mission;
+    try {
+      mission = await this.missions!.start({ goal: q.request, owner: { id: q.actorId, displayName: q.speaker }, sessionId, research: true,
+        doneWhen: `${q.speaker}'s question is answered from what the tools returned.`,
+        onSettled: done => this.deliverResearch(sessionId, s, q, done) });
+    } catch {
+      this.reportQuestion(sessionId, q, 'failed', 'the research mission did not start');
+      await floor.say(q.id, 'Sorry, I couldn’t start looking into that.');
+      floor.release(q.id);
+      return 'answered';
+    }
+    const ack = researchAck(match);
+    q.queuedSpeech = true;
+    this.setStatus(sessionId, s, q.id, 'answering');
+    const outcome = await floor.say(q.id, ack);
+    floor.release(q.id);
+    s.history.push({ role: 'assistant', text: `Nogita: ${ack}` });
+    if (s.history.length > 24) s.history.shift();
+    if (NogitaEngine.isOpen(q)) {
+      this.reportQuestion(sessionId, q, outcome === 'spoken' ? 'answered' : 'chat_only', `short answer; ${mission.id} researches the full answer`);
+    }
+    return 'answered';
+  }
+
+  /** The full answer of a research mission, while its meeting is open; false hands it back to the mission's progress line. */
+  private async deliverResearch(sessionId: string, s: Session, q: Question, mission: Mission): Promise<boolean> {
+    if (this.sessions.get(sessionId) !== s || s.ending || mission.status !== 'done' || !mission.result?.summary) return false;
+    const answer = mission.result.summary;
+    await s.meeting.sendStatus(`${q.topic ? `About ${q.topic}` : `${q.speaker} asked "${q.request.slice(0, 200)}"`}: ${answer}`).catch(() => undefined);
+    s.history.push({ role: 'assistant', text: `Nogita: ${answer}` });
+    if (s.history.length > 24) s.history.shift();
+    const spoken = firstWords(toSpoken(answer), wantsDetail(q.request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS);
+    if (!spoken || !s.floor) return true;
+    // A topic first ("About today's commits, ..."): the room has moved on since the short answer.
+    void s.floor.say(q.id, spoken, { prefix: () => q.topic ? `About ${q.topic}, ` : undefined }).then(outcome =>
+      // Reported on the question itself: it may have left the list of recent questions by now.
+      this.reportQuestion(sessionId, q, outcome === 'spoken' ? 'answered' : 'chat_only',
+        outcome === 'spoken' ? `full answer from ${mission.id} spoken` : `full answer from ${mission.id} in chat (${outcome})`))
+      .finally(() => s.floor?.release(q.id));
+    return true;
+  }
+
   /** Missions as one conversation turn may use them, bound to the person speaking. */
   private missionPort(sessionId: string, actor: Utterance['actor']): MissionPort {
     const runner = this.missions!;
@@ -1396,6 +1477,14 @@ export class NogitaEngine {
       if (cut && cut.actorId === utterance.actor.id) {
         s.floor.drop(cut.id);
         this.reportQuestion(sessionId, cut, 'chat_only', 'the asker moved on to a new question; the rest is in chat');
+      }
+      const research = continuation ? undefined : this.backgroundResearch(agentRequest, utterance.actor);
+      if (research) {
+        const q = this.newQuestion(s, utterance, agentRequest, 'working', processingStartedAt);
+        this.openQuestion(sessionId, s, q);
+        released = true;
+        release();
+        return await this.answerInTwoSpeeds(sessionId, s, q, research);
       }
       const early = context.speculation?.question as Question | undefined;
       let q: Question;

@@ -52,6 +52,14 @@ export function swallowedQuestion(env: NodeJS.ProcessEnv = process.env): boolean
   return value === 'true';
 }
 
+/** NOGITA_TWO_SPEED: 'true' answers a spoken research question in two speeds (a short line now, the full answer from a
+ *  background mission); blank or 'false' leaves it off. */
+export function twoSpeed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_TWO_SPEED?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_TWO_SPEED must be true or false');
+  return value === 'true';
+}
+
 /** Every research feature on, for `npm run eval -- --research` and `npm run voice-lab -- --research`. */
 export const ALL_RESEARCH_FEATURES: Required<ResearchFeatures> = { ciStatus: true, resultDigest: true, evidenceLedger: true,
   proofLevels: true, researchTemplates: true };
