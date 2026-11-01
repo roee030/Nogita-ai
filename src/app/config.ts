@@ -60,6 +60,13 @@ export function twoSpeed(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_MISSION_STATUS: 'true' offers mission_status ("what's left of what I asked?"); blank or 'false' leaves it off. */
+export function missionStatus(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_MISSION_STATUS?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_MISSION_STATUS must be true or false');
+  return value === 'true';
+}
+
 /** Every research feature on, for `npm run eval -- --research` and `npm run voice-lab -- --research`. */
 export const ALL_RESEARCH_FEATURES: Required<ResearchFeatures> = { ciStatus: true, resultDigest: true, evidenceLedger: true,
   proofLevels: true, researchTemplates: true };

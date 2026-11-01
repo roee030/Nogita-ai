@@ -2,6 +2,7 @@ import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, C
 import { isExplicitPRRequest } from './policy.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
+import type { MissionReport } from './missions.ts';
 import { TEAM_PERIODS, UTC_TEAM, teamPeriod, type TeamPeriod, type TeamTime } from './team-time.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
@@ -53,6 +54,8 @@ export interface ToolboxContext {
   batchTasks?: boolean;
   /** Offers ci_status (CI runs and the deployed commit). Off unless the team turned it on. */
   ciStatus?: boolean;
+  /** Offers mission_status (what a mission did, what failed and what is still open, with sources). Off unless set. */
+  missionStatus?: boolean;
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -63,6 +66,8 @@ export interface MissionPort {
   start(goal: string, doneWhen?: string): Promise<{ id: string }>;
   list(): Array<{ id: string; goal: string; status: string; activity?: string; pending?: string; lastFinding?: string; result?: string; owner: string }>;
   decide(decision: 'approve' | 'decline' | 'resume' | 'cancel', id?: string, note?: string): Promise<{ ok: boolean; message: string }>;
+  /** One mission in full, or the latest one this person asked for; undefined when none fits. */
+  report?(id?: string): MissionReport | undefined;
 }
 
 /** Things the engine needs after the turn: the best source link and the receipts that were posted. */
@@ -649,6 +654,23 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         (m.activity ? `; now: ${m.activity}` : '') + (m.lastFinding ? `; found: ${m.lastFinding}` : '') +
         (m.pending ? `; waiting for approval to ${m.pending}` : '') + (m.result ? `; result: ${m.result}` : '')).join('\n') };
     });
+    if (context.missionStatus && missions.report) {
+      const missionReport = missions.report.bind(missions);
+      add({ name: 'mission_status', description: 'What is left of a request you are working on in the background: what was done, what failed, what is still running or waiting for approval, with the sources it rests on. Use for "what\x27s left from what I asked?", "did all of it get done?", "what happened with the tasks I asked for?". Leave mission_id out for their latest one. Answer from this result only; say what failed and what is still open first.',
+        input_schema: { type: 'object', properties: { mission_id: { type: 'string' } } } },
+      async input => {
+        const id = str(input.mission_id, 30)?.toUpperCase();
+        const found = missionReport(id);
+        if (!found) return { content: id ? `No mission ${id} of yours.` : 'You have no mission I am working on or finished lately.' };
+        const section = (title: string, items: string[]) => items.length ? [`${title}:`, ...items.map(item => `- ${item}`)] : [];
+        return { content: [`${found.id} [${found.status}] ${found.goal}`,
+          ...section('Done', found.done), ...section('Failed', found.failed), ...section('Still open', found.open),
+          ...(found.done.length || found.failed.length || found.open.length ? [] : ['Nothing done or failed yet.']),
+          ...section('Found', found.findings),
+          ...section('Sources', found.sources.map(source => `${source.label}${source.title ? ` (${source.title.slice(0, 80)})` : ''}${source.url ? `: ${source.url}` : ''}`)),
+        ].join('\n') };
+      });
+    }
     add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one. Only when they clearly said so. mission_id may be left out when only one mission fits.',
       input_schema: { type: 'object', properties: { decision: { type: 'string', enum: ['approve', 'decline', 'resume', 'cancel'] },
         mission_id: { type: 'string' }, note: { type: 'string' } }, required: ['decision'] } },
