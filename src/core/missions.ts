@@ -8,6 +8,7 @@
  * tool call: finish_mission is accepted only when the evidence it cites appeared in this mission's own tool results.
  */
 import type { AgentContent, AgentMessage, AgentToolSpec, AgentToolbox, ChatModel } from './agent.ts';
+import { EvidenceLedger, type EvidenceSource } from './evidence.ts';
 
 export type MissionStatus = 'investigating' | 'executing' | 'awaiting_approval' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export const ACTIVE_MISSION: ReadonlySet<MissionStatus> = new Set(['investigating', 'executing']);
@@ -142,6 +143,74 @@ export function verifiedEvidence(messages: readonly AgentMessage[], evidence: re
     (proven ? found : missing).push(item);
   }
   return { found, missing };
+}
+
+/** What a mission did, what went wrong and what is still open: the answer to "what's left of what I asked?". */
+export interface MissionReport {
+  id: string;
+  goal: string;
+  status: MissionStatus;
+  done: string[];
+  failed: string[];
+  /** What is still running or waiting, and on whom; empty once the mission is done. */
+  open: string[];
+  findings: string[];
+  /** The sources its own tool results rest on: what it changed first, then what its result cites, then the rest. */
+  sources: EvidenceSource[];
+}
+
+const OWN_TOOLS = new Set(MISSION_TOOLS.map(tool => tool.name));
+
+/** Reads a mission's steps and its own tool results; no model call, and nothing new is fetched. */
+export function missionReport(mission: Mission, maxSources = 8): MissionReport {
+  const done: string[] = []; const failed: string[] = []; const findings: string[] = [];
+  const once = (list: string[], text: string) => { if (!list.includes(text)) list.push(text); };
+  let change = '';
+  for (const step of mission.steps) {
+    if (step.kind === 'write_started') change = step.text;
+    else if (step.kind === 'write_done') {
+      if (step.ok) once(done, change || step.text);
+      else once(failed, `${change || step.tool || 'a change'}: ${step.text.slice(0, 160)}`);
+    } else if (step.kind === 'tool' && step.ok === false) once(failed, step.text);
+    else if (step.kind === 'rejected') once(failed, step.text);
+    else if (step.kind === 'verification_failed') once(failed, step.text);
+    else if (step.kind === 'finding') once(findings, step.text);
+  }
+  if (mission.result) done.push(`Finished: ${mission.result.summary}`);
+  if (mission.status === 'failed') {
+    const error = mission.steps.filter(step => step.kind === 'error').at(-1);
+    if (error) once(failed, error.text);
+  }
+  const open = mission.status === 'awaiting_approval' && mission.pending ? [`Waiting for ${mission.owner.displayName} to approve: ${mission.pending.summary}`]
+    : mission.status === 'blocked' ? [`Blocked: ${mission.blockedReason ?? 'it needs direction'}`]
+    : mission.status === 'failed' ? ['Stopped after errors; it can be resumed']
+    : mission.status === 'cancelled' ? ['Cancelled before it finished']
+    : ACTIVE_MISSION.has(mission.status) ? [`Still working: ${mission.activity ?? 'in progress'}`] : [];
+  return { id: mission.id, goal: mission.goal, status: mission.status, done, failed, open, findings: findings.slice(-3),
+    sources: missionSources(mission, maxSources) };
+}
+
+function missionSources(mission: Mission, max: number): EvidenceSource[] {
+  const ledger = new EvidenceLedger();
+  const writes = new Set(mission.steps.filter(step => step.kind === 'write_started' && step.tool).map(step => step.tool!));
+  const uses = new Map<string, Extract<AgentContent, { type: 'tool_use' }>>();
+  const changed: EvidenceSource[] = [];
+  for (const [index, message] of mission.messages.entries()) {
+    if (typeof message.content === 'string') continue;
+    for (const block of message.content) {
+      if (block.type === 'tool_use') uses.set(block.id, block);
+      if (block.type !== 'tool_result' || block.is_error) continue;
+      const use = uses.get(block.tool_use_id);
+      if (!use || OWN_TOOLS.has(use.name)) continue;
+      const found = ledger.record(use.name, use.input ?? {}, block.content, index);
+      if (writes.has(use.name)) changed.push(...found);
+    }
+  }
+  const evidence = (mission.result?.evidence ?? []).map(item => item.toLowerCase());
+  const cited = (source: EvidenceSource) => evidence.some(item => item.includes(source.label.toLowerCase()) ||
+    `${source.label} ${source.url ?? ''}`.toLowerCase().includes(item));
+  const all = ledger.list();
+  return [...new Set([...changed, ...all.filter(cited), ...all])].slice(0, max);
 }
 
 export class MissionRunner {

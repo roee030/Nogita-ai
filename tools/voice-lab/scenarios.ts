@@ -39,6 +39,11 @@ export interface Expectation {
   contentWithinMs?: number;
   /** Acoustic onset to silence for scripted barge-in; default voice parity target is 300ms. */
   bargeInWithinMs?: number;
+  /** Two-speed answers: the full answer from the background research is in chat within this many ms of the last word. */
+  fullAnswerWithinMs?: number;
+  /** Two-speed answers: the full answer must be spoken ('spoken'), may stay in chat when no opening comes ('any'). It is
+   *  never started while someone is mid-sentence. */
+  fullAnswerSpoken?: 'spoken' | 'any';
   /** How the question asked in this turn must end in Nogita's question tracker (answered, cancelled, stopped...). */
   questionStatus?: string[];
   /** After this turn reached Nogita she must not speak again in this turn's window (for "stop"). */
@@ -75,6 +80,8 @@ export interface Scenario {
   noise: NoiseSpec;
   participants: Participant[];
   turns: Turn[];
+  /** Runs with two-speed answers on (NOGITA_TWO_SPEED, with a mission runner), whatever the run's flags say. */
+  twoSpeed?: boolean;
 }
 
 const roee: Participant = { id: 'roee', name: 'Roee', voice: 'aura-2-orion-en', authorized: true, mic: 'open' };
@@ -571,6 +578,42 @@ SCENARIOS.push(
       { speaker: 'avi', say: ['Nogita, what changed in the last commit?', 'And who made it?'], pauseMs: 3_000,
         expect: { respond: 'speak', tools: ['recent_commits'], mentions: [['commit', 'change', 'fix', 'add']],
           note: 'The follow-up comes after three seconds, maybe while she is already answering; both parts are covered.' } },
+    ],
+  },
+);
+
+// Stage 4: two-speed answers. A research question gets a short line at once; the full answer comes from a mission in
+// the background, spoken at the next opening in the room, or left in chat when people keep talking.
+SCENARIOS.push(
+  {
+    name: 'two-speed', title: 'A research question while the meeting goes on, then a pause for the full answer',
+    noise: { kind: 'office', snrDb: 25 }, participants: [roee, dana, avi], twoSpeed: true,
+    turns: [
+      { speaker: 'roee', say: 'Nogita, what landed in the repo today?',
+        expect: { respond: 'speak', contentWithinMs: 2_500, fullAnswerWithinMs: 60_000, fullAnswerSpoken: 'spoken',
+          tools: ['repo_activity', 'recent_commits'],
+          note: 'A short line at once ("Checking today\'s commits."), then the full answer from the background research when the room pauses.' } },
+      { speaker: 'dana', say: 'While she looks, did the design review move to Thursday?', gapMs: 300, expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'Yes, Thursday at two, in the big room.', gapMs: 300, expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'Great, I will move my one on one then.', gapMs: 300,
+        expect: { respond: 'silent', note: 'Then the room is quiet: her full answer should come in this pause, not over Dana or Avi.' } },
+    ],
+  },
+  {
+    name: 'two-speed-busy-room', title: 'A research question, and the room never pauses: the full answer stays in chat',
+    noise: { kind: 'office', snrDb: 25 }, participants: [roee, dana, avi], twoSpeed: true,
+    turns: [
+      { speaker: 'roee', say: 'Nogita, what changed this week?',
+        expect: { respond: 'speak', contentWithinMs: 2_500, fullAnswerWithinMs: 90_000, fullAnswerSpoken: 'any',
+          note: 'The short line at once; the full answer reaches chat, and is spoken only if the room gives her an opening.' } },
+      { speaker: 'dana', say: 'Meanwhile, the release notes still need a section on the voice lab and the new mission store.', gapMs: 200,
+        expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'I can write that section tonight, and I will add the screenshots from the dashboard too.', afterPreviousMs: 150,
+        expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'Perfect. And we still need someone to check the staging deploy before Friday.', afterPreviousMs: 150,
+        expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'I will take that one too, it is a quick check on the version endpoint.', afterPreviousMs: 150,
+        expect: { respond: 'silent', note: 'Back-to-back talk: she must not start the full answer over anyone.' } },
     ],
   },
 );
