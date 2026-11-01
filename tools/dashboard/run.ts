@@ -5,13 +5,15 @@
  *   npm run dashboard -- --out report.html
  *   npm run dashboard -- --turns dir --voice-lab dir --eval dir-or-file
  *
- * Defaults: <NOGITA_STATE_DIR or .nogita-state>/turns, .voice-lab/reports, .eval; the page goes to
+ * Defaults: <NOGITA_STATE_DIR or .nogita-state>/turns, .voice-lab/reports, .eval, and <state dir>/audit/writes.jsonl
+ * (--audit) for the phase 5 gates; the page goes to
  * <state dir>/dashboard.html. To keep eval runs for the trend, run `npm run eval -- --json .eval/<name>.json`.
  */
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { evalRuns, html, meetingRun, voiceLabRun, type Run } from './build.ts';
+import { loadDotEnv } from '../../src/app/config.ts';
+import { evalRuns, html, meetingRun, phase5Gates, voiceLabRun, type AuditLine, type Run } from './build.ts';
 
 const list = async (directory: string) => (await readdir(directory).catch(() => [] as string[])).map(name => join(directory, name));
 const readJson = async (file: string): Promise<unknown> => {
@@ -36,14 +38,26 @@ export async function collect(paths: { turns: string; voiceLab: string; eval: st
   return runs;
 }
 
+/** The audit log's lines, or undefined when there is no log (NOGITA_AUDIT_LOG off); a line cut short by a crash is skipped. */
+export async function readAudit(file: string): Promise<AuditLine[] | undefined> {
+  const text = await readFile(file, 'utf8').catch(() => undefined);
+  if (text === undefined) return undefined;
+  return text.split('\n').filter(Boolean).flatMap(line => {
+    try { return [JSON.parse(line) as AuditLine]; } catch { return []; }
+  });
+}
+
 async function main(): Promise<void> {
   const state = process.env.NOGITA_STATE_DIR ?? '.nogita-state';
   const { values } = parseArgs({ options: { out: { type: 'string', default: join(state, 'dashboard.html') },
     turns: { type: 'string', default: join(state, 'turns') }, 'voice-lab': { type: 'string', default: join('.voice-lab', 'reports') },
-    eval: { type: 'string', default: '.eval' } } });
+    eval: { type: 'string', default: '.eval' }, audit: { type: 'string', default: join(state, 'audit', 'writes.jsonl') } } });
   const runs = await collect({ turns: values.turns!, voiceLab: values['voice-lab']!, eval: values.eval! });
+  const audit = await readAudit(values.audit!);
+  loadDotEnv();
+  const authorized = new Set((process.env.AUTHORIZED_ACTOR_IDS ?? '').split(',').map(id => id.trim()).filter(Boolean));
   await mkdir(dirname(values.out!), { recursive: true });
-  await writeFile(values.out!, html(runs));
+  await writeFile(values.out!, html(runs, undefined, phase5Gates(runs, audit, authorized)));
   const count = (source: Run['source']) => runs.filter(run => run.source === source).length;
   process.stdout.write(`wrote ${values.out} (${count('meeting')} meeting(s), ${count('voice-lab')} voice lab run(s), ${count('eval')} eval run(s))\n`);
 }

@@ -29,7 +29,17 @@ export interface Run {
   costUsd?: number;
   minutes?: number;
   checks?: { passed: number; total: number };
+  /** Meetings only, for the phase 5 gates: questions not withdrawn, those answered or failed out loud, and how long
+   *  playback took to stop after someone talked over her (server side). */
+  counted?: number;
+  settled?: number;
+  interruptMs?: number[];
 }
+
+/** WITHDRAWN in tools/turn-report.ts: the person chose these, so they count neither way. */
+const WITHDRAWN = new Set(['cancelled', 'stopped', 'superseded', 'rolled_back', 'duplicate']);
+/** A clear end: an answer, a failure she said out loud, or an answer that could only go to chat. */
+const SETTLED = new Set(['answered', 'failed', 'chat_only']);
 
 type Line = Record<string, unknown> & { at: number; type: string };
 
@@ -46,7 +56,65 @@ export function meetingRun(name: string, lines: readonly Line[]): Run | undefine
     p50Ms: percentile(report.firstAudioMs, 50), tailMs: percentile(report.firstAudioMs, 95), tail: 'p95',
     ...(claims ? { claims: { backed: sourcedClaims, total: claims } } : {}),
     ...(usage && num(usage.totalEstimatedUsd) !== undefined ? { costUsd: num(usage.totalEstimatedUsd) } : {}),
-    minutes: report.minutes };
+    minutes: report.minutes,
+    counted: Object.entries(report.finals).filter(([status]) => !WITHDRAWN.has(status)).reduce((sum, [, n]) => sum + n, 0),
+    settled: Object.entries(report.finals).filter(([status]) => SETTLED.has(status)).reduce((sum, [, n]) => sum + n, 0),
+    interruptMs: report.interruptMs };
+}
+
+/** One line of the audit log (src/app/audit-log.ts), as much as the gates read. */
+export interface AuditLine { at: string; action: string; actor: { id: string }; sessionId: string; sent: Record<string, unknown>; ok: boolean }
+
+export interface Gate { name: string; value: string; target: string; status: 'pass' | 'fail' | 'no data' | 'needs people'; note?: string }
+
+/** The same write again in the same meeting or thread within this long counts as a duplicate. */
+const DUPLICATE_WINDOW_MS = 10 * 60_000;
+
+/** Successful writes repeated with the same content in the same meeting or thread, close together. */
+export function duplicateWrites(audit: readonly AuditLine[]): AuditLine[] {
+  const last = new Map<string, number>();
+  const duplicates: AuditLine[] = [];
+  for (const line of [...audit].filter(line => line.ok).sort((a, b) => a.at.localeCompare(b.at))) {
+    const key = `${line.sessionId}\0${line.action}\0${JSON.stringify(line.sent)}`;
+    const at = Date.parse(line.at);
+    const before = last.get(key);
+    if (before !== undefined && at - before <= DUPLICATE_WINDOW_MS) duplicates.push(line);
+    last.set(key, at);
+  }
+  return duplicates;
+}
+
+/** Successful writes by someone the system could not map, or, when the authorized list is known, not on it. */
+export function unauthorizedWrites(audit: readonly AuditLine[], authorized?: ReadonlySet<string>): AuditLine[] {
+  return audit.filter(line => line.ok && (line.actor.id.startsWith('unmapped:') || (authorized?.size ? !authorized.has(line.actor.id) : false)));
+}
+
+/** Phase 5's gates (docs/WORK_PLAN.md), each from what the meetings and the audit log recorded. */
+export function phase5Gates(runs: readonly Run[], audit: readonly AuditLine[] | undefined, authorized?: ReadonlySet<string>): Gate[] {
+  const meetings = runs.filter(run => run.source === 'meeting');
+  const sum = (pick: (run: Run) => number | undefined) => meetings.reduce((total, run) => total + (pick(run) ?? 0), 0);
+  const questions = sum(run => run.questions); const missed = sum(run => run.missed);
+  const counted = sum(run => run.counted); const settled = sum(run => run.settled);
+  const interrupts = meetings.flatMap(run => run.interruptMs ?? []);
+  const p95 = percentile(interrupts, 95);
+  const share = (part: number, whole: number) => `${(part / whole * 100).toFixed(1)}% (${part} of ${whole})`;
+  const gate = (name: string, target: string, value: string | undefined, ok: boolean | undefined, note?: string): Gate =>
+    ({ name, target, value: value ?? '–', status: ok === undefined ? 'no data' : ok ? 'pass' : 'fail', ...(note ? { note } : {}) });
+  const duplicates = audit ? duplicateWrites(audit) : undefined;
+  const unauthorized = audit ? unauthorizedWrites(audit, authorized) : undefined;
+  return [
+    gate('Questions lost', 'under 2%', questions ? share(missed, questions) : undefined, questions ? missed / questions < 0.02 : undefined),
+    gate('Requests answered or failed clearly', 'at least 95%', counted ? share(settled, counted) : undefined, counted ? settled / counted >= 0.95 : undefined),
+    gate('Interruption to silence p95', 'under 500 ms', p95 === undefined ? undefined : `${p95} ms (n=${interrupts.length})`, p95 === undefined ? undefined : p95 < 500,
+      'Server side (voice onset to local stop); the gate is measured at the listener, with tools/listener-probe.'),
+    gate('Duplicate writes', '0', duplicates && String(duplicates.length), duplicates && duplicates.length === 0,
+      audit ? undefined : 'Needs the audit log (NOGITA_AUDIT_LOG=true).'),
+    gate('Writes by someone not authorized', '0', unauthorized && String(unauthorized.length), unauthorized && unauthorized.length === 0,
+      audit ? (authorized?.size ? undefined : 'Without AUTHORIZED_ACTOR_IDS only unmapped people are counted.') : 'Needs the audit log (NOGITA_AUDIT_LOG=true).'),
+    { name: 'Clarity rated by the people in the meeting', target: 'at least 4 of 5', value: '–', status: 'needs people', note: 'Not recorded; ask after each meeting.' },
+    { name: 'Real meetings', target: '30', value: String(meetings.length), status: meetings.length >= 30 ? 'pass' : 'fail' },
+    { name: 'Requests to her in those meetings', target: '500', value: String(questions), status: questions >= 500 ? 'pass' : 'fail' },
+  ];
 }
 
 export function voiceLabRun(name: string, json: unknown): Run | undefined {
@@ -159,7 +227,17 @@ function section(runs: readonly Run[], source: typeof SOURCES[number]): string {
     ? '<th>Cost</th><th>Minutes</th>' : '<th>Checks</th>'}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-export function html(runs: readonly Run[], builtAt = new Date().toISOString()): string {
+const GATE_LABEL: Record<Gate['status'], string> = { pass: '<span class="good">passes</span>', fail: '<span class="bad">not yet</span>',
+  'no data': '<span class="muted">no data</span>', 'needs people': '<span class="muted">needs people</span>' };
+
+function gatesSection(gates: readonly Gate[]): string {
+  const rows = gates.map(gate => `<tr><td>${escape(gate.name)}</td><td>${escape(gate.value)}</td><td>${escape(gate.target)}</td><td>${GATE_LABEL[gate.status]}</td>
+<td class="note">${gate.note ? escape(gate.note) : ''}</td></tr>`).join('');
+  return `<section><h2>Phase 5 gates</h2><p class="muted">From every real meeting's turn log and the audit log. The last two rows are how much has been collected.</p>
+<div class="scroll"><table><thead><tr><th>Gate</th><th>Now</th><th>Target</th><th>Result</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+export function html(runs: readonly Run[], builtAt = new Date().toISOString(), gates?: readonly Gate[]): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nogita Quality Dashboard</title><style>
 :root{--bg:#fafaf9;--fg:#1c1917;--muted:#78716c;--card:#fff;--line:#e7e5e4;--good:#15803d;--bad:#b91c1c;--accent:#4f46e5}
@@ -173,7 +251,9 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:18px;margin:32px 0 4px}.muted{colo
 .good{color:var(--good)}.bad{color:var(--bad)}.spark{width:100%;height:24px;margin-top:4px}.spark path{fill:none;stroke:var(--accent);stroke-width:1.5}.spark circle{fill:var(--accent)}
 .scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:500}
+td.note{white-space:normal;color:var(--muted);min-width:220px}
 </style></head><body><main><h1>Nogita quality and usage</h1><div class="muted">Built ${escape(builtAt)} from ${runs.length} run(s). Arrows compare the latest run with the one before it.</div>
+${gates ? gatesSection(gates) : ''}
 ${SOURCES.map(source => section(runs, source)).join('\n')}</main></body></html>
 `;
 }

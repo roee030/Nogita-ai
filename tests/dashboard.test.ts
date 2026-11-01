@@ -90,3 +90,39 @@ test('collect reads every source from disk and the page shows each one', async (
   assert.ok(html([]).includes('No runs found.'));
   assert.deepEqual(await collect({ turns: join(root, 'missing'), voiceLab: join(root, 'missing'), eval: join(root, 'missing') }), []);
 });
+
+test('phase 5 gates come from the meetings and the audit log, and say when there is no data', async () => {
+  const { phase5Gates, duplicateWrites, unauthorizedWrites } = await import('../tools/dashboard/build.ts');
+  const lines = meeting([1000, 2000, 3000, 4000], 0.42);
+  lines.push({ at: T0 + 3000, type: 'interrupt', cause: 'voice', latencyMs: 280, playedMs: 900 });
+  lines.push({ at: T0 + 4000, type: 'interrupt', cause: 'voice', latencyMs: 620, playedMs: 1200 });
+  const run = meetingRun('m1', lines)!;
+  assert.deepEqual([run.counted, run.settled, run.interruptMs], [5, 5, [280, 620]], 'a failure said out loud is a clear end');
+
+  const write = (at: string, title: string, actor = 'roee', sessionId = 'meet') =>
+    ({ at, action: 'create_task', actor: { id: actor }, sessionId, sent: { title }, ok: true });
+  const audit = [write('2026-11-01T10:00:00Z', 'A'), write('2026-11-01T10:05:00Z', 'A'), write('2026-11-01T11:00:00Z', 'A'),
+    write('2026-11-01T10:06:00Z', 'A', 'roee', 'other'), write('2026-11-01T10:07:00Z', 'B', 'unmapped:attendee:x'), write('2026-11-01T10:08:00Z', 'C', 'dana')];
+  assert.deepEqual(duplicateWrites(audit).map(line => line.at), ['2026-11-01T10:05:00Z'], 'same meeting, same content, within 10 minutes');
+  assert.equal(unauthorizedWrites(audit).length, 1);
+  assert.equal(unauthorizedWrites(audit, new Set(['roee'])).length, 2);
+
+  const byName = Object.fromEntries(phase5Gates([run], audit, new Set(['roee'])).map(gate => [gate.name, gate]));
+  assert.equal(byName['Questions lost']!.value, '20.0% (1 of 5)');
+  assert.equal(byName['Questions lost']!.status, 'fail');
+  assert.equal(byName['Requests answered or failed clearly']!.status, 'pass');
+  assert.equal(byName['Interruption to silence p95']!.value, '620 ms (n=2)');
+  assert.equal(byName['Interruption to silence p95']!.status, 'fail');
+  assert.equal(byName['Duplicate writes']!.value, '1');
+  assert.equal(byName['Writes by someone not authorized']!.value, '2');
+  assert.equal(byName['Clarity rated by the people in the meeting']!.status, 'needs people');
+  assert.deepEqual([byName['Real meetings']!.value, byName['Requests to her in those meetings']!.value], ['1', '5']);
+
+  const empty = Object.fromEntries(phase5Gates([], undefined).map(gate => [gate.name, gate]));
+  assert.equal(empty['Questions lost']!.status, 'no data');
+  assert.equal(empty['Duplicate writes']!.status, 'no data');
+  assert.match(empty['Duplicate writes']!.note!, /NOGITA_AUDIT_LOG/);
+  const page = html([run], '2026-11-01T13:00:00Z', phase5Gates([run], audit));
+  assert.ok(page.includes('Phase 5 gates') && page.includes('not yet') && page.includes('needs people'));
+  assert.ok(!html([run]).includes('Phase 5 gates'));
+});
