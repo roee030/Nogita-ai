@@ -42,6 +42,30 @@ export function stripReasoningAloud(text: string): string {
   return text.split(/(?<=[.!?])\s+/).filter(sentence => !isReasoningAloud(sentence)).join(' ').trim();
 }
 
+/**
+ * Asking the room to repeat or remarking that the words were cut ("The rest of what you said cut out", "Sounds like
+ * the sentence got cut off again", voice lab `meeting-room`). Fine when someone called her by name; said to words
+ * that were never for her, it answers a conversation that was not hers.
+ */
+const REPEAT_REQUEST: readonly RegExp[] = [
+  /\b(?:cut|cutting|broke|breaking)\s+(?:out|off|up)\b/i,
+  /\b(?:didn't|did not|couldn't|could not)\s+(?:catch|hear|follow|make out)\b/i,
+  /\b(?:say|repeat)\s+(?:that|it|the (?:question|last part))\s+again\b/i,
+  /\b(?:can|could|would) you repeat\b/i,
+  /\bnot sure what you(?:'re| are| were)\s+(?:asking|saying|after)\b/i,
+  /\bwhat (?:was|were) you (?:asking|saying)\b/i,
+];
+
+export function isRepeatRequest(sentence: string): boolean {
+  const text = sentence.trim();
+  return !!text && REPEAT_REQUEST.some(pattern => pattern.test(text));
+}
+
+/** Drops "it cut out, can you repeat?" sentences from a reply to words nobody addressed to her. */
+export function stripRepeatRequests(text: string): string {
+  return text.split(/(?<=[.!?])\s+/).filter(sentence => !isRepeatRequest(sentence)).join(' ').trim();
+}
+
 /** "Nogita speaks only when..." said by Nogita. A lab tell (the prompt fixes it); never used to drop speech. */
 export function refersToSelfInThirdPerson(text: string): boolean {
   return /\bNogita\s+(?:speaks|answers|responds|replies|only|is|does|will|can|listens|waits|stays|joins|raises|decides)\b/.test(text);

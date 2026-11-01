@@ -6,7 +6,7 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, loadDotEnv, researchFeatures } from './config.ts';
+import { createDependencies, loadDotEnv, researchFeatures, roomNoiseGuard } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -163,6 +163,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000, explicitTurnEnd: turnTakingV2 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
     research: researchFeatures(env),
+    roomNoiseGuard: roomNoiseGuard(env),
     receipts: actionReceipts,
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);

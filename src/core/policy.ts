@@ -102,6 +102,24 @@ export function normalizeWakeWord(text: string): string {
         ? `${lead}${greeting}Nogita` : match);
 }
 
+/**
+ * A transcript of overlapping voices or of chatter caught mid-sentence, as recognition writes it in a meeting room
+ * (voice lab `meeting-room`: "first perspective, and I think the client wants to do the wrong demo. -- across three --
+ * Wait. Is that the really big file? ... I think the client"). Dashes or an ellipsis mark where it lost the thread;
+ * a turn that starts mid-sentence and also stops mid-sentence is a fragment of someone else's talk.
+ */
+export function looksLikeCrosstalk(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/(?:^|\s)--(?:\s|$)|—\s*—|\.\.\.|…/.test(t)) return true;
+  return /^[a-z]/.test(t) && !/^(?:i|i'm|i'll|i've|i'd)\b/.test(t) && !/[.!?]["')\]]?$/.test(t);
+}
+
+/** "Did anyone book the room?", "Has anybody seen the charger?": a question for the room, not for her. */
+export function asksTheRoom(text: string): boolean {
+  return /(?:^|[.!?]\s+)(?:(?:so|okay|ok|um|uh|hey|guys|oh|and)[,\s]+)*(?:(?:did|does|do|has|have|is|was|can|could|would|will)\s+)?(?:anyone|anybody|everyone|everybody|somebody|someone)\b(?=[^.!?]*\?)/i.test(text.trim());
+}
+
 /** Prevent simple third-person name mentions from activating the bot. */
 export function directlyAddressesNogita(text: string): boolean {
   const s = text.trim();
