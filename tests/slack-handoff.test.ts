@@ -116,4 +116,6 @@ test('explicit mission controls stay on the decision path instead of becoming gu
     assert.equal(isMissionDecision(text), true, text);
   }
   assert.equal(isMissionDecision('also check the reconnect logs'), false);
+  assert.equal(isMissionDecision('check why deployment was rejected'), false);
+  assert.equal(isMissionDecision('investigate the resume parser'), false);
 });

@@ -410,6 +410,8 @@ ${note}` : [...last.content, { type: 'text', text: note }];
         }
         if (this.cancelled(mission)) return;
         if (mission.guidance?.length) {
+          if (waitFor) results.push({ type: 'tool_result', tool_use_id: waitFor.id, is_error: true,
+            content: 'Not run: the owner sent new guidance while this round was in progress.' });
           for (const remaining of uses.slice(index + 1)) results.push({ type: 'tool_result', tool_use_id: remaining.id,
             is_error: true, content: 'Not run: the owner sent new guidance while this round was in progress.' });
           superseded = true;

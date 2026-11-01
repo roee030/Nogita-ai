@@ -225,6 +225,34 @@ test('guidance arriving during a slow read preempts the rest of that tool round'
   assert.equal(runner.get('M-SLOW')!.blockedReason, 'new blocker');
 });
 
+test('superseding a round cancels a deferred write that appeared before its slow read', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let reading!: () => void;
+  const readStarted = new Promise<void>(resolve => { reading = resolve; });
+  const requests: ChatModelRequest[] = [];
+  const model: ChatModel = { agentModel: 'write-read', async streamChat(request) {
+    requests.push(structuredClone(request));
+    return requests.length === 1
+      ? { content: [use('create_task', { title: 'stale' }, 'write-first'), use('get_task', { key: 'KAN-20' }, 'read-second')], stopReason: 'tool_use' }
+      : { content: [use('report_blocked', { reason: 'new blocker' })], stopReason: 'tool_use' };
+  } };
+  const toolbox: AgentToolbox = { specs: [
+    { name: 'create_task', description: '', input_schema: { type: 'object', properties: {} } },
+    { name: 'get_task', description: '', input_schema: { type: 'object', properties: {} } }],
+    isWrite: name => name === 'create_task', async run() { reading(); await gate; return { content: 'KAN-20 exists' }; } };
+  const runner = new MissionRunner({ model, store: new MemoryMissionStore(), toolbox: () => toolbox, newId: () => 'M-WRITE' });
+  await runner.start({ goal: 'Investigate KAN-20', owner });
+  await readStarted;
+  await runner.guide('M-WRITE', 'roee', 'do not create the stale task');
+  release();
+  await runner.idle();
+
+  const next = JSON.stringify(requests[1]!.messages);
+  assert.match(next, /write-first/);
+  assert.match(next, /Not run: the owner sent new guidance/);
+});
+
 test('a write interrupted by a restart is never repeated blindly', async () => {
   const store = new MemoryMissionStore();
   const mission: Mission = { id: 'M-CRASH', goal: 'g', doneWhen: 'd', owner, status: 'executing', createdAt: 0, updatedAt: 0, attempts: 0,

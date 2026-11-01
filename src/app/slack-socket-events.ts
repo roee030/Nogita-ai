@@ -4,7 +4,7 @@ import type { SlackMissionHandoffs } from './slack-conversations.ts';
 export const SLACK_EVENT_TYPES = ['app_mention', 'message'] as const;
 
 export function isMissionDecision(text: string): boolean {
-  return /\b(?:approve|approved|decline|reject|resume|continue mission|cancel|stop mission)\b/i.test(text);
+  return /^\s*(?:nogita[,:]?\s*)?(?:(?:can|could|would) you\s+|please\s+)?(?:approve|decline|reject|resume|cancel|stop (?:the )?mission)\b/i.test(text);
 }
 
 export interface SlackMissionReply {
