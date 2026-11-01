@@ -42,6 +42,11 @@ export interface AgentTraceEvent {
   stops: Array<AgentStepStop & { ms?: number }>;
   error?: 'aborted' | 'model_error';
   stepMs?: number[];
+  research?: {
+    sources: Array<{ id: string; kind: string; tool: string; step: number; cited: boolean }>;
+    claims: { total: number; sourced: number };
+    truncatedResults: Array<{ tool: string; resultId: string; omittedItems: number; omittedLines: number }>;
+  };
 }
 
 const MAX_TOOL_INPUT_CHARS = 160;
@@ -52,12 +57,26 @@ export function buildTurnTrace(input: { id?: number; model: string; ms: number; 
   error?: 'aborted' | 'model_error' }): AgentTraceEvent {
   const stops = input.result?.stops.map((stop, index) => ({ ...stop,
     ...(input.stepMs[index] !== undefined ? { ms: input.stepMs[index] } : {}) })) ?? [];
+  const evidence = input.result?.evidence;
+  const resultTruncations = input.result?.resultTruncations ?? [];
+  const research = evidence || resultTruncations.length ? {
+    sources: evidence?.sources.map(source => ({ id: source.id, kind: source.kind, tool: source.tool, step: source.step,
+      cited: evidence.cited.includes(source.id) })) ?? [],
+    claims: evidence ? claimCoverage(input.result?.answer ?? '') : { total: 0, sourced: 0 },
+    truncatedResults: resultTruncations,
+  } : undefined;
   return {
     type: 'agent_trace', ...(input.id !== undefined ? { id: input.id } : {}), model: input.model,
     ms: input.ms, steps: input.result?.steps ?? input.stepMs.length, stoppedEarly: input.result?.stoppedEarly ?? true,
     tools: input.toolUses.map(use => ({ name: use.name, input: shortenInput(use.input) })),
-    stops, ...(input.error ? { error: input.error, stepMs: [...input.stepMs] } : {}),
+    stops, ...(research ? { research } : {}), ...(input.error ? { error: input.error, stepMs: [...input.stepMs] } : {}),
   };
+}
+
+function claimCoverage(answer: string): { total: number; sourced: number } {
+  const body = answer.split(/\n\s*Sources:\s*\n/i)[0] ?? '';
+  const claims = body.split(/(?<=[.!?…])(?:["')\]]*)\s+/).map(part => part.trim()).filter(part => /[\p{L}\p{N}]/u.test(part));
+  return { total: claims.length, sourced: claims.filter(claim => /\[\d+(?:\s*,\s*\d+)*\](?:[.!?…])?$/.test(claim)).length };
 }
 
 function shortenInput(value: Record<string, unknown>): string {

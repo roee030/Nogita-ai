@@ -10,6 +10,11 @@
 import type { AgentToolSpec } from './agent.ts';
 
 export const MORE_OF_RESULT = 'more_of_result';
+export interface ResultDigest {
+  text: string;
+  omittedItems: number;
+  omittedLines: number;
+}
 /** Characters returned by one `more_of_result` call. */
 export const RESULT_PAGE_CHARS = 12_000;
 const DIGEST_CHARS = 6_000;
@@ -46,6 +51,11 @@ interface Section {
 
 /** A digest of `text` for the model, at most about `budget` characters, naming `id` for `more_of_result`. */
 export function digestResult(text: string, id: string, budget = DIGEST_CHARS): string {
+  return digestResultWithStats(text, id, budget).text;
+}
+
+/** The digest plus counts that an operational trace can report without retaining result text. */
+export function digestResultWithStats(text: string, id: string, budget = DIGEST_CHARS): ResultDigest {
   const lines = splitLines(text);
   const banner = `[Large result ${id}: ${text.length} characters, ${lines.length} lines, shown as a digest. ` +
     `Call ${MORE_OF_RESULT} with id "${id}" and an offset to read any part in full.]`;
@@ -94,7 +104,17 @@ export function digestResult(text: string, id: string, budget = DIGEST_CHARS): s
   if (kept < blocks.length) {
     out.push('', `... ${blocks.length - kept} more sections from offset ${blocks[kept].section.heading?.offset ?? blocks[kept].section.lines[0]?.offset ?? 0}`);
   }
-  return out.join('\n');
+  let omittedItems = 0;
+  let omittedLines = 0;
+  for (const block of listed) {
+    const omitted = entriesOf(block.section).length - block.next;
+    if (block.section.items) omittedItems += omitted; else omittedLines += omitted;
+  }
+  for (const block of blocks.slice(kept)) {
+    if (block.section.items) omittedItems += entriesOf(block.section).length;
+    else omittedLines += entriesOf(block.section).length;
+  }
+  return { text: out.join('\n'), omittedItems, omittedLines };
 }
 
 /** Part of a stored result, starting at a line boundary at or after `offset`, with where to continue. */

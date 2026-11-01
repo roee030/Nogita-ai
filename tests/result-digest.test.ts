@@ -137,6 +137,11 @@ test('on: the model gets the digest and reads the rest with more_of_result', asy
   assert.match(missing!.content, /No large result "r9" in this turn; there is r1\./);
   assert.equal(result.answer, 'Two hundred commits landed.');
   assert.deepEqual(result.toolCalls, ['repo_activity', MORE_OF_RESULT, MORE_OF_RESULT]);
+  assert.equal(result.resultTruncations?.length, 1);
+  assert.equal(result.resultTruncations![0]!.tool, 'repo_activity');
+  assert.equal(result.resultTruncations![0]!.resultId, 'r1');
+  assert.equal(result.resultTruncations![0]!.omittedLines, 0);
+  assert.ok(result.resultTruncations![0]!.omittedItems > 0);
 });
 
 test('on: small results and errors are passed as before', async () => {
