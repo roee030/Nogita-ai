@@ -30,6 +30,7 @@
    - בתיאור ה-PR כותבים סעיף **Handoff**: מה השתנה, מה הסוכן השני צריך לדעת, ומה לא נבדק.
    - `gh pr ready`.
 5. **משימה אחת לכל צ'אט.** אחרי `gh pr ready` עוצרים. בסוף התשובה כותבים: הלינק ל-PR למיזוג, שורה אחת על מה הוא עושה, ומה הלוח מראה כמשימה הבאה (או שהיא מחכה למיזוג). רועי ממזג ופותח צ'אט חדש עם "תמשיך". תיקונים משלב 2 לא נחשבים משימה: מתקנים וממשיכים ל-"Next". אם הלוח אומר "Nothing to start", עוצרים ומדווחים מה מחכה לרועי ("Waiting on Roee"), עם לינקים.
+   **כשסוכן עובד לבד (מצב שרשרת, `--chain`):** כרגע Codex מושהה, ו-Claude רץ עם `npm run board -- --agent claude --chain`. במצב הזה לא עוצרים אחרי משימה. אחרי `gh pr ready` חוזרים לשלב 1 וממשיכים עד שהלוח אומר "Nothing to start". PR של הסוכן שמחכה למיזוג נחשב גמור בשביל המשימות שתלויות בו. המשימה הבאה נפתחת מ-`origin/main`, ואחר כך ממזגים לתוכה את ה-branches שהלוח מציין תחת "Builds on", וכותבים ב-PR על מה הוא בנוי. בסוף מדווחים ל-רועי את כל ה-PRs לפי סדר המיזוג, שורה לכל אחד, ומה מחכה לו.
 
 ## חוקים
 
@@ -80,7 +81,7 @@
 | [ ] | P2-4 | הצלחה חלקית ותשובה כנה: "פתחתי שתיים משלוש, השלישית לא נפתחה כי...", וכשתורה נקטעת (deadline, תקרת צעדים, כלי שנכשל) אומרים מה חסר ומציעים להמשיך | Claude | `src/core/agent.ts`, `src/core/agent-prompt.ts`, `tests/partial-success.test.ts` | P2-3 |
 | [ ] | P2-5 | סט ההערכה מגיע ל-40 מקרים, כולל בקשות של 2 עד 10 פעולות, בקשה עם בעלים שלא קיים, ובקשה שחוזרת אחרי retry | Claude | `tests/eval/` | - |
 | [ ] | P2-6 | מדידה בצד המאזין: הקלטה ממשתתף שני ב-Meet, זמן משאלה עד צליל ומ-"wait" עד שקט, ודוח שאפשר להשוות בין פגישות | Codex | `tools/listener-probe/`, `tests/listener-probe.test.ts` | - |
-| [ ] | P2-7 | תיקון "wait" ועצירה כשמישהו מתחיל לדבר, לפי מה שפגישה #2 והמדידה בצד המאזין חשפו | Codex | `src/core/speech-floor.ts`, `src/core/speech-guard.ts`, `src/app/attendee-realtime-audio.ts` | P1-8, P2-6 |
+| [ ] | P2-7 | תיקון "wait" ועצירה כשמישהו מתחיל לדבר, לפי מה שפגישה #2 והמדידה בצד המאזין חשפו | Claude | `src/core/speech-floor.ts`, `src/core/speech-guard.ts`, `src/app/attendee-realtime-audio.ts` | P1-8, P2-6 |
 | [ ] | P2-8 | פגישה חיה #3 עם תסריט השער: "פתחי חמש משימות" 10 פעמים, בעלים שלא קיים, ו-"wait" באמצע תשובה | רועי | | P2-2, P2-4, P2-7 |
 | [ ] | P2-9 | הלוח נקרא מ-`origin/main` ולא מהעותק המקומי; סטטוס `[-]` למשימה שרועי דחה, שמעכב גם את מה שתלוי בה; משימות ל-Codex בזמן שהפגישה והדיסק נדחו | Claude | `tools/board.ts`, `tests/board.test.ts`, `docs/TASK_BOARD.md` | - |
 | [ ] | P2-10 | readiness שבודק יכולת אמיתית ולא רק שקיים מפתח: קריאה קלה לכל ספק (GitHub, Jira, Slack, Anthropic, Deepgram, Attendee) עם זמן תגובה, ותוצאה ברורה לכל אחד | Codex | `src/app/readiness.ts`, `src/app/connection-probes.ts`, `tests/readiness.test.ts`, `tests/connection-probes.test.ts` | - |
@@ -123,9 +124,9 @@
 | [ ] | P4-3 | resume אחרי restart: missions פתוחות נשמרות ב-state dir, ובעלייה הן ממשיכות או מדווחות בצ'אט מה אבד; בלי דיסק קבוע זה עובד מקומית ובדיקה מראה את זה | Codex | `src/app/mission-store.ts`, `src/app/state-storage.ts`, `tests/mission-store.test.ts` | - |
 | [ ] | P4-4 | "מה נשאר מהבקשה הקודמת?": כלי `mission_status` שעונה מה-mission store, מה בוצע, מה נכשל ומה עוד רץ, עם מקורות מה-ledger | Claude | `src/core/agent-tools.ts`, `src/core/missions.ts`, `tests/mission-status.test.ts` | P4-2 |
 | [ ] | P4-5 | מעבר מפגישה ל-Slack: mission שהתחילה בפגישה ממשיכה ב-thread של Slack, התוצאה נשלחת לשם, ותגובה ב-thread מגיעה לאותה mission | Codex | `src/app/slack-conversations.ts`, `src/app/slack-socket-events.ts`, `tests/slack-handoff.test.ts` | P4-3 |
-| [ ] | P4-6 | בדיקת כאוס ל-missions: הורגים את התהליך באמצע mission עם כתיבות, מעלים מחדש, ובודקים אפס כתיבות כפולות ואפס פעולות שאבדו בלי דיווח | Codex | `tools/mission-chaos/`, `tests/mission-chaos.test.ts` | P4-2, P4-3 |
+| [ ] | P4-6 | בדיקת כאוס ל-missions: הורגים את התהליך באמצע mission עם כתיבות, מעלים מחדש, ובודקים אפס כתיבות כפולות ואפס פעולות שאבדו בלי דיווח | Claude | `tools/mission-chaos/`, `tests/mission-chaos.test.ts` | P4-2, P4-3 |
 | [ ] | P4-7 | סט ההערכה מגיע ל-80 מקרים: mission ארוכה, "מה נשאר", מעבר ערוץ, שאלה אחרי restart; כולל הרצה עם ניתוב מודלים מול בלי | Claude | `tests/eval/` | P4-1, P4-4, P4-5 |
-| [ ] | P4-8 | תרחישי voice lab לשתי מהירויות: זמן עד התשובה הקצרה, זמן עד התשובה המלאה, ותשובה מלאה שלא נאמרת מעל אנשים | Codex | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tests/voice-lab.test.ts` | P4-2 |
+| [ ] | P4-8 | תרחישי voice lab לשתי מהירויות: זמן עד התשובה הקצרה, זמן עד התשובה המלאה, ותשובה מלאה שלא נאמרת מעל אנשים | Claude | `tools/voice-lab/scenarios.ts`, `tools/voice-lab/score.ts`, `tests/voice-lab.test.ts` | P4-2 |
 | [ ] | P4-9 | פגישה חיה #5 עם תסריט שער שלב 4: מחקר ארוך באמצע פגישה, "מה נשאר?", המשך ב-Slack | רועי | | P4-7, P4-8 |
 
 ### שלב 6 (מוקדם), שבועות 11–12: מוכנות לפיילוט
@@ -135,7 +136,8 @@
 | | ID | משימה | באחריות | קבצים | תלוי ב |
 |---|---|---|---|---|---|
 | [ ] | P6-0 | משימות מוקדמות של שלב 6, ו-P3-15 עובר ל-Codex | Claude | `docs/TASK_BOARD.md` | - |
-| [ ] | P6-1 | audit log: כל כתיבה (Jira, Slack, GitHub) נרשמת עם מי ביקש, מאיזו פגישה או ערוץ, מה נשלח והתוצאה; קובץ append-only ב-state dir ו-endpoint מוגן לקריאה | Codex | `src/app/audit-log.ts`, `src/app/action-receipts.ts`, `src/app/server.ts`, `tests/audit-log.test.ts` | - |
-| [ ] | P6-2 | התנהגות כשספק נופל: כש-Jira, GitHub, Slack, Anthropic או Deepgram נכשלים או איטיים, היא אומרת בקצרה מה לא זמין, בלי סערת retries (circuit breaker לכל ספק), וחוזרת לבד כשהספק חוזר; flag כבוי | Codex | `src/core/provider-health.ts`, `src/app/config.ts`, `tests/provider-outage.test.ts` | - |
-| [ ] | P6-3 | rate limits: תקרה לכל אדם ולכל פגישה על כתיבות ועל קריאות מודל, הודעה ברורה כשמגיעים אליה, ומונה ב-readiness; flag כבוי | Codex | `src/app/rate-limits.ts`, `src/app/session-usage.ts`, `tests/rate-limits.test.ts` | - |
-| [ ] | P6-4 | dashboard לאיכות ולשימוש: `npm run dashboard` בונה HTML מ-turn logs ומדוחות voice lab ו-eval: שאלות שאבדו, זמני תגובה p50/p95, טענות מגובות במקור, עלות לפגישה, ומגמה בין ריצות | Codex | `tools/dashboard/`, `tests/dashboard.test.ts`, `package.json` | - |
+| [ ] | P6-1 | audit log: כל כתיבה (Jira, Slack, GitHub) נרשמת עם מי ביקש, מאיזו פגישה או ערוץ, מה נשלח והתוצאה; קובץ append-only ב-state dir ו-endpoint מוגן לקריאה | Claude | `src/app/audit-log.ts`, `src/app/action-receipts.ts`, `src/app/server.ts`, `tests/audit-log.test.ts` | - |
+| [ ] | P6-2 | התנהגות כשספק נופל: כש-Jira, GitHub, Slack, Anthropic או Deepgram נכשלים או איטיים, היא אומרת בקצרה מה לא זמין, בלי סערת retries (circuit breaker לכל ספק), וחוזרת לבד כשהספק חוזר; flag כבוי | Claude | `src/core/provider-health.ts`, `src/app/config.ts`, `tests/provider-outage.test.ts` | - |
+| [ ] | P6-3 | rate limits: תקרה לכל אדם ולכל פגישה על כתיבות ועל קריאות מודל, הודעה ברורה כשמגיעים אליה, ומונה ב-readiness; flag כבוי | Claude | `src/app/rate-limits.ts`, `src/app/session-usage.ts`, `tests/rate-limits.test.ts` | - |
+| [ ] | P6-4 | dashboard לאיכות ולשימוש: `npm run dashboard` בונה HTML מ-turn logs ומדוחות voice lab ו-eval: שאלות שאבדו, זמני תגובה p50/p95, טענות מגובות במקור, עלות לפגישה, ומגמה בין ריצות | Claude | `tools/dashboard/`, `tests/dashboard.test.ts`, `package.json` | - |
+| [ ] | P6-5 | Claude לבד בזמן ש-Codex מושהה: המשימות הפתוחות של Codex עוברות ל-Claude, ו-`npm run board -- --agent claude --chain` בונה על PRs שמחכים למיזוג, כך שצ'אט אחד רץ עד שהלוח ריק | Claude | `tools/board.ts`, `tests/board.test.ts`, `CLAUDE.md`, `docs/TASK_BOARD.md` | - |

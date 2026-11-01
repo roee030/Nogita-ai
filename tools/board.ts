@@ -1,12 +1,15 @@
 /**
  * Shared state for the agents working on this repository (docs/TASK_BOARD.md has the rules).
  *
- *   npm run board -- --agent claude|codex
+ *   npm run board -- --agent claude|codex [--chain]
  *
  * The board file says what the tasks are: owner, files and dependencies. GitHub says where each one stands, so
  * nobody has to remember to update a status: a merged PR means done, an open draft means taken, a ready PR means
  * waiting for review. The board is read from origin/main, so an old branch never hides new tasks. Prints what this
  * agent should do next and what is waiting on Roee.
+ *
+ * With --chain an agent working alone does not wait for Roee to merge: its own PRs waiting for review count as
+ * done for what depends on them, and the next task starts from origin/main with those PRs merged in.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -48,7 +51,7 @@ export interface TaskState extends Task {
 export interface BoardReport {
   tasks: TaskState[];
   /** The one task this agent should work on now: its open task first, else the first ready one. */
-  next?: { task: TaskState; resume: boolean };
+  next?: { task: TaskState; resume: boolean; buildsOn?: PullRequest[] };
   /** Ready tasks of this agent held back because an open PR touches the same files. */
   blocked: Array<{ task: TaskState; by: string[] }>;
   /** Open PRs that no board task owns; their files still count as taken. */
@@ -96,7 +99,7 @@ function problemsOf(pr: PullRequest): string[] {
   return problems;
 }
 
-export function buildReport(tasks: Task[], prs: PullRequest[], agent: Owner): BoardReport {
+export function buildReport(tasks: Task[], prs: PullRequest[], agent: Owner, options: { chain?: boolean } = {}): BoardReport {
   // Per task, the open PR wins over a merged one; a PR closed without merging does not count.
   const prOf = new Map<string, PullRequest>();
   for (const pr of prs) {
@@ -116,19 +119,22 @@ export function buildReport(tasks: Task[], prs: PullRequest[], agent: Owner): Bo
       grew = true;
     }
   }
+  // In a chain, this agent's own PRs waiting for review are built on as if merged.
+  const chained = new Set(options.chain ? tasks.filter(task => task.owner === agent && !done.has(task.id) &&
+    prOf.get(task.id)?.state === 'OPEN' && !prOf.get(task.id)!.isDraft).map(task => task.id) : []);
   const states: TaskState[] = tasks.map(task => {
     const pr = prOf.get(task.id);
     const status: Status = done.has(task.id) ? 'done'
       : pr?.state === 'OPEN' ? (pr.isDraft ? 'in-progress' : 'in-review')
         : deferred.has(task.id) ? 'deferred'
-          : task.dependsOn.every(id => done.has(id)) ? 'ready' : 'waiting';
+          : task.dependsOn.every(id => done.has(id) || chained.has(id)) ? 'ready' : 'waiting';
     return { ...task, status, pr, problems: pr?.state === 'OPEN' ? problemsOf(pr) : [] };
   });
 
   const known = new Set(tasks.map(task => task.id));
   const outside = prs.filter(pr => pr.state === 'OPEN' && !known.has(taskOf(pr) ?? ''));
   const taken = [
-    ...states.filter(task => task.status === 'in-progress' || task.status === 'in-review')
+    ...states.filter(task => (task.status === 'in-progress' || task.status === 'in-review') && !chained.has(task.id))
       .flatMap(task => task.files.map(path => ({ path, by: task.id }))),
     ...outside.flatMap(pr => (pr.files ?? []).map(file => ({ path: file.path, by: `PR #${pr.number}` }))),
   ];
@@ -141,6 +147,9 @@ export function buildReport(tasks: Task[], prs: PullRequest[], agent: Owner): Bo
     const by = [...new Set(taken.filter(item => task.files.some(path => overlaps(path, item.path))).map(item => item.by))];
     if (by.length) blocked.push({ task, by });
     else next ??= { task, resume: false };
+  }
+  if (next && !next.resume && chained.size) {
+    next.buildsOn = states.filter(task => chained.has(task.id)).map(task => task.pr!).sort((a, b) => a.number - b.number);
   }
   return { tasks: states, next, blocked, outside };
 }
@@ -162,6 +171,10 @@ export function formatReport(report: BoardReport, agent: Owner): string {
       ? `- Continue ${task.id} on its branch (${task.pr!.headRefName}, draft PR #${task.pr!.number}): ${task.title}`
       : `- Start ${task.id}: ${task.title}`);
     lines.push(`  Files: ${task.files.join(', ') || '(none listed)'}`);
+    if (report.next.buildsOn?.length) {
+      lines.push(`  Builds on your PRs waiting for review: merge ${report.next.buildsOn.map(pr => `origin/${pr.headRefName}`).join(', ')} ` +
+        `into the new branch, and say in the PR that it builds on ${report.next.buildsOn.map(pr => `#${pr.number}`).join(', ')}.`);
+    }
   } else {
     lines.push('- Nothing to start. Stop and report what is waiting on Roee.');
   }
@@ -191,7 +204,7 @@ export function formatReport(report: BoardReport, agent: Owner): string {
 function main(): void {
   const at = process.argv.indexOf('--agent');
   const agent = OWNERS[(process.argv[at + 1] ?? '').toLowerCase()];
-  if (at < 0 || !agent || agent === 'roee') throw new Error('usage: npm run board -- --agent claude|codex');
+  if (at < 0 || !agent || agent === 'roee') throw new Error('usage: npm run board -- --agent claude|codex [--chain]');
   // The board on origin/main, not this folder's copy: a branch made before the last board change still sees today's tasks.
   let board: string;
   try {
@@ -203,7 +216,7 @@ function main(): void {
   }
   const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'all', '--limit', '200', '--json',
     'number,title,headRefName,state,isDraft,mergeable,reviewDecision,statusCheckRollup,files,url'], { encoding: 'utf8' })) as PullRequest[];
-  console.log(formatReport(buildReport(parseBoard(board), prs, agent), agent));
+  console.log(formatReport(buildReport(parseBoard(board), prs, agent, { chain: process.argv.includes('--chain') }), agent));
 }
 
 if (process.argv[1]?.endsWith('board.ts')) main();
