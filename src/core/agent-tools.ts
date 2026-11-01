@@ -757,7 +757,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         ].join('\n') };
       });
     }
-    add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one. Only when they clearly said so. mission_id may be left out when only one mission fits.',
+    add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one, including an approval asked in an earlier meeting or chat. Only when they clearly said so. mission_id may be left out when only one mission fits.',
       input_schema: { type: 'object', properties: { decision: { type: 'string', enum: ['approve', 'decline', 'resume', 'cancel'] },
         mission_id: { type: 'string' }, note: { type: 'string' } }, required: ['decision'] } },
     async input => {

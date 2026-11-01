@@ -6,7 +6,7 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, guardProviders, loadDotEnv, missionStatus, providerBreakers, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -198,6 +198,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     swallowedQuestion: swallowedQuestion(env),
     twoSpeed: twoSpeed(env),
     missionStatus: missionStatus(env),
+    pendingApprovals: pendingApprovals(env),
     receipts: actionReceipts,
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
