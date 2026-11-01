@@ -251,6 +251,7 @@ export class GitHubCode implements CodePort {
   private indexedCommitSha?: string;
   private indexExpiresAt = 0;
   private indexing?: { sha: string; promise: Promise<IndexBuild> };
+  private refreshTail: Promise<void> = Promise.resolve();
   private readonly indexTtlMs: number;
   private readonly now: () => number;
 
@@ -411,8 +412,8 @@ export class GitHubCode implements CodePort {
     return resolved;
   }
 
-  private async loadPublicIndex(): Promise<IndexedRevision> {
-    const commitSha = await this.resolvePublicRef();
+  private async loadPublicIndex(ref = this.config.ref): Promise<IndexedRevision> {
+    const commitSha = /^[a-f0-9]{40}$/i.test(ref) ? ref.toLowerCase() : await this.resolvePublicRef();
     if (this.indexedSha === commitSha && this.indexedBuild) {
       this.indexedCommitSha = commitSha;
       this.indexExpiresAt = this.now() + this.indexTtlMs;
@@ -465,18 +466,31 @@ export class GitHubCode implements CodePort {
     return { sha: rootSha, tree: entries, truncated: false };
   }
 
-  private async loadIndex(): Promise<IndexedRevision> {
-    if (this.indexedBuild && this.indexedCommitSha && this.now() < this.indexExpiresAt) {
+  private async loadIndex(ref = this.config.ref, force = false): Promise<IndexedRevision> {
+    if (!force && this.indexedBuild && this.indexedCommitSha && this.now() < this.indexExpiresAt) {
       return { files: this.indexedBuild.files, commitSha: this.indexedCommitSha };
     }
-    if (!this.config.token && this.config.publicRepo === true) return this.loadPublicIndex();
-    const { owner, repo, ref } = this.config;
-    let tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
-    if (!/^[a-f0-9]{40,64}$/i.test(tree.sha) || !Array.isArray(tree.tree)) {
-      throw new Error('GitHub returned an invalid repository tree');
+    if (!this.config.token && this.config.publicRepo === true) return this.loadPublicIndex(ref);
+    const { owner, repo } = this.config;
+    let tree: RepositoryTree;
+    let commit: GitHubCommit;
+    if (force) {
+      commit = await this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`);
+      const pinnedTreeSha = commit.commit?.tree?.sha;
+      if (!commit.sha || !/^[a-f0-9]{40}$/i.test(commit.sha) || !pinnedTreeSha ||
+          !/^[a-f0-9]{40,64}$/i.test(pinnedTreeSha)) throw new Error('GitHub returned an invalid commit revision');
+      if (commit.sha.toLowerCase() !== ref.toLowerCase()) throw new Error('GitHub returned a different requested commit');
+      tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${pinnedTreeSha}?recursive=1`);
+      if (tree.sha !== pinnedTreeSha || !Array.isArray(tree.tree)) {
+        throw new Error('GitHub returned an incomplete pinned repository tree');
+      }
+    } else {
+      tree = await this.get<RepositoryTree>(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+      if (!/^[a-f0-9]{40,64}$/i.test(tree.sha) || !Array.isArray(tree.tree)) {
+        throw new Error('GitHub returned an invalid repository tree');
+      }
+      commit = await this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`);
     }
-    if (tree.tree.length > MAX_TREE_ENTRIES) throw new Error('GitHub repository tree entry limit exceeded');
-    const commit = await this.get<GitHubCommit>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`);
     const commitSha = commit.sha;
     const commitTreeSha = commit.commit?.tree?.sha;
     if (!commitSha || !/^[a-f0-9]{40}$/i.test(commitSha) || !commitTreeSha ||
@@ -489,6 +503,7 @@ export class GitHubCode implements CodePort {
         throw new Error('GitHub returned an incomplete pinned repository tree');
       }
     }
+    if (tree.tree.length > MAX_TREE_ENTRIES) throw new Error('GitHub repository tree entry limit exceeded');
     if (tree.truncated) tree = await this.expandTree(tree.sha);
     if (this.indexedSha === tree.sha && this.indexedBuild) {
       this.indexedCommitSha = commitSha;
@@ -519,6 +534,30 @@ export class GitHubCode implements CodePort {
 
   async prepare(): Promise<void> {
     await this.loadIndex();
+  }
+
+  async refreshIndex(commitSha: string): Promise<void> {
+    if (!/^[a-f0-9]{40}$/i.test(commitSha)) throw new Error('invalid commit sha');
+    const refresh = this.refreshTail.then(async () => {
+      await this.loadIndex(commitSha.toLowerCase(), true);
+      const status = await this.indexStatus();
+      if (!status.current) await this.loadIndex(status.headSha, true);
+    });
+    this.refreshTail = refresh.catch(() => undefined);
+    await refresh;
+  }
+
+  async indexStatus(): Promise<{ indexedSha?: string; headSha: string; current: boolean }> {
+    let headSha: string;
+    if (!this.config.token && this.config.publicRepo === true) headSha = (await this.resolvePublicRef()).toLowerCase();
+    else {
+      const commit = await this.get<GitHubCommit>(
+        `/repos/${this.config.owner}/${this.config.repo}/commits/${encodeURIComponent(this.config.ref)}`);
+      if (!commit.sha || !/^[a-f0-9]{40}$/i.test(commit.sha)) throw new Error('GitHub returned an invalid commit revision');
+      headSha = commit.sha.toLowerCase();
+    }
+    const indexedSha = this.indexedCommitSha?.toLowerCase();
+    return { ...(indexedSha ? { indexedSha } : {}), headSha, current: indexedSha === headSha };
   }
 
   getCoverage(): { indexedFiles: number; skippedLargeFiles: number } | undefined {
