@@ -28,7 +28,8 @@ const github = (http: typeof fetch) => new GitHubCode({ token: 't', owner: 'acme
 
 const runs = [
   { id: 2, name: 'CI', status: 'completed', conclusion: 'failure', head_sha: sha('b'), head_branch: 'main', event: 'push',
-    html_url: 'https://github.com/acme/app/actions/runs/2', run_started_at: '2026-10-31T10:00:00Z' },
+    html_url: 'https://github.com/acme/app/actions/runs/2', run_started_at: '2026-10-31T10:00:00Z',
+    head_commit: { message: 'Fix the retry worker\n\nLonger body' } },
   { id: 1, name: 'CI', status: 'completed', conclusion: 'success', head_sha: sha('a'), head_branch: 'main', event: 'push',
     html_url: 'https://github.com/acme/app/actions/runs/1', run_started_at: '2026-10-31T09:00:00Z' },
 ];
@@ -49,18 +50,22 @@ test('ci_status for a branch: newest runs, the failed job and step, the deployed
       { id: 11, sha: sha('b'), environment: 'production', created_at: '2026-10-31T10:05:00Z' },
       { id: 10, sha: sha('a'), environment: 'production', created_at: '2026-10-31T09:05:00Z' },
     ])],
-    [/\/compare\//, () => json({ status: 'ahead', ahead_by: 2 })],
+    [/\/compare\//, () => json({ status: 'ahead', ahead_by: 2, commits: [
+      { sha: sha('e'), commit: { message: 'Fix the retry worker\n\nLonger body' } }, { sha: sha('f'), commit: { message: 'Add the time zone' } }] })],
   ]);
   const ci = await github(http).ciStatus({});
   assert.ok(ci);
   assert.deepEqual(ci.target, { branch: 'main' });
   assert.equal(ci.runs.length, 2);
   assert.equal(ci.runs[0]!.conclusion, 'failure');
+  assert.equal(ci.runs[0]!.title, 'Fix the retry worker');
+  assert.equal(ci.runs[1]!.title, undefined);
   assert.deepEqual(ci.runs[0]!.failedJobs, [{ name: 'test', url: 'https://github.com/acme/app/actions/runs/2/job/7', step: 'npm test' }]);
   assert.equal(ci.runs[1]!.failedJobs, undefined, 'jobs are read only for failed runs');
   // The preview deployment is skipped and the failed one is passed over for the one that is running.
   assert.deepEqual(ci.deployment, { sha: sha('a'), environment: 'production', state: 'success', createdAt: '2026-10-31T09:05:00Z',
-    url: 'https://app.example.com', notDeployed: 2 });
+    url: 'https://app.example.com', notDeployed: 2,
+    undeployed: [{ sha: sha('f'), title: 'Add the time zone' }, { sha: sha('e'), title: 'Fix the retry worker' }] });
   const listed = urls.find(url => url.pathname.endsWith('/actions/runs'))!;
   assert.equal(listed.searchParams.get('branch'), 'main');
   assert.ok(urls.some(url => url.pathname === `/repos/acme/app/compare/${sha('a')}...main`));
@@ -88,6 +93,21 @@ test('ci_status for a pull request reads the runs of its head commit; a short sh
   await assert.rejects(code.ciStatus({ branch: 'main;rm' }), /invalid branch name/);
 });
 
+test('ci_status for a commit says whether the deployed commit contains it', async () => {
+  const status = new Map([[sha('e'), 'behind'], [sha('f'), 'ahead'], [sha('c'), 'identical']]);
+  const { http } = fakeGitHub([
+    [/\/actions\/runs$/, () => json({ workflow_runs: [] })],
+    [/\/deployments\/10\/statuses$/, () => json([{ state: 'success' }])],
+    [/\/deployments$/, () => json([{ id: 10, sha: sha('c'), environment: 'production', created_at: '2026-10-31T09:05:00Z' }])],
+    [/\/compare\//, url => json({ status: status.get(url.pathname.split('...')[1]!) ?? 'diverged' })],
+  ]);
+  const code = github(http);
+  assert.equal((await code.ciStatus({ sha: sha('e') }))?.deployment?.includesTarget, true);
+  assert.equal((await code.ciStatus({ sha: sha('c') }))?.deployment?.includesTarget, true);
+  assert.equal((await code.ciStatus({ sha: sha('f') }))?.deployment?.includesTarget, false);
+  assert.equal((await code.ciStatus({ sha: sha('d') }))?.deployment?.includesTarget, false, 'diverged is not deployed');
+});
+
 test('ci_status still answers when deployments or jobs cannot be read, without claiming no job failed', async () => {
   const { http } = fakeGitHub([
     [/\/actions\/runs\/2\/jobs$/, () => json({ message: 'Forbidden' }, 403)],
@@ -108,9 +128,10 @@ class FakeCi implements CodePort {
     this.calls.push(target);
     if (target.pr === 99) return undefined;
     return { repository: 'acme/app', target: { branch: target.branch ?? 'main' },
-      runs: [{ workflow: 'CI', status: 'completed', conclusion: 'failure', sha: sha('b'), branch: 'main', event: 'push',
+      runs: [{ workflow: 'CI', status: 'completed', conclusion: 'failure', sha: sha('f'), title: 'Add the time zone', branch: 'main', event: 'push',
         url: 'https://github.com/acme/app/actions/runs/2', failedJobs: [{ name: 'test', url: 'https://github.com/acme/app/actions/runs/2/job/7', step: 'npm test' }] }],
-      deployment: { sha: sha('a'), environment: 'production', state: 'success', createdAt: '2026-10-31T09:05:00Z', notDeployed: 2 } };
+      deployment: { sha: sha('a'), environment: 'production', state: 'success', createdAt: '2026-10-31T09:05:00Z', notDeployed: 2,
+        undeployed: [{ sha: sha('f'), title: 'Add the time zone' }, { sha: sha('e'), title: 'Fix the retry worker' }] } };
   }
 }
 
@@ -129,10 +150,12 @@ test('the ci_status tool reports results with links, the failed step and the dep
   const { toolbox, report } = toolboxFor(code, true);
   const out = await toolbox.run('ci_status', {});
   assert.equal(out.isError, undefined);
-  assert.match(out.content, /CI: failure on bbbbbbb \(main\), push https:\/\/github\.com\/acme\/app\/actions\/runs\/2/);
+  assert.match(out.content, /CI: failure on fffffff "Add the time zone" \(main, not deployed\), push https:\/\/github\.com\/acme\/app\/actions\/runs\/2/);
   assert.match(out.content, /failed job: test, at step "npm test"/);
   assert.match(out.content, /Deployed: aaaaaaa to production \(success/);
   assert.match(out.content, /2 commit\(s\) on main are not deployed yet/);
+  assert.match(out.content, /Not deployed yet \(newest first\):\n- fffffff Add the time zone\n- eeeeeee Fix the retry worker\n/);
+  assert.match(out.content, /a change in aaaaaaa or an older commit on main is\./);
   assert.equal(report.codeReferences[0]?.url, 'https://github.com/acme/app/actions/runs/2');
   await toolbox.run('ci_status', { pr: 7, sha: 'abc1234' });
   assert.deepEqual(code.calls.at(-1), { pr: 7 }, 'a PR wins over a sha');

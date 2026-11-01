@@ -53,7 +53,7 @@ interface GitHubPull {
 }
 interface GitHubRun {
   id?: number; name?: string; status?: string; conclusion?: string | null; head_sha?: string; head_branch?: string | null;
-  event?: string; html_url?: string; run_started_at?: string;
+  event?: string; html_url?: string; run_started_at?: string; head_commit?: { message?: string } | null;
 }
 interface GitHubJob { name?: string; conclusion?: string | null; html_url?: string; steps?: Array<{ name?: string; conclusion?: string | null }> }
 interface GitHubDeployment { id?: number; sha?: string; environment?: string; created_at?: string }
@@ -64,6 +64,7 @@ const MAX_CI_RUNS = 10;
 const MAX_FAILED_RUNS_DETAILED = 3;
 /** Deployments whose state is read while looking for the newest successful one: one call each. */
 const MAX_DEPLOYMENTS_CHECKED = 5;
+const MAX_UNDEPLOYED_LISTED = 20;
 const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure', 'action_required']);
 const MAX_ACTIVITY_PAGES = 3;
 const MAX_TOP_FILES = 15;
@@ -745,6 +746,7 @@ export class GitHubCode implements CodePort {
       .map(run => ({ id: run.id!, run: {
         workflow: (run.name || 'workflow').slice(0, 100), status: run.status ?? 'unknown',
         ...(run.conclusion ? { conclusion: run.conclusion } : {}), sha: run.head_sha!,
+        ...(run.head_commit?.message ? { title: run.head_commit.message.split('\n')[0]!.slice(0, 200) } : {}),
         ...(run.head_branch ? { branch: run.head_branch } : {}), ...(run.event ? { event: run.event } : {}),
         url: run.html_url ?? `https://github.com/${owner}/${repo}/actions/runs/${run.id}`,
         ...(run.run_started_at ? { startedAt: run.run_started_at } : {}) } as CiRun }));
@@ -760,14 +762,16 @@ export class GitHubCode implements CodePort {
       });
     }));
     // A token without deployment access, or a repository that never deploys, still gets its CI answer.
-    const deployment = await this.deployed(sha ? undefined : branch).catch(() => undefined);
+    const deployment = await this.deployed(sha ? { sha } : { branch }).catch(() => undefined);
     return { repository: `${owner}/${repo}`,
       target: { ...(target.pr !== undefined ? { pr: target.pr } : {}), ...(branch ? { branch } : {}), ...(sha ? { sha } : {}) },
       runs: runs.map(({ run }) => run), ...(deployment ? { deployment } : {}) };
   }
 
-  /** The newest successful non-preview deployment (or the newest one, when none succeeded), and how far `branch` is past it. */
-  private async deployed(branch?: string): Promise<CiStatus['deployment']> {
+  /** The newest successful non-preview deployment (or the newest one, when none succeeded), and how far `branch` is past
+   *  it, or whether it contains `sha`. */
+  private async deployed(target: { branch?: string; sha?: string }): Promise<CiStatus['deployment']> {
+    const { branch, sha } = target;
     const { owner, repo } = this.config;
     const list = await this.get<Array<GitHubDeployment & { transient_environment?: boolean }>>(
       `/repos/${owner}/${repo}/deployments?per_page=${MAX_DEPLOYMENTS_CHECKED * 2}`);
@@ -784,11 +788,22 @@ export class GitHubCode implements CodePort {
       chosen ??= found;
       if (found.state === 'success') { chosen = found; break; }
     }
+    if (chosen && sha) {
+      // Behind or identical: the commit is an ancestor of the deployed one, so it is deployed.
+      const compare = await this.get<{ status?: string }>(`/repos/${owner}/${repo}/compare/${chosen.sha}...${sha}`).catch(() => undefined);
+      if (compare?.status === 'behind' || compare?.status === 'identical') chosen.includesTarget = true;
+      else if (compare?.status === 'ahead' || compare?.status === 'diverged') chosen.includesTarget = false;
+    }
     if (!chosen || !branch) return chosen;
-    const compare = await this.get<{ status?: string; ahead_by?: number }>(
+    const compare = await this.get<{ status?: string; ahead_by?: number; commits?: Array<{ sha?: string; commit?: { message?: string } }> }>(
       `/repos/${owner}/${repo}/compare/${chosen.sha}...${branch}`).catch(() => undefined);
     if ((compare?.status === 'ahead' || compare?.status === 'identical') && Number.isSafeInteger(compare.ahead_by ?? 0)) {
       chosen.notDeployed = compare.ahead_by ?? 0;
+      // GitHub lists them oldest first.
+      const undeployed = (Array.isArray(compare.commits) ? compare.commits : [])
+        .filter(item => typeof item.sha === 'string' && /^[a-f0-9]{40}$/i.test(item.sha)).reverse().slice(0, MAX_UNDEPLOYED_LISTED)
+        .map(item => ({ sha: item.sha!.toLowerCase(), title: (item.commit?.message ?? '').split('\n')[0]!.slice(0, 200) }));
+      if (undeployed.length) chosen.undeployed = undeployed;
     }
     return chosen;
   }

@@ -5,6 +5,7 @@ import { buildToolbox, type MissionPort, type PeopleDirectory } from './agent-to
 import { ActionItemTracker } from './drafting.ts';
 import { OPEN_MISSION, type MissionRunner } from './missions.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
+import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { PhrasePicker, toSpoken } from './spoken.ts';
@@ -134,6 +135,22 @@ export interface NogitaEngineOptions {
   receipts?: Map<string, ActionReceipt>;
   /** Speech floor timing (tests use shorter waits). */
   floor?: Pick<SpeechFloorOptions, 'talkingMs' | 'explicitTurnEnd' | 'resumeAfterMs' | 'staleLeadInMs' | 'maxWaitMs' | 'holdMs' | 'schedule' | 'cancel'>;
+  /** Phase 3 research features for every agent turn, in chat and voice. Each is off unless set. */
+  research?: ResearchFeatures;
+}
+
+/** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
+export interface ResearchFeatures {
+  /** Offers ci_status: CI runs for a branch, commit or PR, and the deployed commit. */
+  ciStatus?: boolean;
+  /** A large tool result reaches the model as a digest it can page through, not cut at 14,000 characters. */
+  resultDigest?: boolean;
+  /** Tool results are recorded as sources; a chat answer cites and links them. */
+  evidenceLedger?: boolean;
+  /** Say how far a capability got, and never "works in production" without a deployment to show (needs the ledger to check). */
+  proofLevels?: boolean;
+  /** A recurring research question gets a short plan of the sources to read and what the answer must cover. */
+  researchTemplates?: boolean;
 }
 
 /** "Stop", "wait", "hold on": stop talking now (the answer stays in chat). */
@@ -320,6 +337,7 @@ export class NogitaEngine {
   private readonly floorOptions: NonNullable<NogitaEngineOptions['floor']>;
   private readonly actionItemRecap: boolean;
   private readonly agentCacheWarmup: boolean;
+  private readonly research: ResearchFeatures;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -361,6 +379,7 @@ export class NogitaEngine {
     this.floorOptions = options.floor ?? {};
     this.actionItemRecap = options.actionItemRecap === true;
     this.agentCacheWarmup = options.agentCacheWarmup !== false;
+    this.research = options.research ?? {};
     this.completed = options.receipts ?? new Map();
   }
 
@@ -422,13 +441,14 @@ export class NogitaEngine {
         policy: { mayReadCode: () => true, mayWriteTask: () => true, mayDraftPR: () => true },
         code: this.dependencies.code, board: this.dependencies.board, chat: this.dependencies.chat, drafts: this.dependencies.drafts,
         memory: this.dependencies.memory, actionItems: () => [],
-        people: this.dependencies.people, completed: new Map(), onReceipt: async () => {},
+        people: this.dependencies.people, completed: new Map(), onReceipt: async () => {}, ciStatus: this.research.ciStatus,
       });
       session.lastModelCallAt = this.now();
+      // The same prompt and tool list a turn sends, or the cached prefix would not match.
       await agent.warmCache!({ stableSystem: stableAgentPrompt({ voice: true,
         repository: repository && { name: this.dependencies.code.name, ...repository },
-        boardName: this.dependencies.board.name, chatName: this.dependencies.chat?.name }),
-      tools: toolbox.specs, usageContext: sessionId });
+        boardName: this.dependencies.board.name, chatName: this.dependencies.chat?.name, proofLevels: this.research.proofLevels }),
+      tools: this.research.resultDigest ? [...toolbox.specs, MORE_OF_RESULT_SPEC] : toolbox.specs, usageContext: sessionId });
     };
     const loop = () => {
       void warm().catch(() => undefined).finally(() => {
@@ -866,6 +886,7 @@ export class NogitaEngine {
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
+      ciStatus: this.research.ciStatus,
       onReceipt: receipt => {
         if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
         return s.meeting.sendCompletion(receipt);
@@ -980,13 +1001,16 @@ export class NogitaEngine {
         stableSystem: stableAgentPrompt({ voice,
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
-          chatName: authorized ? this.dependencies.chat?.name : undefined }),
+          chatName: authorized ? this.dependencies.chat?.name : undefined, proofLevels: this.research.proofLevels }),
         turnSystem: turnAgentPrompt({ speaker, authorized, nowIso: new Date(this.now()).toISOString(), team: this.team(), followUp: pending !== undefined,
-          raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`) }),
+          raisedHandReason: raisedReason, otherQuestions: otherQuestions.map(other => `${other.speaker}: "${other.request}"`),
+          ...(this.research.researchTemplates && authorized
+            ? { research: { request, tools: toolbox.specs.map(spec => spec.name), voice } } : {}) }),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
         deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, toolStepMaxTokens: voice ? 2_000 : 4_000,
         maxSteps: voice ? 5 : 8,
+        digestResults: this.research.resultDigest, evidenceLedger: this.research.evidenceLedger, proofLevels: this.research.proofLevels,
         onToolUse, signal: q?.abort.signal, beforeWrite: q ? () => q.gate : undefined,
         onFirstText: (step, ms) => this.onActivity?.(sessionId, { kind: 'model_first_text',
           ...(q ? { questionId: q.id } : {}), step, ms }),

@@ -6,7 +6,7 @@
  * Every tool result the model is given is recorded in an Evidence Ledger, as the agent loop records it, and every
  * checkable claim in what she said (a pull request, commit, task key, file or link) must rest on one of those sources.
  */
-import { NogitaEngine } from '../../src/core/engine.ts';
+import { NogitaEngine, type ResearchFeatures } from '../../src/core/engine.ts';
 import { AllowlistPolicy } from '../../src/core/policy.ts';
 import { DemoBrain, DemoMeeting } from '../../src/adapters/demo.ts';
 import type { ChatModel, ChatModelRequest, ChatModelResponse } from '../../src/core/agent.ts';
@@ -83,7 +83,7 @@ class EvalMeeting extends DemoMeeting {
   }
 }
 
-export async function runCase(model: ChatModel, item: EvalCase): Promise<CaseRun> {
+export async function runCase(model: ChatModel, item: EvalCase, options: { research?: ResearchFeatures } = {}): Promise<CaseRun> {
   const world = evalWorld();
   const traced = new TracedModel(model);
   const voice = (item.mode ?? 'voice') === 'voice';
@@ -95,6 +95,7 @@ export async function runCase(model: ChatModel, item: EvalCase): Promise<CaseRun
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy: new AllowlistPolicy(new Set(['roee'])), agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now: () => NOW + Date.now() - started, receipts,
+    research: options.research,
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
   let engine = newEngine();
   const actor = SPEAKERS[item.speaker ?? 'roee'];

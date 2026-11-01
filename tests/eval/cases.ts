@@ -120,8 +120,10 @@ const readCi = (target?: (args: Record<string, unknown>) => boolean): Check => (
 /** Some sentence says it with no negation in it ("nothing has been merged" does not say it was merged). */
 const asserts = (text: string, claim: RegExp) => text.split(/(?<=[.!?\n])\s*/).some(sentence =>
   claim.test(sentence) && !/\b(?:no|not|nothing|never|none|neither|nor|yet)\b|n['’]?t\b/.test(sentence));
-const DEPLOYED_CLAIM =/\b(?:yes|it(?:'s| is)|that(?:'s| is)|is) (?:already )?(?:deployed|live|in production|out)\b/;
+const DEPLOYED_CLAIM =/(?<!\b(?:whether|if) )\b(?:yes|it(?:'s| is)|that(?:'s| is)|is) (?:already )?(?:deployed|live|in production|out)\b/;
 const NOT_DEPLOYED = /\bnot (?:yet )?(?:deployed|live|in production|out)\b|\bisn'?t (?:deployed|live|in production|out)\b|\bnot (?:been )?deployed\b|\bbehind\b|\bundeployed\b|\b(?:5|five) commits?\b|\bafter (?:the )?(?:deploy|deployment)\b/;
+/** Saying the change itself is not out; "it isn't in the five commits still waiting" says the opposite. */
+const SAYS_NOT_DEPLOYED = /\b(?:not|isn'?t|hasn'?t|has not) (?:yet |been )*(?:deployed|live|in production|out|shipped|reached production)\b|\bundeployed\b|\bnot yet\b/;
 const titles = (run: CaseRun) => newTasks(run).map(task => task.title.toLowerCase());
 
 /** A request to open one task per topic: all of them open, one per topic, the keys in chat, no owner guessed, no claim of more. */
@@ -807,7 +809,7 @@ export const CASES: EvalCase[] = [
     turns: ['Nogita, is the flaky missions test fix deployed?'],
     checks: [
       readCi(),
-      { dimension: 'accuracy', name: 'yes, PR 6 is older than the deployed commit', pass: run => /\byes\b|it(?:'s| is) (?:deployed|live|in production)|included|part of/.test(said(run)) && !NOT_DEPLOYED.test(said(run)) },
+      { dimension: 'accuracy', name: 'yes, PR 6 is older than the deployed commit', pass: run => /\byes\b|it(?:'s| is) (?:deployed|live|in production)|included|part of/.test(said(run)) && !SAYS_NOT_DEPLOYED.test(said(run)) },
     ],
   },
   {

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { BoardPort, BrainPort, ChatPort, CodePort, PolicyPort, PullRequestPort } from '../core/contracts.ts';
 import type { ChatModel } from '../core/agent.ts';
+import type { ResearchFeatures } from '../core/engine.ts';
 import { SlackWorkspace } from '../adapters/slack-workspace.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
 import { IdentityDirectory } from '../core/identity.ts';
@@ -23,6 +24,24 @@ export function loadDotEnv(name = '.env'): void {
     if (match && process.env[match[1]!] === undefined) process.env[match[1]!] = match[2]!;
   }
 }
+const RESEARCH_FLAGS = { ciStatus: 'NOGITA_CI_STATUS', resultDigest: 'NOGITA_RESULT_DIGEST',
+  evidenceLedger: 'NOGITA_EVIDENCE_LEDGER', proofLevels: 'NOGITA_PROOF_LEVELS', researchTemplates: 'NOGITA_RESEARCH_TEMPLATES' } as const;
+
+/** Phase 3 research features from the environment: each 'true' turns one on; blank or 'false' leaves it off. */
+export function researchFeatures(env: NodeJS.ProcessEnv = process.env): ResearchFeatures {
+  const features: ResearchFeatures = {};
+  for (const [feature, name] of Object.entries(RESEARCH_FLAGS) as Array<[keyof ResearchFeatures, string]>) {
+    const value = env[name]?.trim() ?? '';
+    if (!['', 'true', 'false'].includes(value)) throw new Error(`${name} must be true or false`);
+    if (value === 'true') features[feature] = true;
+  }
+  return features;
+}
+
+/** Every research feature on, for `npm run eval -- --research` and `npm run voice-lab -- --research`. */
+export const ALL_RESEARCH_FEATURES: Required<ResearchFeatures> = { ciStatus: true, resultDigest: true, evidenceLedger: true,
+  proofLevels: true, researchTemplates: true };
+
 export type Dependencies = { tenant: TenantConfig['tenant'];
   /** Which providers are connected and who may act: no secrets, for readiness. */
   connections: { boards: string[]; repositories: string[]; authorizedActorIds: string[] }; board: BoardPort; code: CodePort; brain: BrainPort; policy: PolicyPort;
