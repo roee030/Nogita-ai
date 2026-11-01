@@ -7,12 +7,19 @@ import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Mission, MissionStore } from '../core/missions.ts';
 
+export interface MissionRecoveryIssue {
+  missionId: string;
+  reason: 'snapshot_unreadable';
+}
+
 export class FileMissionStore implements MissionStore {
   private readonly directory: string;
   private ready?: Promise<void>;
   private readonly writes = new Map<string, Promise<void>>();
 
-  constructor(stateDirectory: string) { this.directory = join(stateDirectory, 'missions'); }
+  constructor(stateDirectory: string, private readonly reportRecoveryIssue?: (issue: MissionRecoveryIssue) => void) {
+    this.directory = join(stateDirectory, 'missions');
+  }
 
   async save(mission: Mission): Promise<void> {
     if (!/^M-[A-Z0-9]{1,20}$/.test(mission.id)) throw new Error('invalid mission id');
@@ -43,6 +50,7 @@ export class FileMissionStore implements MissionStore {
     for (const name of names.filter(n => /^M-[A-Z0-9]+\.json$/.test(n))) {
       const mission = await this.load(name.slice(0, -5));
       if (mission) missions.push(mission);
+      else this.reportRecoveryIssue?.({ missionId: name.slice(0, -5), reason: 'snapshot_unreadable' });
     }
     return missions;
   }
