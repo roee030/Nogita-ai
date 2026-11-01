@@ -1,7 +1,7 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type MeetingMemoryPort, type PolicyPort, type PullRequestPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
-import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
-import { auditedPorts, buildToolbox, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
+import { runAgent, type AgentResult, type ChatModel, type ChatModelRequest } from './agent.ts';
+import { auditedPorts, buildToolbox, LimitReachedError, type LimitsPort, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
 import { ProviderUnavailableError } from './provider-health.ts';
 import { missionReport, OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
@@ -421,6 +421,8 @@ export class NogitaEngine {
     tenant?: { timeZone?: string; weekStartsOn?: TeamTime['weekStartsOn'] };
     /** Told of every write (who asked, where, what was sent, the outcome): the audit log. */
     audit?: (write: WriteAudit) => void;
+    /** Caps per person and per meeting on writes and model calls (NOGITA_RATE_LIMITS). */
+    limits?: LimitsPort;
   }, options: NogitaEngineOptions = {}) {
     this.progressDelayMs = options.progressDelayMs ?? 1_000;
     this.agentProgressDelayMs = options.agentProgressDelayMs ?? 2_000;
@@ -956,6 +958,7 @@ export class NogitaEngine {
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus,
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
+      ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),
       onReceipt: receipt => {
         if (receipt.kind === 'task') s.items.taskCreated(receipt.label);
         return s.meeting.sendCompletion(receipt);
@@ -1069,7 +1072,7 @@ export class NogitaEngine {
     s.lastModelCallAt = this.now();
     const agentStartedAt = this.now();
     try {
-      result = await this.modelCall(sessionId, () => runAgent(agent, {
+      result = await this.modelCall(sessionId, () => runAgent(this.limitedModel(agent, utterance.actor.id, sessionId), {
         stableSystem: stableAgentPrompt({ voice,
           repository: repository && { name: this.dependencies.code.name, ...repository },
           boardName: authorized ? this.dependencies.board.name : undefined,
@@ -1098,10 +1101,10 @@ export class NogitaEngine {
       if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await settleSpeech();
       // The model is down (its breaker is open): one short line, and no planner, which asks the same model.
-      if (!spoke && !report.wroteSomething && error instanceof ProviderUnavailableError) {
+      if (!spoke && !report.wroteSomething && (error instanceof ProviderUnavailableError || error instanceof LimitReachedError)) {
         this.clearProgressTimer(s);
         if (floor && q) await floor.say(q.id, error.spoken); else await this.speakOrChat(sessionId, s.meeting, error.spoken);
-        if (q) this.reportQuestion(sessionId, q, 'failed', `${error.providerName} is down`);
+        if (q) this.reportQuestion(sessionId, q, 'failed', error instanceof LimitReachedError ? 'rate limit reached' : `${error.providerName} is down`);
         return 'answered';
       }
       if (!spoke && !report.wroteSomething) {
@@ -1249,6 +1252,20 @@ export class NogitaEngine {
         outcome === 'spoken' ? `full answer from ${mission.id} spoken` : `full answer from ${mission.id} in chat (${outcome})`))
       .finally(() => s.floor?.release(q.id));
     return true;
+  }
+
+  /** The agent with each model call counted against the person's and the meeting's limits (when they are on). */
+  private limitedModel(agent: ChatModel, actorId: string, sessionId: string): ChatModel {
+    const limits = this.dependencies.limits;
+    if (!limits) return agent;
+    return new Proxy(agent, { get(target, name, receiver) {
+      const value = Reflect.get(target, name, receiver);
+      if (name !== 'streamChat' || typeof value !== 'function') return typeof value === 'function' ? value.bind(target) : value;
+      return (request: ChatModelRequest, onText: (delta: string) => void) => {
+        const reached = limits.take('model_call', { actorId, sessionId });
+        return reached ? Promise.reject(new LimitReachedError(reached)) : value.call(target, request, onText);
+      };
+    } });
   }
 
   /** Missions as one conversation turn may use them, bound to the person speaking. */

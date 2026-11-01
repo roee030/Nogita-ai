@@ -58,6 +58,8 @@ export interface ToolboxContext {
   missionStatus?: boolean;
   /** Told of every write this toolbox makes, after it succeeded or failed (the audit log). */
   audit?: (write: WriteAudit) => void;
+  /** Caps on writes per person and per meeting; a write past a cap is refused with a clear line. */
+  limits?: LimitsPort;
 }
 
 /** One write to Jira, Slack or GitHub: who asked, where, what was sent, and what came of it. */
@@ -73,10 +75,36 @@ export interface WriteAudit {
   error?: string;
 }
 
+type WritePorts = { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort };
+type AroundWrite = (action: WriteAudit['action'], sent: Record<string, unknown>, work: () => Promise<ActionReceipt>) => Promise<ActionReceipt>;
+
+/** The same ports with every write (create or update a task, post a message, open a draft) run through `around`. */
+function wrapWrites(ports: WritePorts, around: AroundWrite): WritePorts {
+  const wrap = <P extends object>(port: P, writes: Partial<Record<keyof P, (port: P, ...args: never[]) => Promise<ActionReceipt>>>) =>
+    new Proxy(port, { get(target, name, receiver) {
+      const write = writes[name as keyof P];
+      if (write) return (...args: never[]) => write(target, ...args);
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  const board = wrap<BoardPort>(ports.board, {
+    createTask: (port, input: Parameters<BoardPort['createTask']>[0]) => around('create_task', { ...input }, () => port.createTask(input)),
+    ...(ports.board.updateTask ? { updateTask: (port: BoardPort, input: Parameters<NonNullable<BoardPort['updateTask']>>[0]) =>
+      around('update_task', { ...input }, () => port.updateTask!(input)) } : {}),
+  });
+  const chat = ports.chat && wrap<ChatPort>(ports.chat, {
+    postMessage: (port, channel: string, text: string) => around('post_message', { channel, text }, () => port.postMessage(channel, text)),
+  });
+  const drafts = ports.drafts && wrap<PullRequestPort>(ports.drafts, {
+    openDraft: (port, input: Parameters<PullRequestPort['openDraft']>[0]) => around('open_draft', { ...input }, () => port.openDraft(input)),
+  });
+  return { board, ...(chat ? { chat } : {}), ...(drafts ? { drafts } : {}) };
+}
+
 /** The write ports with each write reported to `audit`; reads pass through untouched. */
 export function auditedPorts(context: Pick<ToolboxContext, 'actor' | 'sessionId' | 'eventId' | 'board' | 'chat' | 'drafts'>,
-  audit: (write: WriteAudit) => void): { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort } {
-  const report = async <T extends ActionReceipt>(action: WriteAudit['action'], sent: Record<string, unknown>, work: () => Promise<T>) => {
+  audit: (write: WriteAudit) => void): WritePorts {
+  return wrapWrites(context, async (action, sent, work) => {
     const base = { action, actor: { id: context.actor.id, displayName: context.actor.displayName }, sessionId: context.sessionId, eventId: context.eventId, sent };
     try {
       const receipt = await work();
@@ -86,26 +114,30 @@ export function auditedPorts(context: Pick<ToolboxContext, 'actor' | 'sessionId'
       try { audit({ ...base, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : 'unknown error' }); } catch { /* as above */ }
       throw error;
     }
-  };
-  const wrap = <P extends object>(port: P, writes: Partial<Record<keyof P, (port: P, ...args: never[]) => Promise<ActionReceipt>>>) =>
-    new Proxy(port, { get(target, name, receiver) {
-      const write = writes[name as keyof P];
-      if (write) return (...args: never[]) => write(target, ...args);
-      const value = Reflect.get(target, name, receiver);
-      return typeof value === 'function' ? value.bind(target) : value;
-    } });
-  const board = wrap<BoardPort>(context.board, {
-    createTask: (port, input: Parameters<BoardPort['createTask']>[0]) => report('create_task', { ...input }, () => port.createTask(input)),
-    ...(context.board.updateTask ? { updateTask: (port: BoardPort, input: Parameters<NonNullable<BoardPort['updateTask']>>[0]) =>
-      report('update_task', { ...input }, () => port.updateTask!(input)) } : {}),
   });
-  const chat = context.chat && wrap<ChatPort>(context.chat, {
-    postMessage: (port, channel: string, text: string) => report('post_message', { channel, text }, () => port.postMessage(channel, text)),
+}
+
+/** Rate limits: `take` counts one write or model call and returns undefined to go on, or the line to say when this
+ *  person or meeting has reached a limit (then nothing is done). */
+export interface LimitsPort {
+  take(kind: 'write' | 'model_call', who: { actorId: string; sessionId: string }): string | undefined;
+}
+
+/** A limit was reached; `spoken` says which and when it frees up. Nothing was sent. */
+export class LimitReachedError extends Error {
+  constructor(readonly spoken: string) {
+    super(`${spoken} Nothing was done. Tell the person that in one short sentence; do not try again.`);
+    this.name = 'LimitReachedError';
+  }
+}
+
+/** The write ports with each write counted against the person's and the meeting's limits first. */
+export function limitedPorts(ports: WritePorts, limits: LimitsPort, who: { actorId: string; sessionId: string }): WritePorts {
+  return wrapWrites(ports, (_action, _sent, work) => {
+    const reached = limits.take('write', who);
+    if (reached) return Promise.reject(new LimitReachedError(reached));
+    return work();
   });
-  const drafts = context.drafts && wrap<PullRequestPort>(context.drafts, {
-    openDraft: (port, input: Parameters<PullRequestPort['openDraft']>[0]) => report('open_draft', { ...input }, () => port.openDraft(input)),
-  });
-  return { board, ...(chat ? { chat } : {}), ...(drafts ? { drafts } : {}) };
 }
 
 /** Leaving needs words that ask for it in the request itself, never only in something she read. */
@@ -271,7 +303,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const report: ToolboxReport = { codeReferences: [], receipts: [], wroteSomething: false };
   const mayRead = context.policy.mayReadCode(context.actor);
   const mayWrite = context.policy.mayWriteTask(context.actor);
-  const ports = context.audit ? auditedPorts(context, context.audit) : context;
+  // A limited write is refused before it is audited: only writes that were attempted are in the log.
+  const audited = context.audit ? auditedPorts(context, context.audit) : context;
+  const ports = context.limits ? limitedPorts(audited, context.limits, { actorId: context.actor.id, sessionId: context.sessionId }) : audited;
   const { code } = context;
   const { board, chat } = ports;
   let writes = 0;

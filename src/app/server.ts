@@ -38,6 +38,7 @@ import { FileMeetingMemory } from './meeting-memory.ts';
 import { FileActionReceipts } from './action-receipts.ts';
 import { FileAuditLog } from './audit-log.ts';
 import { ProviderHealth } from '../core/provider-health.ts';
+import { RateLimiter, rateLimitConfig } from './rate-limits.ts';
 import { auditedPorts } from '../core/agent-tools.ts';
 import { acceptGitHubWebhook, GitHubRefreshQueue, githubWebhookConfigured } from './github-webhook.ts';
 
@@ -97,6 +98,12 @@ const sessionUsage = new SessionUsageRegistry(attendeeHourlyPrice, Date.now,
     warningRatio: Number(env.NOGITA_SESSION_BUDGET_WARNING_RATIO ?? '0.8'),
     log: event => console.warn(event.type, JSON.stringify(event)),
   });
+/** Opt-in (NOGITA_RATE_LIMITS): caps per person and per meeting on writes and model calls; counters in readiness. */
+const rateLimits = rateLimitConfig(env);
+const limiter = rateLimits && new RateLimiter(rateLimits, Date.now, (kind, scope, who) => {
+  sessionUsage.recordRateLimited(who.sessionId, kind);
+  console.warn('rate_limited', kind, scope);
+});
 const stateDirectory = env.NOGITA_STATE_DIR ?? '.nogita-state';
 // A company cell does not start without persistent storage of its own; a .env setup only warns, as before.
 // With an invalid config the demo stand-in runs to report the problem, so it claims nothing.
@@ -135,7 +142,7 @@ const missionRunner = dependencies.agent ? new MissionRunner({ model: dependenci
   toolbox: (mission, callId) => buildToolbox({ actor: { id: mission.owner.id, displayName: mission.owner.displayName, verified: true },
     request: mission.goal, sessionId: `mission-${mission.id}`, eventId: callId ?? `${mission.id}:${mission.rounds}`,
     policy: dependencies.policy, code: dependencies.code, board: dependencies.board, chat: dependencies.chat, people: dependencies.people,
-    completed: missionCompleted, writesApproved: true, ...(audit ? { audit } : {}),
+    completed: missionCompleted, writesApproved: true, ...(audit ? { audit } : {}), ...(limiter ? { limits: limiter } : {}),
     onReceipt: receipt => notifyMission(mission, `${mission.id}: ${receipt.label}: ${receipt.url}`) }).toolbox,
   notify: (mission, text) => notifyMission(mission, text),
   onChange: mission => {
@@ -180,7 +187,8 @@ const publicBaseUrl = (() => {
 const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
 const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
   ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
-const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory, ...(audit ? { audit } : {}) },
+const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory, ...(audit ? { audit } : {}),
+  ...(limiter ? { limits: limiter } : {}) },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
     floor: { talkingMs: turnTakingV2 ? 3_000 : 1_000, explicitTurnEnd: turnTakingV2 },
     actionItemRecap: env.NOGITA_ACTION_ITEM_RECAP === 'true',
@@ -326,6 +334,7 @@ async function leaveMeeting(sessionId: string, { goodbye }: { goodbye: boolean }
       return;
     }
     sessionUsage.end(sessionId);
+    limiter?.endMeeting(sessionId);
     await forgetAttendeeSession(sessionId, botId);
   } finally {
     leavingSessions.delete(sessionId);
@@ -766,13 +775,14 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/readiness') {
       const report = buildReadinessReport(env, dependencies.identities, process.versions.node,
         providerConfigValid, slackSocketConnected, env.NOGITA_TENANT_CONFIG?.trim() ? dependencies.connections : undefined);
-      if (!githubPushRefreshEnabled) { respond(res, report.ok ? 200 : 503, report); return; }
+      const withLimits = limiter ? { ...report, rateLimits: limiter.counters() } : report;
+      if (!githubPushRefreshEnabled) { respond(res, report.ok ? 200 : 503, withLimits); return; }
       const code = dependencies.code as typeof dependencies.code & {
         indexStatus?(): Promise<{ indexedSha?: string; headSha: string; current: boolean }>;
       };
       const repositoryIndex = await code.indexStatus?.().catch(() => undefined);
       const ready = report.ok && repositoryIndex?.current === true;
-      respond(res, ready ? 200 : 503, { ...report, ok: ready,
+      respond(res, ready ? 200 : 503, { ...withLimits, ok: ready,
         repositoryIndex: repositoryIndex ?? { current: false, error: 'unavailable' } }); return;
     }
     const usageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/usage$/);
