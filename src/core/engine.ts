@@ -24,6 +24,8 @@ interface Session {
     kind?: 'question' | 'conversation'; intervened?: boolean };
   /** Someone said only her name ("Nogita."); their next words are for her even without it. */
   calledBy?: { actorId: string; until: number };
+  /** When she last asked "did someone ask me something?" (NOGITA_SWALLOWED_QUESTION), so she asks once, not every turn. */
+  swallowedAskAt?: number;
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
   heard?: Map<string, number>;
   /** First names of people heard (actor id -> name), to tell when someone is addressed by name instead of her. */
@@ -142,6 +144,12 @@ export interface NogitaEngineOptions {
    * transcript, a question for the room, or a remark that asks nothing is not a follow-up to her answer. Off unless set.
    */
   roomNoiseGuard?: boolean;
+  /**
+   * A swallowed question comes back fast (NOGITA_SWALLOWED_QUESTION): when her name came through but the question did
+   * not, or a question's start was lost in crosstalk, she asks "did someone ask me something?" within seconds, and the
+   * lost words are not answered later. Off unless set.
+   */
+  swallowedQuestion?: boolean;
 }
 
 /** The research features of phase 3, each behind its own flag (NOGITA_CI_STATUS, NOGITA_RESULT_DIGEST, ...). */
@@ -304,6 +312,24 @@ export function looksLikeCorrection(text: string): boolean {
   return /^(?:(?:no|nope|sorry|actually|wait)[,.!]?\s+)*(?:i meant|i mean|not that|i'm asking about|i am asking about|i was asking about|what i meant|i'm talking about|i was talking about)\b/i.test(t) ||
     /^(?:no|nope)[,.!]?\s+(?:the|for|in|on|about|not)\b/i.test(t);
 }
+/** "Nogita, -- the --": after her name, recognition kept too little of the question to answer it. */
+function lostAfterName(request: string): boolean {
+  if (!looksLikeCrosstalk(request)) return false;
+  const words = request.replace(/--|—|\.\.\.|…/g, ' ').match(/[\p{L}\p{N}']+/gu) ?? [];
+  return words.length < 3 || (!/\?["')\]]?$/.test(request.trim()) && !looksLikeRequest(request.replace(/^[\s\-—.…]+/, '')));
+}
+/**
+ * "...let me check my calendar. -- status five hundred three mean?": the transcript ends in a question whose start (her
+ * name with it, maybe) was lost in crosstalk. A whole question after the break ("-- Is that the big file?") is the room's.
+ */
+function questionStartLost(text: string): boolean {
+  const parts = text.trim().split(/\s--\s|—\s*—|\.\.\.|…/);
+  if (parts.length < 2) return false;
+  const tail = parts.at(-1)!.trim();
+  const words = tail.split(/\s+/).length;
+  return words >= 2 && words <= 10 && /\?["')\]]?$/.test(tail) && !/[.!?]\s/.test(tail) && !asksTheRoom(tail) &&
+    !/^(?:what|what's|which|who|how|why|when|where|is|are|do|does|did|can|could|would|will|has|have|was|should)\b/i.test(tail);
+}
 /** Words that read as a question or a request (for a turn that did not use her name). */
 function looksLikeRequest(text: string): boolean {
   const t = text.trim().toLowerCase();
@@ -344,6 +370,7 @@ export class NogitaEngine {
   private readonly agentCacheWarmup: boolean;
   private readonly research: ResearchFeatures;
   private readonly roomNoiseGuard: boolean;
+  private readonly swallowedQuestion: boolean;
   private team(): TeamTime {
     const tenant = this.dependencies.tenant;
     return { timeZone: tenant?.timeZone ?? UTC_TEAM.timeZone, weekStartsOn: tenant?.weekStartsOn ?? UTC_TEAM.weekStartsOn };
@@ -387,6 +414,7 @@ export class NogitaEngine {
     this.agentCacheWarmup = options.agentCacheWarmup !== false;
     this.research = options.research ?? {};
     this.roomNoiseGuard = options.roomNoiseGuard === true;
+    this.swallowedQuestion = options.swallowedQuestion === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -1185,6 +1213,32 @@ export class NogitaEngine {
     return pending.kind === 'conversation' && (pending.intervened === true || isBackchannel(text));
   }
 
+  /**
+   * A question to her was swallowed (NOGITA_SWALLOWED_QUESTION): she asks once, right away, instead of guessing at the
+   * fragment now or bringing it up after the room moved on. The lost words stay out of later turns, and the asker's next
+   * words are for her even without her name. A lead-in, so it is dropped rather than said late over the room.
+   */
+  private askWhatWasSwallowed(s: Session, actorId: string, lost?: ConversationTurn): void {
+    if (lost) lost.text = `${lost.text.slice(0, lost.text.indexOf(':') + 1)} [lost in crosstalk]`;
+    if (!s.floor || (s.swallowedAskAt !== undefined && this.now() - s.swallowedAskAt < 30_000)) return;
+    s.swallowedAskAt = this.now();
+    const question = 'Sorry, did someone ask me something?';
+    void s.floor.say(s.nextQuestionId++, question, { leadIn: true });
+    s.history.push({ role: 'assistant', text: `Nogita: ${question}` });
+    if (s.history.length > 24) s.history.shift();
+    s.pendingFollowUp = { actorId, request: '', question, expiresAt: this.now() + 15_000,
+      afterSequence: s.lastArrivalSequence, kind: 'question' };
+  }
+  /** Only her name came through: if no question follows in a few seconds, it was lost in the room. */
+  private askIfNothingFollows(sessionId: string, s: Session, actorId: string): void {
+    const calledAt = this.now();
+    this.schedule(() => {
+      if (this.sessions.get(sessionId) !== s || s.ending) return;
+      if ((s.heard?.get(actorId) ?? 0) > calledAt || s.questions.some(q => q.askedAt >= calledAt)) return;
+      this.askWhatWasSwallowed(s, actorId);
+    }, 4_000);
+  }
+
   /** Spoken in the meeting: several voices mixed into one transcript, chatter caught mid-sentence, or a question for the room. */
   private isRoomNoise(s: Session, text: string): boolean {
     return this.roomNoiseGuard && s.floor !== undefined && (looksLikeCrosstalk(text) || asksTheRoom(text));
@@ -1297,6 +1351,10 @@ export class NogitaEngine {
     if (!directlyAddressed && !continuation) {
       // A "yeah" while listening keeps the conversation open; anything else from the same person moves on.
       if (pending?.actorId === utterance.actor.id && !isBackchannel(current)) s.pendingFollowUp = undefined;
+      if (this.swallowedQuestion && s.floor && this.dependencies.agent && questionStartLost(current)) {
+        this.askWhatWasSwallowed(s, utterance.actor.id, historyEntry);
+        return 'ignored';
+      }
       if (this.dependencies.agent && this.dependencies.brain.assessContribution) {
         this.maybeAssessContribution(sessionId, s);
         return 'ignored';
@@ -1318,6 +1376,11 @@ export class NogitaEngine {
       if (!agentRequest.replace(/[^\p{L}\p{N}]/gu, '')) {
         // Only her name: the question is coming in the speaker's next words.
         s.calledBy = { actorId: utterance.actor.id, until: this.now() + 10_000 };
+        if (this.swallowedQuestion) this.askIfNothingFollows(sessionId, s, utterance.actor.id);
+        return 'ignored';
+      }
+      if (this.swallowedQuestion && directlyAddressed && !wholeRequest && lostAfterName(agentRequest)) {
+        this.askWhatWasSwallowed(s, utterance.actor.id, historyEntry);
         return 'ignored';
       }
       const key = questionKey(agentRequest);
