@@ -60,3 +60,24 @@ export class PhrasePicker {
     return choice;
   }
 }
+
+/**
+ * The first sentence or two of a long result, for speech (NOGITA_SHORT_SPOKEN_RESULTS): a mission's result read out in
+ * full ran past a minute. The caller sends the full text to chat. Text that is already short comes back as it is.
+ */
+export function briefly(text: string, maxSentences = 2, maxWords = 40): string {
+  const spoken = toSpoken(text);
+  const sentences = spoken.match(/[^.!?]+(?:[.!?]+|$)/g)?.map(sentence => sentence.trim()).filter(Boolean) ?? [];
+  const kept: string[] = [];
+  let words = 0;
+  for (const sentence of sentences) {
+    const count = sentence.split(/\s+/).length;
+    if (kept.length >= maxSentences || (kept.length && words + count > maxWords)) break;
+    kept.push(sentence);
+    words += count;
+  }
+  let out = kept.join(' ');
+  if (words > maxWords) out = `${out.split(/\s+/).slice(0, maxWords).join(' ').replace(/[,;:]$/, '')}…`;
+  const rest = kept.length < sentences.length || words > maxWords;
+  return rest ? `${out} The details are in the chat.` : out;
+}

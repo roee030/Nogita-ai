@@ -2,7 +2,7 @@ import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, C
 import { isExplicitPRRequest } from './policy.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
-import type { MissionReport } from './missions.ts';
+import type { DirectRequest, MissionReport } from './missions.ts';
 import { TEAM_PERIODS, UTC_TEAM, teamPeriod, type TeamPeriod, type TeamTime } from './team-time.ts';
 
 /** Maps spoken names to people a board can assign. Trusted configuration only, never model output. */
@@ -47,6 +47,8 @@ export interface ToolboxContext {
   missions?: MissionPort;
   /** Leaves the meeting once this reply is over. Live meetings only. */
   leave?: () => void;
+  /** With NOGITA_SHORT_SPOKEN_RESULTS in a voice meeting: a long result goes to chat whole, and the spoken reply stays short. */
+  postDetails?: (text: string) => Promise<void>;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -150,6 +152,8 @@ export interface MissionPort {
   decide(decision: 'approve' | 'decline' | 'resume' | 'cancel', id?: string, note?: string): Promise<{ ok: boolean; message: string }>;
   /** One mission in full, or the latest one this person asked for; undefined when none fits. */
   report?(id?: string): MissionReport | undefined;
+  /** With NOGITA_WHATS_LEFT_DIRECT: this person's recent requests done in the turn itself, newest first. */
+  recent?(): DirectRequest[];
 }
 
 /** Things the engine needs after the turn: the best source link and the receipts that were posted. */
@@ -742,22 +746,37 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     });
     if (context.missionStatus && missions.report) {
       const missionReport = missions.report.bind(missions);
-      add({ name: 'mission_status', description: 'What is left of a request you are working on in the background: what was done, what failed, what is still running or waiting for approval, with the sources it rests on. Use for "what\x27s left from what I asked?", "did all of it get done?", "what happened with the tasks I asked for?". Leave mission_id out for their latest one. Answer from this result only; say what failed and what is still open first.',
+      const recent = missions.recent?.bind(missions);
+      const now = context.now ?? Date.now;
+      add({ name: 'mission_status', description: 'What is left of a request you are working on in the background: what was done, what failed, what is still running or waiting for approval, with the sources it rests on, and what you did directly in the turn for a recent request. Use for "what\x27s left from what I asked?", "did all of it get done?", "what happened with the tasks I asked for?". Leave mission_id out for their latest one. Answer from this result only; say what failed and what is still open first.',
         input_schema: { type: 'object', properties: { mission_id: { type: 'string' } } } },
       async input => {
         const id = str(input.mission_id, 30)?.toUpperCase();
         const found = missionReport(id);
-        if (!found) return { content: id ? `No mission ${id} of yours.` : 'You have no mission I am working on or finished lately.' };
         const section = (title: string, items: string[]) => items.length ? [`${title}:`, ...items.map(item => `- ${item}`)] : [];
-        return { content: [`${found.id} [${found.status}] ${found.goal}`,
+        // A request handled in the turn itself left no mission; without these "what's left?" found nothing for it.
+        const direct = id ? [] : (recent?.() ?? []).slice(0, 3).flatMap(item => [
+          `Asked directly ${Math.max(1, Math.round((now() - item.at) / 60_000))} min ago and handled in that turn: "${item.request}"`,
+          ...section('Done', item.done), ...section('Not done', item.failed),
+          ...(item.done.length || item.failed.length ? [] : ['Nothing was changed.'])]);
+        if (!found && !direct.length) {
+          return { content: id ? `No mission ${id} of yours.` : 'You have no mission I am working on or finished lately.' };
+        }
+        const content = (found ? [`${found.id} [${found.status}] ${found.goal}`,
           ...section('Done', found.done), ...section('Failed', found.failed), ...section('Still open', found.open),
-          ...(found.done.length || found.failed.length || found.open.length ? [] : ['Nothing done or failed yet.']),
+          ...section('Not known whether it happened (the service restarted during it; check before trying again)', found.unknown),
+          ...(found.done.length || found.failed.length || found.open.length || found.unknown.length ? [] : ['Nothing done or failed yet.']),
           ...section('Found', found.findings),
           ...section('Sources', found.sources.map(source => `${source.label}${source.title ? ` (${source.title.slice(0, 80)})` : ''}${source.url ? `: ${source.url}` : ''}`)),
-        ].join('\n') };
+          ...direct] : direct).join('\n');
+        if (!context.postDetails) return { content };
+        // Read out in full this ran long; the whole report goes to chat and the spoken reply is the gist.
+        const posted = await context.postDetails(content).then(() => true, () => false);
+        return { content: `${content}\n\n${posted ? 'This full report is now in the meeting chat. ' : ''}` +
+          'Answer aloud in one or two short sentences: what failed or is still open first, then whether the rest is done. No lists, links or sources.' };
       });
     }
-    add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one. Only when they clearly said so. mission_id may be left out when only one mission fits.',
+    add({ name: 'decide_mission', description: 'The mission owner approves or declines the action a mission is waiting on, resumes a blocked mission (with their guidance as note), or cancels one, including an approval asked in an earlier meeting or chat. Only when they clearly said so. mission_id may be left out when only one mission fits.',
       input_schema: { type: 'object', properties: { decision: { type: 'string', enum: ['approve', 'decline', 'resume', 'cancel'] },
         mission_id: { type: 'string' }, note: { type: 'string' } }, required: ['decision'] } },
     async input => {
