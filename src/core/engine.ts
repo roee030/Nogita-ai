@@ -3,6 +3,7 @@ import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedErr
 import { runAgent, type AgentResult, type ChatModel } from './agent.ts';
 import { auditedPorts, buildToolbox, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
+import { ProviderUnavailableError } from './provider-health.ts';
 import { missionReport, OPEN_MISSION, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
 import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
@@ -1087,7 +1088,7 @@ export class NogitaEngine {
           ...(q ? { questionId: q.id } : {}), step, ms }),
         onStepComplete: (_step, ms) => stepMs.push(ms),
       }));
-    } catch {
+    } catch (error) {
       this.onActivity?.(sessionId, { kind: 'agent_trace', ...(q ? { questionId: q.id } : {}), model: agent.agentModel,
         ms: Math.max(0, this.now() - agentStartedAt), toolUses, stepMs, error: q?.abort.signal.aborted ? 'aborted' : 'model_error' });
       if (stillWorking !== undefined) this.cancel(stillWorking);
@@ -1096,6 +1097,13 @@ export class NogitaEngine {
       if (q) await Promise.race([q.gate, new Promise(resolve => q.abort.signal.addEventListener('abort', resolve, { once: true }))]);
       if (q?.abort.signal.aborted) { await settleSpeech(); return 'ignored'; }
       await settleSpeech();
+      // The model is down (its breaker is open): one short line, and no planner, which asks the same model.
+      if (!spoke && !report.wroteSomething && error instanceof ProviderUnavailableError) {
+        this.clearProgressTimer(s);
+        if (floor && q) await floor.say(q.id, error.spoken); else await this.speakOrChat(sessionId, s.meeting, error.spoken);
+        if (q) this.reportQuestion(sessionId, q, 'failed', `${error.providerName} is down`);
+        return 'answered';
+      }
       if (!spoke && !report.wroteSomething) {
         if (q) this.reportQuestion(sessionId, q, 'failed', 'model error; the planner answers instead');
         return undefined;
