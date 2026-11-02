@@ -161,3 +161,17 @@ Claude הוא הסוכן היחיד בריפו. צ'אט אחד רץ על כל ה
 | [ ] | P6-6 | Claude הוא הסוכן היחיד: בלי AGENTS.md ובלי חלוקת תחומים, `npm run board` רץ כברירת מחדל ל-Claude במצב שרשרת, וההוראות ב-CLAUDE.md ובלוח בהתאם | Claude | `CLAUDE.md`, `AGENTS.md`, `docs/TASK_BOARD.md`, `docs/WORK_PLAN.md`, `tools/board.ts` | - |
 | [ ] | P6-7 | onboarding לצוות פיילוט בלי שינוי בקוד: `npm run onboard` בודק קובץ tenant config, מחבר את הספקים דרך readiness ומדפיס מה חסר, עם מדריך קצר ב-`docs/ONBOARDING.md` | Claude | `tools/onboard.ts`, `src/app/tenant-config.ts`, `docs/ONBOARDING.md`, `tests/onboarding.test.ts` | - |
 | [ ] | P6-8 | צוות חיצוני אחד מחובר ומשתמש, מלווה ידנית, לפי `docs/ONBOARDING.md` (שער שלב 6) | רועי | | P6-7, P5-8 |
+
+### שלב 7 (ניסוי): Gemini מדבר, Nogita עושה
+
+התוכנית ב-`docs/GEMINI_VOICE_PLAN.md`. הכול מאחורי `NOGITA_VOICE_ENGINE=gemini`, כבוי, עד ההחלטה ב-P7-5.
+
+| | ID | משימה | באחריות | קבצים | תלוי ב |
+|---|---|---|---|---|---|
+| [ ] | P7-0 | תוכנית Gemini Live כשכבת השיחה, ומשימות שלב 7 בלוח | Claude | `docs/GEMINI_VOICE_PLAN.md`, `docs/TASK_BOARD.md` | - |
+| [ ] | P7-1 | מתאם Gemini Live (G1): חיבור ל-`gemini-3.8-live`, הגדרות (קול, VAD, תמלול נכנס ויוצא, הנחיה), מיקס של המיקרופונים פנימה, המרה מ-24kHz ל-16kHz החוצה, `interrupted` מרוקן את התור, session resumption ודחיסת הקשר, חיבור מחדש; `NOGITA_VOICE_ENGINE=gemini` כבוי ו-`GEMINI_PRIVACY_REVIEWED=true` חובה; בדיקות עם Gemini מזויף: פורמטים, קטיעה תוך 50 ms, סשן של 30 דקות ממשיך אחרי ניתוק | Claude | `src/app/gemini-voice.ts`, `tests/gemini-voice.test.ts`, `.env.example` | - |
+| [ ] | P7-2 | גשר ל-Nogita (G2): פונקציה אחת `nogita(request)` (NON_BLOCKING, WHEN_IDLE) מריצה את ה-engine עם הדובר שנקבע אצלנו לפי פעילות הקול והתמלול של Deepgram, לא לפי Gemini; דובר לא מורשה נחסם, שני דוברים בבת אחת חוסמים כתיבה, התשובה קצרה והפרטים בצ'אט; חיבור ב-server מאחורי ה-flag | Claude | `src/app/gemini-bridge.ts`, `src/app/server.ts`, `tests/gemini-bridge.test.ts` | P7-1 |
+| [ ] | P7-3 | voice lab עם Gemini (G3): `--voice-engine gemini` מריץ את אותם תרחישים ואותו ניקוד; 10 תרחישי התורות, 2 סבבים, בלי שגיאות הרצה | Claude | `tools/voice-lab/`, `tests/voice-lab.test.ts` | P7-2 |
+| [ ] | P7-4 | דוח החלטה (G4) ב-`docs/VOICE_ENGINE_DECISION.md`: Gemini מול v2 על 10 התרחישים: עיכוב, קטיעות, דיבור מעל אנשים, חצאי משפטים, שאלות שאבדו, תשובות שלא מהכלי, עלות לשעת פגישה, וכתיבות שלא ביקשו (חייב 0); המלצה | Claude | `docs/VOICE_ENGINE_DECISION.md` | P7-3 |
+| [ ] | P7-5 | פגישה אמיתית ב-Meet עם `NOGITA_VOICE_ENGINE=gemini` (G5), אותן בקשות כמו ב-1 בנובמבר, והחלטה אם עוברים | רועי | | P7-4 |
+| [ ] | P7-6 | אם Gemini נבחר (G6): ברירת מחדל לפגישות חדשות, Deepgram רק לזיהוי דובר, והשרשרת הישנה נשארת כגיבוי מאחורי flag | Claude | `src/app/server.ts`, `src/app/gemini-voice.ts`, `docs/ARCHITECTURE.md` | P7-5 |
