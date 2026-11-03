@@ -25,7 +25,7 @@ import { probeConnections } from './connection-probes.ts';
 import { SlackConversationRegistry, SlackMissionHandoffs } from './slack-conversations.ts';
 import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
-import { PresenceHub } from './presence.ts';
+import { PresenceHub, presencePageUrl as presenceUrl } from './presence.ts';
 import { buildTurnTrace, TurnLog, parseTurnLogMode } from './turn-log.ts';
 import { FileMissionStore } from './mission-store.ts';
 import { MissionRunner, OPEN_MISSION, type Mission } from '../core/missions.ts';
@@ -182,6 +182,10 @@ const participantsBySession = new Map<string, Map<string, boolean>>();
 // In Attendee meetings the presence page is her webcam (a normal participant tile) unless NOGITA_PRESENCE says
 // screenshare or off. Attendee mixes the (silent) page audio with our realtime speech, so the voice path is unchanged.
 const presenceMode = env.NOGITA_PRESENCE === 'off' ? undefined : env.NOGITA_PRESENCE === 'screenshare' ? 'screenshare' as const : 'camera' as const;
+if (env.NOGITA_PRESENCE_HD !== undefined && !['', 'true', 'false'].includes(env.NOGITA_PRESENCE_HD.trim())) {
+  throw new Error('NOGITA_PRESENCE_HD must be true or false');
+}
+const presenceHd = env.NOGITA_PRESENCE_HD?.trim() === 'true';
 const publicBaseUrl = (() => {
   try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
 })();
@@ -827,7 +831,7 @@ const server = createServer(async (req, res) => {
         : undefined;
       const realtimeAudioUrl = provider === 'attendee' && realtimeAudio ? realtimeAudio.register(payload.id) : undefined;
       const presencePageUrl = provider === 'attendee' && presenceMode && publicBaseUrl
-        ? `${publicBaseUrl}/presence/${encodeURIComponent(payload.id)}?k=${presence.open(payload.id)}${presenceMode === 'camera' ? '&view=camera' : ''}` : undefined;
+        ? presenceUrl(publicBaseUrl, payload.id, presence.open(payload.id), { mode: presenceMode, hd: presenceHd }) : undefined;
       const meeting = provider === 'recall'
         ? new RecallMeeting(payload.id, env.RECALL_API_KEY ?? '', env.RECALL_REGION ?? 'us-east-1')
         : provider === 'attendee'
