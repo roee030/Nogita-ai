@@ -185,6 +185,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_WRITE_INTENT: when the phrases say a write was not asked for, the model judges the meaning; unclear gets one
    *  yes/no question. Off unless set. */
   writeIntent?: boolean;
+  /** NOGITA_LISTEN_FIRST: she speaks only when the turn names her (or answers a question she just asked), in one short
+   *  sentence with the rest in chat; no one-to-one implicit address, no raised hand, no "did you ask me?". Off unless set. */
+  listenFirst?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -305,6 +308,8 @@ const MAX_HISTORY_LOOKUP_CHARS = 1_400;
 const MAX_SPOKEN_WORDS = 60;
 /** When they ask for detail ("in three sentences", "walk me through"), the cap gives the answer room. */
 const DETAIL_SPOKEN_WORDS = 120;
+/** NOGITA_LISTEN_FIRST: one short sentence aloud; the rest of the answer is in the chat. */
+const LISTEN_FIRST_SPOKEN_WORDS = 25;
 function wantsDetail(request: string): boolean {
   return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
 }
@@ -455,6 +460,7 @@ export class NogitaEngine {
   private readonly offerApproval: boolean;
   private readonly strictSpeechGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
+  private readonly listenFirst: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -515,6 +521,7 @@ export class NogitaEngine {
     this.offerApproval = options.offerApproval === true;
     this.strictSpeechGuard = options.strictSpeechGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
+    this.listenFirst = options.listenFirst === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -1061,7 +1068,7 @@ export class NogitaEngine {
     const said: Array<{ step: number; leadIn: boolean; outcome: Promise<string> }> = [];
     const leadInSteps = new Set<number>();
     let spokenWords = 0;
-    const maxWords = wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
+    const maxWords = this.listenFirst ? LISTEN_FIRST_SPOKEN_WORDS : wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
@@ -1507,7 +1514,9 @@ export class NogitaEngine {
       return 'ignored';
     }
 
-    const called = s.calledBy?.actorId === utterance.actor.id && this.now() <= s.calledBy.until;
+    // Listen-first: "Nogita," then "Dana, can you take the notes?" is for Dana, not her.
+    const called = s.calledBy?.actorId === utterance.actor.id && this.now() <= s.calledBy.until &&
+      !(this.listenFirst && addressesSomeoneElse(current, [...(s.names?.values() ?? [])]));
     s.calledBy = undefined;
     // The asker went on after a pause ("Nogita, can you check... um, which file starts the server?"): what she heard
     // first was only the start of the question, so that answer is dropped and the whole question answered.
@@ -1533,12 +1542,13 @@ export class NogitaEngine {
     const heard = s.heard ??= new Map();
     for (const [actorId, at] of heard) if (this.now() - at > 5 * 60_000) heard.delete(actorId);
     // Only one person and Nogita in the call: their questions are for her, name or not (the agent stays silent otherwise).
-    const oneToOne = !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && heard.size === 1 && looksLikeRequest(current);
+    const oneToOne = !this.listenFirst && !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && heard.size === 1 && looksLikeRequest(current);
     let pending = s.pendingFollowUp;
     if (oneToOne && !(pending?.actorId === utterance.actor.id && this.now() <= pending.expiresAt)) {
       pending = { actorId: utterance.actor.id, request: '', question: '', expiresAt: this.now() + 1, afterSequence: arrivalSequence - 1 };
     }
-    const continuation = !directlyAddressed && pending !== undefined &&
+    // Listen-first: without her name, only the reply to a question she asked is for her.
+    const continuation = !directlyAddressed && pending !== undefined && (!this.listenFirst || pending.kind === 'question') &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
       this.now() <= pending.expiresAt && !this.followUpRuledOut(s, pending, current, utterance.actor.id) &&
       // The agent can tell a real reply from unrelated talk (it answers with silence); the planner cannot.
@@ -1572,6 +1582,8 @@ export class NogitaEngine {
     if (!directlyAddressed && !continuation) {
       // A "yeah" while listening keeps the conversation open; anything else from the same person moves on.
       if (pending?.actorId === utterance.actor.id && !isBackchannel(current)) s.pendingFollowUp = undefined;
+      // Listen-first never speaks or signals unasked: no "did you ask me?", no raised hand.
+      if (this.listenFirst) return 'ignored';
       if (this.swallowedQuestion && s.floor && this.dependencies.agent && questionStartLost(current)) {
         this.askWhatWasSwallowed(s, utterance.actor.id, historyEntry);
         return 'ignored';
@@ -1597,10 +1609,10 @@ export class NogitaEngine {
       if (!agentRequest.replace(/[^\p{L}\p{N}]/gu, '')) {
         // Only her name: the question is coming in the speaker's next words.
         s.calledBy = { actorId: utterance.actor.id, until: this.now() + 10_000 };
-        if (this.swallowedQuestion) this.askIfNothingFollows(sessionId, s, utterance.actor.id);
+        if (this.swallowedQuestion && !this.listenFirst) this.askIfNothingFollows(sessionId, s, utterance.actor.id);
         return 'ignored';
       }
-      if (this.swallowedQuestion && directlyAddressed && !wholeRequest && lostAfterName(agentRequest)) {
+      if (this.swallowedQuestion && !this.listenFirst && directlyAddressed && !wholeRequest && lostAfterName(agentRequest)) {
         this.askWhatWasSwallowed(s, utterance.actor.id, historyEntry);
         return 'ignored';
       }

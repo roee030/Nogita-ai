@@ -35,7 +35,7 @@ const { values } = parseArgs({ options: {
   'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
   research: { type: 'boolean', default: false }, 'room-noise-guard': { type: 'boolean', default: false },
   'swallowed-question': { type: 'boolean', default: false }, 'two-speed': { type: 'boolean', default: false },
-  repeat: { type: 'string', default: '1' }, 'hold-pause-for-words': { type: 'boolean', default: false },
+  repeat: { type: 'string', default: '1' }, 'listen-first': { type: 'boolean', default: false }, 'hold-pause-for-words': { type: 'boolean', default: false },
 } });
 
 if (values.list) {
@@ -171,6 +171,7 @@ for (let repetition = 1; repetition <= repeat; repetition++) {
       eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
       // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).
       engineOptions: { handRaiseFallback: 'chat', research, roomNoiseGuard: noiseGuard, swallowedQuestion: askSwallowed,
+        ...(values['listen-first'] ? { listenFirst: true } : {}),
         ...(scenario.twoSpeed || allTwoSpeed ? { missions: missionRunner(), twoSpeed: true } : {}) } });
     const errors: string[] = [];
     let records: Awaited<ReturnType<typeof playScenario>> = [];
