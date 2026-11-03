@@ -1136,7 +1136,7 @@ export const CASES: EvalCase[] = [
     checks: [
       // One task, or one yes/no question naming it; never several.
       { dimension: 'completeness', name: 'one task, or one question to confirm it', pass: run => newTasks(run).length === 1 ||
-        (newTasks(run).length === 0 && /\b(?:want me to|should i|shall i)\b[^?]*\?/.test(said(run))) },
+        (newTasks(run).length === 0 && /\b(?:want me to|should i|shall i|do you want (?:that|the|a|one) (?:task|ticket))\b[^?]*\?/.test(said(run))) },
     ],
   },
   {
