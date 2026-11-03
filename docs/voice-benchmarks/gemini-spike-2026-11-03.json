@@ -1,0 +1,105 @@
+{
+  "english": {
+    "engine": "gemini-live",
+    "commit": "95cb776",
+    "date": "2026-11-03",
+    "runs": {
+      "backchannels": 5,
+      "barge-in": 5,
+      "cancel-stop": 5,
+      "crosstalk": 5,
+      "cut-off": 5,
+      "false-pause": 5,
+      "interrupt-resume": 5,
+      "long-pauses": 10,
+      "meeting-room": 5,
+      "other-people-conversation": 10,
+      "quiet-standup": 5,
+      "room-crosstalk": 10,
+      "stalled-speaker": 10,
+      "talk-over": 5
+    },
+    "turns": 375,
+    "questions": 160,
+    "wrongSpeakerAttributions": null,
+    "unauthorizedWrites": null,
+    "ungroundedSpokenClaims": null,
+    "taskSuccessRate": null,
+    "responsesToNonAddressed": 12,
+    "prematureResponses": 47,
+    "talkOver": 47,
+    "lostQuestions": 9,
+    "interruptionMs": {
+      "n": 15,
+      "p50": 300,
+      "p95": 616
+    },
+    "firstAudibleMs": {
+      "n": 146,
+      "p50": 1219,
+      "p95": 1839
+    },
+    "backchannels": {
+      "kept": 5,
+      "total": 20
+    },
+    "falsePauses": {
+      "paused": 0,
+      "total": 15
+    },
+    "hebrewQuality": null,
+    "usdPerMeetingHour": {
+      "estimated": 2.20001422567798,
+      "actual": null
+    },
+    "notes": [
+      "Gemini priced from token counts at third-party list prices (audio in $3, out $12, text in $0.75 per 1M; not confirmed on Google's page), plus Attendee and Deepgram STT per participant for identity, as production would keep them. No tools ran, so Claude's cost for answers is not included."
+    ]
+  },
+  "hebrew": {
+    "engine": "gemini-live-hebrew",
+    "commit": "95cb776",
+    "date": "2026-11-03",
+    "runs": {
+      "he-half-sentence": 5,
+      "he-mixed": 5,
+      "he-questions": 5
+    },
+    "turns": 45,
+    "questions": 30,
+    "wrongSpeakerAttributions": null,
+    "unauthorizedWrites": null,
+    "ungroundedSpokenClaims": null,
+    "taskSuccessRate": null,
+    "responsesToNonAddressed": 0,
+    "prematureResponses": 7,
+    "talkOver": 7,
+    "lostQuestions": 1,
+    "interruptionMs": {
+      "n": 0,
+      "p50": null,
+      "p95": null
+    },
+    "firstAudibleMs": {
+      "n": 29,
+      "p50": 1214,
+      "p95": 1805
+    },
+    "backchannels": {
+      "kept": 0,
+      "total": 0
+    },
+    "falsePauses": {
+      "paused": 0,
+      "total": 0
+    },
+    "hebrewQuality": null,
+    "usdPerMeetingHour": {
+      "estimated": 2.20001422567798,
+      "actual": null
+    },
+    "notes": [
+      "Gemini priced from token counts at third-party list prices (audio in $3, out $12, text in $0.75 per 1M; not confirmed on Google's page), plus Attendee and Deepgram STT per participant for identity, as production would keep them. No tools ran, so Claude's cost for answers is not included."
+    ]
+  }
+}
