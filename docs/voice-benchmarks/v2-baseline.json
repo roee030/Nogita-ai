@@ -1,0 +1,57 @@
+{
+  "engine": "cascaded-v2",
+  "commit": "95cb776",
+  "date": "2026-11-03",
+  "runs": {
+    "quiet-standup": 5,
+    "barge-in": 5,
+    "false-pause": 5,
+    "crosstalk": 5,
+    "interrupt-resume": 5,
+    "cancel-stop": 5,
+    "talk-over": 5,
+    "backchannels": 5,
+    "meeting-room": 5,
+    "cut-off": 5,
+    "other-people-conversation": 10,
+    "stalled-speaker": 10,
+    "room-crosstalk": 10,
+    "long-pauses": 10
+  },
+  "turns": 375,
+  "questions": 160,
+  "wrongSpeakerAttributions": null,
+  "unauthorizedWrites": null,
+  "ungroundedSpokenClaims": null,
+  "taskSuccessRate": null,
+  "responsesToNonAddressed": 8,
+  "prematureResponses": 19,
+  "talkOver": 20,
+  "lostQuestions": 5,
+  "interruptionMs": {
+    "n": 13,
+    "p50": 244,
+    "p95": 329
+  },
+  "firstAudibleMs": {
+    "n": 155,
+    "p50": 2434,
+    "p95": 5537
+  },
+  "backchannels": {
+    "kept": 19,
+    "total": 19
+  },
+  "falsePauses": {
+    "paused": 9,
+    "total": 14
+  },
+  "hebrewQuality": null,
+  "usdPerMeetingHour": {
+    "estimated": 1.7276818698033194,
+    "actual": null
+  },
+  "notes": [
+    "Priced with SessionUsageRegistry (the code behind /api/sessions/:id/usage): Attendee, Deepgram STT and TTS, Anthropic."
+  ]
+}
