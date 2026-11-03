@@ -59,3 +59,109 @@ test('the toolbox lets the "tusks" request create tasks only with the flag', asy
     assert.equal(board.tasks.length, noisyTaskRequests ? 1 : 0, `noisy=${noisyTaskRequests}: ${outcome.content}`);
   }
 });
+
+// P5-15: a yes to her own offer approves exactly that write (live Meet 2026-11-01).
+import { NogitaEngine, offeredWrite } from '../src/core/engine.ts';
+import { DemoBrain, DemoMeeting } from '../src/adapters/demo.ts';
+import { IdentityDirectory } from '../src/core/identity.ts';
+import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
+
+type OfferStep = { text?: string; tools?: Array<{ name: string; input: Record<string, unknown> }> };
+class OfferModel implements ChatModel {
+  readonly agentModel = 'scripted';
+  readonly toolResults: string[] = [];
+  private index = 0;
+  constructor(private readonly steps: OfferStep[]) {}
+  async streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
+    const last = request.messages.at(-1);
+    if (last && Array.isArray(last.content)) {
+      for (const item of last.content) if (item.type === 'tool_result') this.toolResults.push(String(item.content));
+    }
+    const step = this.steps[this.index++] ?? { text: '' };
+    const content: AgentContent[] = [];
+    if (step.text) { onText(step.text); content.push({ type: 'text', text: step.text }); }
+    for (const [n, tool] of (step.tools ?? []).entries()) content.push({ type: 'tool_use', id: `t${this.index}-${n}`, name: tool.name, input: tool.input });
+    return { content, stopReason: step.tools?.length ? 'tool_use' : 'end_turn' };
+  }
+}
+
+const roee = { id: 'roee', displayName: 'Roee Angel', verified: true };
+const MEET_OFFER = "Oh, I didn't create any jira tasks. My last attempt was rejected, so nothing was written to the board. Want me to try again with one task covering today's merged PRs?";
+
+function offerFixture(steps: OfferStep[], offerApproval: boolean) {
+  const model = new OfferModel(steps);
+  const board = new DemoBoard();
+  const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(), policy: new AllowlistPolicy(new Set(['roee'])),
+    agent: model, people: new IdentityDirectory([{ id: 'roee', displayName: 'Roee Angel' }]) },
+  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 20, talkingMs: 20 }, offerApproval });
+  const utter = (text: string, eventId: string) => engine.onUtterance('s', { text, eventId, actor: roee });
+  return { engine, board, model, utter, meeting: new DemoMeeting('m') };
+}
+
+test('offeredWrite reads the offer from the Meet, its count, and offers without a task', () => {
+  assert.deepEqual(offeredWrite(MEET_OFFER), { request: "create one task covering today's merged PRs", tasks: 1 });
+  assert.equal(requestsTaskWrite(offeredWrite(MEET_OFFER)!.request), true);
+  assert.deepEqual(offeredWrite('Want me to open two tasks, one per bug?'), { request: 'open two tasks, one per bug', tasks: 2 });
+  assert.equal(offeredWrite('Do you want me to open a Jira task for each one?')!.tasks, undefined);
+  assert.equal(offeredWrite('Want me to read the file?'), undefined);
+  assert.equal(offeredWrite('Which PRs do you mean?'), undefined);
+});
+
+test('"Yeah, do it" to her offer of one task opens it (live Meet 2026-11-01)', async () => {
+  const f = offerFixture([
+    { text: MEET_OFFER },
+    { tools: [{ name: 'create_task', input: { title: "Today's merged PRs", description: '36 PRs merged today' } }] },
+    { text: 'Done.' },
+  ], true);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, did you create all the tasks in jira?', '1');
+  await f.utter('Yeah, do it.', '2');
+  assert.equal(f.board.tasks.length, 1);
+});
+
+test('without NOGITA_OFFER_APPROVAL the same yes stays refused, as in the Meet', async () => {
+  const f = offerFixture([
+    { text: MEET_OFFER },
+    { tools: [{ name: 'create_task', input: { title: "Today's merged PRs", description: 'd' } }] },
+    { text: 'Blocked.' },
+  ], false);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, did you create all the tasks in jira?', '1');
+  await f.utter('Yeah, do it.', '2');
+  assert.equal(f.board.tasks.length, 0);
+});
+
+test('a yes to one offered task does not approve several', async () => {
+  const f = offerFixture([
+    { text: MEET_OFFER },
+    { tools: [{ name: 'create_task', input: { title: 'PR 70', description: 'd' } }, { name: 'create_task', input: { title: 'PR 71', description: 'd' } }] },
+    { text: 'Hm.' },
+  ], true);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, did you create all the tasks in jira?', '1');
+  await f.utter('Yeah, do it.', '2');
+  assert.equal(f.board.tasks.length, 1);
+  assert.match(f.model.toolResults.join('\n'), /said yes to 1 task\(s\) you offered/);
+});
+
+test('a bare yes with no offer before it opens nothing', async () => {
+  const f = offerFixture([
+    { text: 'Yes, 36 PRs were merged today.' },
+    { tools: [{ name: 'create_task', input: { title: 'x', description: 'd' } }] },
+    { text: 'Blocked.' },
+  ], true);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, did we push to main today?', '1');
+  await f.utter('Yeah, do it.', '2');
+  assert.equal(f.board.tasks.length, 0);
+});
+
+test('"turn them into Jira tasks" reads as a request only with the flag', () => {
+  for (const text of ['Turn them into Jira tasks.', "Combine today's PRs into one task.", 'Can you turn those into tickets?',
+    'convert the action items into tasks']) {
+    assert.equal(requestsTaskWrite(text, { into: true }), true, text);
+    assert.equal(requestsTaskWrite(text), false, text);
+  }
+  for (const text of ['How do we turn PRs into tasks?', 'What did we merge into main today?', 'combine the two PRs into one branch'])
+    assert.equal(requestsTaskWrite(text, { into: true }), false, text);
+});

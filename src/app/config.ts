@@ -108,6 +108,14 @@ export function noisyTaskRequests(env: NodeJS.ProcessEnv = process.env): boolean
   return value === 'true';
 }
 
+/** NOGITA_OFFER_APPROVAL: 'true' lets a yes to her offer approve the write it named (capped at its count) and reads "turn
+ *  them into Jira tasks" as a request; blank or 'false' leaves it off. */
+export function offerApproval(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_OFFER_APPROVAL?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_OFFER_APPROVAL must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {

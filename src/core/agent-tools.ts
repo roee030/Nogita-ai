@@ -53,6 +53,10 @@ export interface ToolboxContext {
   taskFromTopic?: boolean;
   /** NOGITA_NOISY_TASK_REQUESTS: the explicit-request check reads through fillers, a misheard task noun and Hebrew. */
   noisyTaskRequests?: boolean;
+  /** NOGITA_OFFER_APPROVAL: "turn them into Jira tasks" and "combine the PRs into one task" read as explicit requests. */
+  offerApproval?: boolean;
+  /** A yes to her offer of this many tasks approves that many and no more in this turn. */
+  offeredTasks?: number;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -197,7 +201,7 @@ function denoise(text: string): string {
  * A direct request to make a ticket. Wider than the legacy planner check, still deterministic. With `noisy`
  * (NOGITA_NOISY_TASK_REQUESTS) it also reads a request through fillers, a misheard task noun and Hebrew.
  */
-export function requestsTaskWrite(request: string, options: { noisy?: boolean } = {}): boolean {
+export function requestsTaskWrite(request: string, options: { noisy?: boolean; into?: boolean } = {}): boolean {
   // A follow-up carries the earlier request on its own line ("what did we merge today?" / "open a task for each
   // one" / "Yes, please"): any line may be the ask, and a question on one line must not veto another.
   if (request.includes('\n')) return request.split('\n').some(line => requestsTaskWrite(line, options));
@@ -209,6 +213,8 @@ export function requestsTaskWrite(request: string, options: { noisy?: boolean } 
   if (options.noisy && new RegExp(`${HE_CREATE}.*${HE_TASK}`).test(t)) return true;
   // "open" right before a plural noun after a determiner is an adjective: "the open issues", "any open tasks".
   const cleaned = t.replace(/\b(?:the|any|all|our|their|my|your|which|what|many|more|of|are|is|for|with)\s+open\s+(?:tasks|tickets|issues|bugs|stories|items)\b/g, '');
+  // With `into` (NOGITA_OFFER_APPROVAL): "turn them into Jira tasks", "combine today's PRs into one task" (live Meet).
+  if (options.into && new RegExp(`\\b(?:turn|combine|convert|group|merge|split|break|make)\\b.{0,80}?\\b(?:into|as)\\s+(?:(?:a|an|one|two|three|four|five|\\d+|separate|single|new|jira|board)\\s+){0,3}${noun}\\b`).test(cleaned)) return true;
   return new RegExp(`\\b(?:create|open|add|file|make|log|raise|write up|new)\\s+(?:[\\w'-]+\\s+){0,5}?${noun}\\b`).test(cleaned) ||
     // "And open one for me to write tests for ...", right after a task was opened.
     /\b(?:create|open|add|file|log|make)\s+(?:another\s+)?one\s+(?:for|to|about|on)\b/.test(cleaned) ||
@@ -538,6 +544,14 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
 
   if (mayWrite) {
     /** One task: resolves its owner and writes it under an index-based key. Permission and the write cap are the caller's. */
+    // A yes to "one task covering today's PRs?" approves one task: more needs its own request.
+    let offeredLeft = context.offeredTasks;
+    const pastOffer = (count: number): string | undefined => {
+      if (offeredLeft === undefined) return undefined;
+      if (count > offeredLeft) return `Not created: they said yes to ${context.offeredTasks} task(s) you offered, and this would make more. Ask before creating more.`;
+      offeredLeft -= count;
+      return undefined;
+    };
     const createOne = async (input: Record<string, unknown>): Promise<ItemOutcome> => {
       const title = str(input.title, 200);
       const description = str(input.description, 4000) ?? '';
@@ -647,10 +661,12 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
         ...boardProperty }, required: ['title', 'description'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true })) {
+      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true })) {
         return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
       }
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      const pastOffered = pastOffer(1);
+      if (pastOffered) return { content: pastOffered, isError: true };
       const outcome = await createOne(input);
       if (outcome.isError) return { content: outcome.content, isError: true };
       writes++;
@@ -662,12 +678,14 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' }, ...boardProperty },
         required: ['title', 'description'] } } }, required: ['tasks'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true })) {
+      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true })) {
         return { content: 'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.', isError: true };
       }
       const list = batchItems(input.tasks);
       if (typeof list === 'string') return { content: `tasks: ${list}`, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      const pastOffered = pastOffer(list.length);
+      if (pastOffered) return { content: pastOffered, isError: true };
       writes++;
       return runBatch(list, createOne, 'created');
     }, true);
