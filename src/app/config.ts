@@ -124,6 +124,14 @@ export function strictSpeechGuard(env: NodeJS.ProcessEnv = process.env): boolean
   return value === 'true';
 }
 
+/** NOGITA_WRITE_INTENT: 'true' lets the model judge whether a write was asked for when no phrase matched, with one yes/no
+ *  question when unclear; blank or 'false' leaves it off. */
+export function writeIntent(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_WRITE_INTENT?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_WRITE_INTENT must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {
