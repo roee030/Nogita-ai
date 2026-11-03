@@ -24,7 +24,9 @@ export type LabEventType =
   /** Flux early end-of-turn (an answer may start speculatively) and the speaker going on after it. */
   | 'stt_eager' | 'stt_resumed' | 'eot_timing' | 'model_first_text' | 'interrupt' | 'playback_pause' | 'playback_resume' | 'playback_start' | 'playback_end' | 'voice_activity' | 'playback_received'
   /** A question's status changed in the engine (detail: "#id status: note"). */
-  | 'question';
+  | 'question'
+  /** At stop: what the session used (detail: JSON of Deepgram bytes and characters, AI dollars, duration), for cost. */
+  | 'usage';
 
 export interface LabEvent { t: number; type: LabEventType; participant?: string; text?: string; detail?: string;
   cause?: 'voice' | 'command'; latencyMs?: number; outcome?: string;
@@ -130,6 +132,8 @@ export class VoiceRig {
   private pump?: ReturnType<typeof setInterval>;
   private mics = new Map<string, MicState>();
   private readonly sessionId = `voice-lab-${randomBytes(4).toString('hex')}`;
+  /** Deepgram usage as the hub reports it to production's session usage (P7-1's frozen v2 cost baseline). */
+  private readonly usage = { sttBytes: 0, ttsCharacters: 0 };
   private readonly botId = `bot_voicelab${randomBytes(4).toString('hex')}`;
   private readonly frameSamples: number;
   /** performance.now() of mic sample 0. */
@@ -205,6 +209,10 @@ export class VoiceRig {
         });
         return socket;
       }),
+      onUsage: (_sessionId, usage) => {
+        this.usage.sttBytes += usage.sttBytes ?? 0;
+        this.usage.ttsCharacters += usage.ttsCharacters ?? 0;
+      },
       onTranscript: async (sessionId, participantUuid, text, _identity, recognition) => {
         const actor = actors.get(participantUuid);
         const inputTurnIds = recognition?.inputTurnId ? [recognition.inputTurnId] : undefined;
@@ -355,6 +363,9 @@ export class VoiceRig {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.pump) clearInterval(this.pump);
+    const ai = this.options.dependencies.brain.usageFor?.(this.sessionId);
+    this.log('usage', { detail: JSON.stringify({ ...this.usage, aiUsd: ai?.estimatedUsd ?? 0, aiCalls: ai?.modelCalls ?? 0,
+      durationMs: Math.round(performance.now() - this.t0) }) });
     this.client?.close();
     await this.engine.endSession(this.sessionId).catch(() => undefined);
     this.router.endSession(this.sessionId);
