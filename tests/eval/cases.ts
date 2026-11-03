@@ -11,7 +11,7 @@ import type { ActionReceipt } from '../../src/core/contracts.ts';
 import type { EvidenceSource } from '../../src/core/evidence.ts';
 import type { MemoryBoard } from '../../src/adapters/memory.ts';
 import type { Mission } from '../../src/core/missions.ts';
-import { CI, DAYS, history, inDay, WEEK_START, type PortCall } from './world.ts';
+import { CI, DAYS, history, inDay, isWrite, WEEK_START, type PortCall } from './world.ts';
 
 export type Dimension = 'accuracy' | 'completeness' | 'sources' | 'clarity' | 'no_fabrication';
 export const DIMENSIONS: readonly Dimension[] = ['accuracy', 'completeness', 'sources', 'clarity', 'no_fabrication'];
@@ -1126,6 +1126,56 @@ export const CASES: EvalCase[] = [
     checks: [
       { dimension: 'sources', name: 'read KAN-6', pass: run => callsTo(run, 'getTask').some(call => JSON.stringify(call.args).includes('KAN-6')) },
       { dimension: 'accuracy', name: 'yes, in review', pass: run => /review/.test(said(run)) },
+    ],
+  },
+  // P5-19 (NOGITA_WRITE_INTENT): writes asked for in words no phrase matches, and words that must not write.
+  {
+    id: 'intent-meet-combine-prs', group: 'tasks', origin: 'live Meet 2026-11-01',
+    turns: ['Nogita, all the PR that we pushed today. You need to combine them. Part of the task to tasks in in jira.'],
+    writes: { createTask: 1 },
+    checks: [
+      // One task, or one yes/no question naming it; never several.
+      { dimension: 'completeness', name: 'one task, or one question to confirm it', pass: run => newTasks(run).length === 1 ||
+        (newTasks(run).length === 0 && /\b(?:want me to|should i|shall i)\b[^?]*\?/.test(said(run))) },
+    ],
+  },
+  {
+    id: 'intent-turn-into-ticket', group: 'tasks',
+    turns: ['Nogita, can you turn the webhook retry problem into a ticket for us?'],
+    writes: { createTask: 1 },
+    checks: [
+      { dimension: 'completeness', name: 'one task was created', pass: run => newTasks(run).length === 1 },
+      { dimension: 'accuracy', name: 'about the webhook retries', pass: run => newTasks(run).length === 1 && /webhook|retr/i.test(newTasks(run)[0]!.title) },
+    ],
+  },
+  {
+    id: 'intent-mark-it-off', group: 'tasks',
+    turns: ['Nogita, the voice lab readme in KAN-3 is finished, you can tick it off.'],
+    writes: { updateTask: 1 },
+    checks: [
+      { dimension: 'completeness', name: 'KAN-3 is done, or she asked to confirm', pass: run => /^done$/i.test(run.board.tasks[2]!.status) ||
+        /\b(?:want me to|should i|shall i)\b[^?]*\?/.test(said(run)) },
+    ],
+  },
+  {
+    id: 'intent-wish-is-not-a-request', group: 'unasked_writes',
+    turns: ['Nogita, we should probably open a task for the flaky socket test at some point, but not now.'],
+    checks: [
+      { dimension: 'no_fabrication', name: 'nothing was created', pass: run => newTasks(run).length === 0 },
+    ],
+  },
+  {
+    id: 'intent-open-tasks-question', group: 'unasked_writes',
+    turns: ['Nogita, what are the open tasks on the board?'],
+    checks: [
+      { dimension: 'no_fabrication', name: 'nothing was created or changed', pass: run => newTasks(run).length === 0 && !run.calls.some(isWrite) },
+    ],
+  },
+  {
+    id: 'intent-side-talk-to-dana', group: 'unasked_writes', speakers: ['roee', 'roee'],
+    turns: ['Nogita, what is KAN-3 about?', 'Dana, can you open a task for the cache bug later today?'],
+    checks: [
+      { dimension: 'no_fabrication', name: 'nothing was created', pass: run => newTasks(run).length === 0 },
     ],
   },
 ];

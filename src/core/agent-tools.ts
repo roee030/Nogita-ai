@@ -1,5 +1,6 @@
 import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, RepoActivity, ScreenCard, TaskSearch } from './contracts.ts';
 import { isExplicitPRRequest } from './policy.ts';
+import type { WriteIntentJudge, WriteKind } from './write-intent.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
 import type { DirectRequest, MissionReport } from './missions.ts';
@@ -57,6 +58,10 @@ export interface ToolboxContext {
   offerApproval?: boolean;
   /** A yes to her offer of this many tasks approves that many and no more in this turn. */
   offeredTasks?: number;
+  /** NOGITA_WRITE_INTENT: asked when the phrases say a write was not asked for; it reads the meaning instead. */
+  writeIntent?: WriteIntentJudge;
+  /** Her message just before this request, when the person is answering it (for the write-intent judge). */
+  lastMessage?: string;
   /** The team's time zone and week start, for "today" and "this week". UTC when not configured. */
   team?: TeamTime;
   now?: () => number;
@@ -172,6 +177,7 @@ export interface ToolboxReport {
 }
 
 const MAX_WRITES_PER_TURN = 5;
+const UNCLEAR = (confirm: string) => `Not done yet: it is not clear they asked for this. Ask exactly this one short question and wait for their yes: "${confirm}"`;
 const MAX_BATCH_ITEMS = 10;
 
 /** A question about existing things ("what are the open issues?") is not a command, unless it is a polite request. */
@@ -345,6 +351,14 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const { board, chat } = ports;
   let writes = 0;
   let taskIndex = 0;
+  /** The refusal for a write nobody asked for, or undefined when it was asked: the phrases first, then the judge. */
+  const notAsked = async (kind: WriteKind, phrased: boolean, proposed: string, refusal: string): Promise<string | undefined> => {
+    if (context.writesApproved || phrased) return undefined;
+    if (!context.writeIntent) return refusal;
+    const verdict = await context.writeIntent.judge({ kind, proposed, request: context.request, speaker: context.actor.displayName,
+      ...(context.lastMessage ? { lastMessage: context.lastMessage } : {}) }).catch(() => ({ verdict: 'not_asked' as const }));
+    return verdict.verdict === 'asked' ? undefined : verdict.verdict === 'unclear' ? UNCLEAR(verdict.confirm) : refusal;
+  };
   const specs: AgentToolSpec[] = [];
   const handlers = new Map<string, (input: Record<string, unknown>) => Promise<ToolOutcome>>();
   const writeTools = new Set<string>();
@@ -604,6 +618,11 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       return [has('status', 60) && !asked.status && 'a status change', has('assignee', 100) && !asked.assignee && 'a new owner',
         has('comment', 3000) && !asked.comment && 'a comment'].filter((item): item is string => Boolean(item));
     };
+    /** The changes as the write-intent judge reads them: "KAN-12: status Done; comment ...". */
+    const describeUpdates = (updates: ReadonlyArray<Record<string, unknown>>): string => updates.map(update => [
+      str(update.key, 40) ?? '?', str(update.status, 60) && `status ${str(update.status, 60)}`,
+      str(update.assignee, 100) && `owner ${str(update.assignee, 100)}`, str(update.comment, 3000) && `comment "${str(update.comment, 200)}"`,
+    ].filter(Boolean).join(': ')).join('; ');
     /** One change to an existing task, keyed by its content. Permission and the write cap are the caller's. */
     const updateOne = async (input: Record<string, unknown>): Promise<ItemOutcome> => {
       const key = str(input.key, 40)?.toUpperCase();
@@ -661,9 +680,10 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' },
         ...boardProperty }, required: ['title', 'description'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true })) {
-        return { content: 'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.', isError: true };
-      }
+      const refused = await notAsked('create_task', requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true }),
+        `create 1 task: ${str(input.title, 200) ?? '(no title)'}`,
+        'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.');
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
       const pastOffered = pastOffer(1);
       if (pastOffered) return { content: pastOffered, isError: true };
@@ -678,11 +698,12 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         properties: { title: { type: 'string' }, description: { type: 'string' }, assignee: { type: 'string' }, ...boardProperty },
         required: ['title', 'description'] } } }, required: ['tasks'] } },
     async input => {
-      if (!context.writesApproved && !requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true })) {
-        return { content: 'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.', isError: true };
-      }
       const list = batchItems(input.tasks);
       if (typeof list === 'string') return { content: `tasks: ${list}`, isError: true };
+      const refused = await notAsked('create_task', requestsTaskWrite(context.request, { noisy: context.noisyTaskRequests === true, into: context.offerApproval === true }),
+        `create ${list.length} tasks: ${list.map(item => str(item.title, 200) ?? '(no title)').join('; ')}`,
+        'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.');
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
       const pastOffered = pastOffer(list.length);
       if (pastOffered) return { content: pastOffered, isError: true };
@@ -699,7 +720,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       if (!key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) return { content: 'key must look like ABC-123', isError: true };
       if (!str(input.status, 60) && !str(input.comment, 3000) && !str(input.assignee, 100)) return { content: 'Nothing to change: give a status, an assignee or a comment.', isError: true };
       const extra = unaskedChanges([input]);
-      if (extra.length) return { content: `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
+      const refused = extra.length ? await notAsked('update_task', false, describeUpdates([input]),
+        `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`) : undefined;
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
       const outcome = await updateOne(input);
       if (outcome.isError) return { content: outcome.content, isError: true };
@@ -716,7 +739,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const list = batchItems(input.updates);
       if (typeof list === 'string') return { content: `updates: ${list}`, isError: true };
       const extra = unaskedChanges(list);
-      if (extra.length) return { content: `Nothing changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`, isError: true };
+      const refused = extra.length ? await notAsked('update_task', false, describeUpdates(list),
+        `Nothing changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`) : undefined;
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
       writes++;
       return runBatch(list, updateOne, 'changed');
@@ -724,9 +749,10 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     if (chat) add({ name: 'post_message', description: `Post a message to a ${chat.name} channel. Only when the person explicitly asked you to post/send/share something there. Write the message itself, ready to send.`,
       input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] } },
     async input => {
-      if (!context.writesApproved && !requestsChatPost(context.request)) {
-        return { content: 'Not posted: the request does not explicitly ask to send a message. Ask the person to confirm with a direct request.', isError: true };
-      }
+      const refused = await notAsked('post_message', requestsChatPost(context.request),
+        `post to ${str(input.channel, 100) ?? '(no channel)'}: ${str(input.text, 300) ?? ''}`,
+        'Not posted: the request does not explicitly ask to send a message. Ask the person to confirm with a direct request.');
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not posted: too many writes in one request.', isError: true };
       const channel = str(input.channel, 100);
       const text = str(input.text, 3000);
@@ -751,9 +777,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     add({ name: 'open_draft_pr', description: `Open a draft pull request on ${drafts.name}: a new branch with a note describing the change, for a developer to build on. Only when the person explicitly asked for a PR or pull request in this request. You do not write the code. Title it like a commit; in the description say what should change, why, where in the code (files you found), and how to know it works, from the conversation.`,
       input_schema: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title', 'description'] } },
     async input => {
-      if (!context.writesApproved && !isExplicitPRRequest(context.request)) {
-        return { content: 'Not opened: the request does not explicitly ask for a pull request. Ask the person to confirm with a direct request.', isError: true };
-      }
+      const refused = await notAsked('open_draft_pr', isExplicitPRRequest(context.request), `open a draft pull request: ${str(input.title, 200) ?? '(no title)'}`,
+        'Not opened: the request does not explicitly ask for a pull request. Ask the person to confirm with a direct request.');
+      if (refused) return { content: refused, isError: true };
       if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not opened: too many writes in one request.', isError: true };
       const title = str(input.title, 200);
       const description = str(input.description, 6000);

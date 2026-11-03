@@ -29,7 +29,7 @@ import { runCase, scoreCase, summarize, type CaseScore, type Summary } from './h
 const { values } = parseArgs({ options: {
   case: { type: 'string', multiple: true }, group: { type: 'string', multiple: true }, repeat: { type: 'string', default: '1' },
   json: { type: 'string' }, 'no-json': { type: 'boolean', default: false }, research: { type: 'boolean', default: false }, routing: { type: 'string' },
-  'task-from-topic': { type: 'boolean', default: false }, 'noisy-task-requests': { type: 'boolean', default: false },
+  'task-from-topic': { type: 'boolean', default: false }, 'noisy-task-requests': { type: 'boolean', default: false }, 'write-intent': { type: 'boolean', default: false },
 } });
 loadDotEnv();
 const key = process.env.ANTHROPIC_API_KEY?.trim();
@@ -53,6 +53,7 @@ const routingModel = process.env.ANTHROPIC_ROUTING_MODEL?.trim() || 'claude-sonn
 const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(process.env);
 const taskFromTopic = values['task-from-topic'] || process.env.NOGITA_TASK_FROM_TOPIC === 'true';
 const noisyTaskRequests = values['noisy-task-requests'] || process.env.NOGITA_NOISY_TASK_REQUESTS === 'true';
+const writeIntent = values['write-intent'] || process.env.NOGITA_WRITE_INTENT === 'true';
 const researchOn = Object.entries(research).filter(([, on]) => on).map(([feature]) => feature);
 
 interface Pass { routing: boolean; model: string; summary: Summary; ms: number; scores: CaseScore[]; runs: unknown[] }
@@ -68,7 +69,7 @@ async function runAll(routed: boolean): Promise<Pass> {
   const began = Date.now();
   for (const item of cases) {
     for (let attempt = 0; attempt < repeat; attempt++) {
-      const run = await runCase(model, item, { research, taskFromTopic, noisyTaskRequests });
+      const run = await runCase(model, item, { research, taskFromTopic, noisyTaskRequests, writeIntent });
       const score = scoreCase(item, run);
       scores.push(score);
       runs.push({ id: item.id, turns: run.turns, tools: run.tools, stops: run.stops, writes: run.calls.filter(call =>

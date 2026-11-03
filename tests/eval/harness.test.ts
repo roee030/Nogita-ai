@@ -25,9 +25,9 @@ class ScriptedModel implements ChatModel {
 const byId = (id: string): EvalCase => CASES.find(item => item.id === id)!;
 const failed = (score: ReturnType<typeof scoreCase>) => score.checks.filter(check => !check.pass).map(check => check.name);
 
-test('the set has 100 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research, missions, noisy transcripts and several speakers', () => {
-  assert.equal(CASES.length, 100);
-  assert.equal(new Set(CASES.map(item => item.id)).size, 100);
+test('the set has 106 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research, missions, noisy transcripts, several speakers and write intent (P5-19)', () => {
+  assert.equal(CASES.length, 106);
+  assert.equal(new Set(CASES.map(item => item.id)).size, 106);
   const groups = (group: EvalCase['group']) => CASES.filter(item => item.group === group).length;
   assert.deepEqual([groups('research'), groups('cross_source'), groups('ci'), groups('missions'), groups('noisy_transcript'), groups('multi_speaker')], [12, 10, 8, 16, 8, 6]);
   const missions = CASES.filter(item => item.missions);
@@ -35,6 +35,7 @@ test('the set has 100 cases with unique ids: the two live failures, 2 to 10 acti
   assert.ok(missions.some(item => item.turns.length >= 3));
   assert.ok(byId('live-three-tasks').origin && byId('live-repo-today').origin);
   for (const item of CASES) assert.ok(item.checks.length > 0, item.id);
+  assert.equal(CASES.filter(item => item.id.startsWith('intent-')).length, 6);
   const actions = CASES.map(item => Object.values(item.writes ?? {}).reduce((sum, count) => sum + count, 0));
   assert.equal(Math.min(...actions.filter(count => count > 1)), 2);
   assert.equal(Math.max(...actions), 10);
