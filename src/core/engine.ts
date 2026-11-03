@@ -14,6 +14,7 @@ import { briefly, PhrasePicker, toSpoken } from './spoken.ts';
 import { stripChatClaims, stripPlanningAloud, stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
 import { ModelWriteIntentJudge, type WriteIntentJudge } from './write-intent.ts';
 import { buildRecap, formatRecap, isRecapRequest, parseApproval, type MeetingRecap } from './recap.ts';
+import { followUp } from './follow-up.ts';
 import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
@@ -196,6 +197,8 @@ export interface NogitaEngineOptions {
   /** NOGITA_MEETING_RECAP: "Nogita, summarize" and the end of the meeting post a recap with numbered proposed tasks;
    *  only "approve 1 and 3" (or "approve all") from someone allowed to write opens them. Off unless set. */
   meetingRecap?: boolean;
+  /** NOGITA_FOLLOW_UP: on joining, post in the chat what happened to the tasks she opened in the last week. Off unless set. */
+  followUp?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -470,6 +473,7 @@ export class NogitaEngine {
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
   private readonly meetingRecap: boolean;
+  private readonly followUp: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -532,6 +536,7 @@ export class NogitaEngine {
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
     this.meetingRecap = options.meetingRecap === true;
+    this.followUp = options.followUp === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -622,6 +627,15 @@ export class NogitaEngine {
     } finally {
       this.startingSessions.delete(sessionId);
     }
+    if (this.followUp && this.dependencies.board.ownRecentTasks) void this.postFollowUp(meeting);
+  }
+
+  /** Closing the loop: what closed, moved or got stuck since she opened it. In the chat only; she says nothing. */
+  private async postFollowUp(meeting: MeetingPort): Promise<void> {
+    try {
+      const text = followUp(await this.dependencies.board.ownRecentTasks!(7), this.now());
+      if (text) await meeting.sendStatus(text);
+    } catch { /* A follow-up that cannot be read is skipped, never guessed. */ }
   }
   restoreSession(sessionId: string, meeting: MeetingPort): void {
     if (this.sessions.has(sessionId) || this.startingSessions.has(sessionId)) throw new Error('session already exists');

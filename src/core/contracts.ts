@@ -1,3 +1,4 @@
+import type { OwnTask } from './follow-up.ts';
 /** Platform-neutral domain types: no Jira / monday / Recall shapes leak into orchestration. */
 export type ProviderKind = 'demo' | 'recall' | 'slack' | 'teams' | 'zoom' | 'meet';
 /** `streaming_speech`: consecutive speak() calls play one after another, so an answer can be spoken while it is written. */
@@ -114,6 +115,8 @@ export interface BoardPort {
   /** Connected boards a task can go to, when there is more than one (ids, for `CreateTask.board`). */
   readonly boards?: ReadonlyArray<{ id: string; name: string }>;
   createTask(input: CreateTask): Promise<ActionReceipt>;
+  /** Tasks Nogita herself opened in the last `days`, with where they stand now (NOGITA_FOLLOW_UP). */
+  ownRecentTasks?(days: number): Promise<OwnTask[]>;
   /** Moves, reassigns or comments on a task in a board Nogita may write to. A retried request changes nothing twice. */
   updateTask?(input: UpdateTask): Promise<ActionReceipt>;
   /** Read-only lookups used by the conversational agent. Optional per provider. */
