@@ -7,8 +7,9 @@ const PROVIDERS: readonly ConnectionProvider[] =
 export async function probeConnections(
   env: NodeJS.ProcessEnv,
   http: typeof fetch = fetch,
+  only: readonly ConnectionProvider[] = PROVIDERS,
 ): Promise<ConnectionReadinessReport> {
-  const checks = await Promise.all(PROVIDERS.map(async (provider): Promise<ConnectionCheck> => {
+  const checks = await Promise.all(only.map(async (provider): Promise<ConnectionCheck> => {
     let url: string;
     const headers: Record<string, string> = {};
     if (provider === 'github') {

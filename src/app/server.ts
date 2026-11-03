@@ -10,7 +10,7 @@ import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingA
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
-import { buildReadinessReport, validAdminToken } from './readiness.ts';
+import { buildReadinessReport, validAdminToken, withLiveJira } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
 import { InFlightWork } from './in-flight.ts';
@@ -796,8 +796,10 @@ const server = createServer(async (req, res) => {
       respond(res, report.ok ? 200 : 503, report); return;
     }
     if (req.method === 'GET' && pathname === '/api/readiness') {
-      const report = buildReadinessReport(env, dependencies.identities, process.versions.node,
+      const built = buildReadinessReport(env, dependencies.identities, process.versions.node,
         providerConfigValid, slackSocketConnected, env.NOGITA_TENANT_CONFIG?.trim() ? dependencies.connections : undefined);
+      const report = env.NOGITA_JIRA_AUTH_CHECK?.trim() === 'true'
+        ? withLiveJira(built, (await probeConnections(env, fetch, ['jira'])).checks[0]) : built;
       const withLimits = limiter ? { ...report, rateLimits: limiter.counters() } : report;
       if (!githubPushRefreshEnabled) { respond(res, report.ok ? 200 : 503, withLimits); return; }
       const code = dependencies.code as typeof dependencies.code & {
