@@ -164,14 +164,15 @@ Claude הוא הסוכן היחיד בריפו. צ'אט אחד רץ על כל ה
 
 ### שלב 7 (ניסוי): Gemini מדבר, Nogita עושה
 
-התוכנית ב-`docs/GEMINI_VOICE_PLAN.md`. הכול מאחורי `NOGITA_VOICE_ENGINE=gemini`, כבוי, עד ההחלטה ב-P7-5.
+התוכנית ב-`docs/GEMINI_VOICE_PLAN.md`. הכול מאחורי `NOGITA_VOICE_ENGINE=gemini`, כבוי, עד ההחלטה ב-P7-6. שער A (P7-1) קודם לכל בנייה.
 
 | | ID | משימה | באחריות | קבצים | תלוי ב |
 |---|---|---|---|---|---|
 | [ ] | P7-0 | תוכנית Gemini Live כשכבת השיחה, ומשימות שלב 7 בלוח | Claude | `docs/GEMINI_VOICE_PLAN.md`, `docs/TASK_BOARD.md` | - |
-| [ ] | P7-1 | מתאם Gemini Live (G1): חיבור ל-`gemini-3.8-live`, הגדרות (קול, VAD, תמלול נכנס ויוצא, הנחיה), מיקס של המיקרופונים פנימה, המרה מ-24kHz ל-16kHz החוצה, `interrupted` מרוקן את התור, session resumption ודחיסת הקשר, חיבור מחדש; `NOGITA_VOICE_ENGINE=gemini` כבוי ו-`GEMINI_PRIVACY_REVIEWED=true` חובה; בדיקות עם Gemini מזויף: פורמטים, קטיעה תוך 50 ms, סשן של 30 דקות ממשיך אחרי ניתוק | Claude | `src/app/gemini-voice.ts`, `tests/gemini-voice.test.ts`, `.env.example` | - |
-| [ ] | P7-2 | גשר ל-Nogita (G2): פונקציה אחת `nogita(request)` (NON_BLOCKING, WHEN_IDLE) מריצה את ה-engine עם הדובר שנקבע אצלנו לפי פעילות הקול והתמלול של Deepgram, לא לפי Gemini; דובר לא מורשה נחסם, שני דוברים בבת אחת חוסמים כתיבה, התשובה קצרה והפרטים בצ'אט; חיבור ב-server מאחורי ה-flag | Claude | `src/app/gemini-bridge.ts`, `src/app/server.ts`, `tests/gemini-bridge.test.ts` | P7-1 |
-| [ ] | P7-3 | voice lab עם Gemini (G3): `--voice-engine gemini` מריץ את אותם תרחישים ואותו ניקוד; 10 תרחישי התורות, 2 סבבים, בלי שגיאות הרצה | Claude | `tools/voice-lab/`, `tests/voice-lab.test.ts` | P7-2 |
-| [ ] | P7-4 | דוח החלטה (G4) ב-`docs/VOICE_ENGINE_DECISION.md`: Gemini מול v2 על 10 התרחישים: עיכוב, קטיעות, דיבור מעל אנשים, חצאי משפטים, שאלות שאבדו, תשובות שלא מהכלי, עלות לשעת פגישה, וכתיבות שלא ביקשו (חייב 0); המלצה | Claude | `docs/VOICE_ENGINE_DECISION.md` | P7-3 |
-| [ ] | P7-5 | פגישה אמיתית ב-Meet עם `NOGITA_VOICE_ENGINE=gemini` (G5), אותן בקשות כמו ב-1 בנובמבר, והחלטה אם עוברים | רועי | | P7-4 |
-| [ ] | P7-6 | אם Gemini נבחר (G6): ברירת מחדל לפגישות חדשות, Deepgram רק לזיהוי דובר, והשרשרת הישנה נשארת כגיבוי מאחורי flag | Claude | `src/app/server.ts`, `src/app/gemini-voice.ts`, `docs/ARCHITECTURE.md` | P7-5 |
+| [ ] | P7-1 | ניסוי היתכנות (שער A): מתאם מינימלי ל-`gemini-3.8-live` בלי reconnect ובלי Nogita, מאחורי `NOGITA_VOICE_ENGINE=gemini` כבוי; 10 תרחישי התורות ועוד: שניים יחד, שיחה לא מופנית, חצי משפט והיסוס, קטיעה, עברית, עברית ואנגלית מעורבות; תקרת עלות לריצה; דוח ב-`docs/GEMINI_SPIKE.md`: ענה כשלא פנו אליו, זמן עד שקט אחרי קטיעה, שאלות שאבדו, זמן תגובה, איכות עברית, עלות לשעה, והאם מקריא טקסט נתון מילה במילה; לא עבר: חוזרים ל-P5-14 ו-P5-18 | Claude | `tools/gemini-spike/`, `docs/GEMINI_SPIKE.md` | - |
+| [ ] | P7-2 | מתאם מוקשח: session resumption, דחיסת הקשר, חיבור מחדש לפני שה-WebSocket מתחלף, ריקון התור ב-`interrupted`, המרה ל-16kHz, תקרת עלות לפגישה; flag כבוי ו-`GEMINI_PRIVACY_REVIEWED=true` חובה; בדיקות עם Gemini מזויף: קטיעה תוך 50 ms, סשן של 30 דקות ממשיך אחרי ניתוק, התקרה עוצרת ואומרת זאת | Claude | `src/app/gemini-voice.ts`, `tests/gemini-voice.test.ts`, `.env.example` | P7-1 |
+| [ ] | P7-3 | גשר ל-Nogita: `delegateNogitaRequest` מקושר לתור של Deepgram (`speakerId`, `turnId`, transcript, חפיפה, ביטחון), לא "מי שדיבר אחרון"; אין התאמה חד-משמעית: לא מבצעים; כתיבה עם חפיפה או ביטחון נמוך: אישור מחדש; תשובה סמכותית עוברת speech guard ונאמרת כמו שהיא ב-TTS נשלט באותו קול; תמלול הפלט ל-audit בלבד | Claude | `src/app/gemini-bridge.ts`, `src/app/server.ts`, `tests/gemini-bridge.test.ts` | P7-2 |
+| [ ] | P7-4 | voice lab מלא עם Gemini: `--voice-engine gemini` על כל התרחישים, כולל הרשאות (לא מורשה מבקש, אדם אחר אומר "כן") ודיבור לא מופנה | Claude | `tools/voice-lab/`, `tests/voice-lab.test.ts` | P7-3 |
+| [ ] | P7-5 | דוח החלטה ב-`docs/VOICE_ENGINE_DECISION.md` מול baseline קפוא של v2 (אותו commit ואותם תרחישים): תורות, קטיעות, שאלות שאבדו, עלות לשעה, כתיבות שלא ביקשו (חייב 0), "טענות מדוברות בלי מקור" (חייב 0); המלצה | Claude | `docs/VOICE_ENGINE_DECISION.md` | P7-4 |
+| [ ] | P7-6 | פגישה אמיתית ב-Meet עם ה-flag דלוק ובהסכמת המשתתפים, אותן בקשות כמו ב-1 בנובמבר, והחלטה | רועי | | P7-5 |
+| [ ] | P7-7 | מעבר הדרגתי: פגישות שרועי בוחר, אחר כך ברירת מחדל; Deepgram לזיהוי דובר; השרשרת הישנה גיבוי מאחורי flag | Claude | `src/app/server.ts`, `src/app/gemini-voice.ts`, `docs/ARCHITECTURE.md` | P7-6 |
