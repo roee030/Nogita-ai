@@ -71,6 +71,18 @@ function check(id: ReadinessCheck['id'], ready: boolean, readyDetail: string, bl
   return { id, status: ready ? 'ready' : 'blocked', detail: ready ? readyDetail : blockedDetail };
 }
 
+/**
+ * NOGITA_JIRA_AUTH_CHECK: the Jira check is a live call, not only "configured". An expired API token passed readiness
+ * (live Meet 2026-11-03) while Jira answered every request as an anonymous visitor.
+ */
+export function withLiveJira(report: ReadinessReport, probe: ConnectionCheck | undefined): ReadinessReport {
+  const index = report.checks.findIndex(item => item.id === 'jira');
+  if (index < 0 || report.checks[index]!.status !== 'ready' || !probe || probe.status === 'connected') return report;
+  const checks = [...report.checks];
+  checks[index] = { id: 'jira', status: 'blocked', detail: `Jira did not accept the configured credentials${probe.httpStatus ? ` (HTTP ${probe.httpStatus})` : ''}: renew JIRA_API_TOKEN, or check that the account can see the project.` };
+  return { ...report, ok: false, checks, blockers: [...new Set([...report.blockers, 'jira' as const])] };
+}
+
 export function buildReadinessReport(
   env: NodeJS.ProcessEnv,
   identities: IdentityDirectory,

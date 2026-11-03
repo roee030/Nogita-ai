@@ -8,6 +8,14 @@ export function jiraRequestDigest(requestId: string): string {
   return createHash('sha256').update('nogita:jira-request:v1\0').update(requestId).digest('hex');
 }
 
+/** Jira does not accept Nogita's credentials: said as a broken connection, never as an empty board. */
+export class JiraAuthError extends Error {
+  constructor() {
+    super("Jira did not accept Nogita's credentials (the API token may have expired or lost access), so nothing was read or written. Tell them the Jira connection is broken and an admin needs to renew JIRA_API_TOKEN; do not say the board is empty.");
+    this.name = 'JiraAuthError';
+  }
+}
+
 export interface JiraConfig {
   /** The site people open (https://acme.atlassian.net): links to issues point here. */
   baseUrl: string;
@@ -25,6 +33,12 @@ export interface JiraConfig {
   resolveAssigneeEmail?: (internalId: string) => string | undefined;
   /** Extra project keys the agent may read (search/get). Writes always go to `projectKey`. */
   readProjectKeys?: readonly string[];
+  /**
+   * NOGITA_JIRA_AUTH_CHECK: an empty search or a failed create first asks Jira who we are. With an expired API token Jira
+   * answers as an anonymous visitor (live Meet 2026-11-03): searches come back empty with no error and creates fail
+   * with 400 "the project doesn't exist or you don't have permission", which she reported as an empty board.
+   */
+  authCheck?: boolean;
 }
 
 /** Plain text from Atlassian Document Format, enough for a model to read a description or comment. */
@@ -81,6 +95,14 @@ export class JiraBoard implements BoardPort {
       : new URL(path, this.config.baseUrl);
   }
   private readonly verifiedAssignees = new Map<string, string>();
+  private authenticatedUntil = 0;
+  /** Throws a plain "credentials rejected" error when Jira does not know who we are (NOGITA_JIRA_AUTH_CHECK). */
+  private async ensureAuthenticated(): Promise<void> {
+    if (!this.config.authCheck || Date.now() < this.authenticatedUntil) return;
+    const response = await this.http(this.api('/rest/api/3/myself'), { headers: await this.headers(), signal: AbortSignal.timeout(8000) });
+    if (response.status === 401 || response.status === 403) throw new JiraAuthError();
+    if (response.ok) this.authenticatedUntil = Date.now() + 5 * 60_000;
+  }
   /** Account ids found by email, so a person is looked up once per process. */
   private readonly byEmail = new Map<string, string>();
   private get readProjects(): string[] {
@@ -133,6 +155,7 @@ export class JiraBoard implements BoardPort {
     }
     if (!response.ok) throw new Error(`Jira search failed: HTTP ${response.status}`);
     const result = await response.json() as { issues?: JiraIssue[] };
+    if (!result.issues?.length) await this.ensureAuthenticated();
     return (result.issues ?? []).map(issue => this.summary(issue)).filter((item): item is TaskSummary => item !== undefined);
   }
   async getTask(key: string): Promise<TaskDetail | undefined> {
@@ -311,7 +334,10 @@ export class JiraBoard implements BoardPort {
       body: JSON.stringify({ fields, properties: [{ key: REQUEST_PROPERTY, value: { digest: requestDigest } }] }),
       signal: AbortSignal.timeout(12000),
     });
-    if (!response.ok) throw new Error(`Jira create failed: HTTP ${response.status}`);
+    if (!response.ok) {
+      if ([400, 401, 403, 404].includes(response.status)) await this.ensureAuthenticated();
+      throw new Error(`Jira create failed: HTTP ${response.status}`);
+    }
     const result = await response.json() as { key?: string };
     if (!result.key || !/^[A-Z][A-Z0-9_]+-\d+$/.test(result.key)) throw new Error('Jira returned no valid issue key');
     return this.receipt(result.key);

@@ -188,7 +188,8 @@ function buildBoard(connection: BoardConnection, identities: IdentityDirectory, 
       projectKey: connection.projectKey, issueType: connection.issueType ?? 'Task',
       allowedAssigneeIds: new Set(connection.assigneeAccountIds ?? []),
       resolveAssigneeId: id => identities.accountFor(id, connection.id, 'jira'),
-      resolveAssigneeEmail: id => identities.emailFor(id), readProjectKeys: connection.readProjectKeys ?? [] });
+      resolveAssigneeEmail: id => identities.emailFor(id), readProjectKeys: connection.readProjectKeys ?? [],
+      authCheck: process.env.NOGITA_JIRA_AUTH_CHECK?.trim() === 'true' });
     case 'monday': return new MondayBoard(connection.token, connection.boardId, connection.descriptionColumnId);
     case 'demo': return new DemoBoard();
   }
