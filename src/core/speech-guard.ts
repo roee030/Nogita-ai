@@ -43,6 +43,44 @@ export function stripReasoningAloud(text: string): string {
 }
 
 /**
+ * NOGITA_STRICT_SPEECH_GUARD: more deliberation heard in the live Meet of 2026-11-01, still narrow. "Roy wants the full
+ * list of today's merged PRs. The earlier lookup covered them, but the spoken answer should be short. I'll answer with
+ * the count and the latest and point to the chat for the full list." A sentence that opens with the speaker's own first
+ * name ("Roee wants ...") is about them, not to them; another name is left alone, since "Dana wants it" can be the answer.
+ */
+const PLANNING: readonly RegExp[] = [
+  /\bthe spoken (?:answer|reply|part|version)\b/i,
+  /\bI(?:'ll| will| should)\s+(?:answer|reply|respond)\s+with\b/i,
+  /\bpoint (?:to|them to|him to|her to) the chat\b/i,
+  /\bthe earlier (?:lookup|search|result)s?\s+(?:covered|showed|found|has|had)\b/i,
+];
+const ABOUT_SPEAKER = String.raw`\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b`;
+
+export function isPlanningAloud(sentence: string, speaker?: string): boolean {
+  const text = sentence.trim();
+  if (!text) return false;
+  if (PLANNING.some(pattern => pattern.test(text))) return true;
+  const first = speaker?.trim().split(/\s+/)[0];
+  if (!first || first.length < 2) return false;
+  return new RegExp(`^${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${ABOUT_SPEAKER}`, 'iu').test(text);
+}
+
+/** Drops planning sentences ("I'll answer with the count") and sentences about the speaker in the third person. */
+export function stripPlanningAloud(text: string, speaker?: string): string {
+  return text.split(/(?<=[.!?])\s+/).filter(sentence => !isPlanningAloud(sentence, speaker)).join(' ').trim();
+}
+
+/** "I got the details in the chat": true only when this turn really sent the chat more than she said. */
+export function claimsChat(sentence: string): boolean {
+  return /\b(?:in|to|into|on) (?:the )?chat\b/i.test(sentence);
+}
+
+/** Drops the sentences that point to the chat; for a turn that sent it nothing beyond the spoken words. */
+export function stripChatClaims(text: string): string {
+  return text.split(/(?<=[.!?])\s+/).filter(sentence => !claimsChat(sentence)).join(' ').trim();
+}
+
+/**
  * Asking the room to repeat or remarking that the words were cut ("The rest of what you said cut out", "Sounds like
  * the sentence got cut off again", voice lab `meeting-room`). Fine when someone called her by name; said to words
  * that were never for her, it answers a conversation that was not hers.

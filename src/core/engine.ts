@@ -11,7 +11,7 @@ import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
 import { briefly, PhrasePicker, toSpoken } from './spoken.ts';
-import { stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
+import { stripChatClaims, stripPlanningAloud, stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
 import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
@@ -178,6 +178,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_OFFER_APPROVAL: a yes to her offer approves the write it named, even without a create verb, capped at its count;
    *  "turn them into Jira tasks" reads as a request. Off unless set. */
   offerApproval?: boolean;
+  /** NOGITA_STRICT_SPEECH_GUARD: also drop planning aloud ("I'll answer with the count", "Roee wants ...") and, when the turn
+   *  sent the chat nothing, "the details are in the chat". Off unless set. */
+  strictSpeechGuard?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -446,6 +449,7 @@ export class NogitaEngine {
   private readonly taskFromTopic: boolean;
   private readonly noisyTaskRequests: boolean;
   private readonly offerApproval: boolean;
+  private readonly strictSpeechGuard: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -504,6 +508,7 @@ export class NogitaEngine {
     this.taskFromTopic = options.taskFromTopic === true;
     this.noisyTaskRequests = options.noisyTaskRequests === true;
     this.offerApproval = options.offerApproval === true;
+    this.strictSpeechGuard = options.strictSpeechGuard === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -1013,6 +1018,7 @@ export class NogitaEngine {
         .map(item => `${item.path} (${item.url})\n${item.excerpt.slice(0, 1200)}`).join('\n---\n')}`;
     }
     let transcript: string[] = [];
+    let detailsPosted = false;
     const { toolbox, report } = buildToolbox({
       actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId, transcript: () => transcript,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
@@ -1021,7 +1027,7 @@ export class NogitaEngine {
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,
       ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
-      ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => s.meeting.sendStatus(text) } : {}),
+      ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => { detailsPosted = true; return s.meeting.sendStatus(text); } } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),
       onReceipt: receipt => {
@@ -1076,7 +1082,14 @@ export class NogitaEngine {
     };
     // Words nobody addressed to her never get "that cut out, can you repeat?" back.
     const unaddressed = this.roomNoiseGuard && voice && pending?.kind === 'conversation';
-    const spokenPart = (text: string) => unaddressed ? stripRepeatRequests(stripReasoningAloud(text)) : stripReasoningAloud(text);
+    const guarded = (text: string) => {
+      const kept = stripReasoningAloud(text);
+      if (!this.strictSpeechGuard) return kept;
+      // Live Meet 2026-11-01: "I got the details in the chat" after a turn that sent the chat nothing more than the words.
+      const planned = stripPlanningAloud(kept, speaker);
+      return report.receipts.length || detailsPosted ? planned : stripChatClaims(planned);
+    };
+    const spokenPart = (text: string) => unaddressed ? stripRepeatRequests(guarded(text)) : guarded(text);
     const onSpeech = (chunk: string, step: number) => {
       // Deliberation is not speech: dropped before it counts as having spoken.
       const raw = spokenPart(chunk);
@@ -1218,7 +1231,8 @@ export class NogitaEngine {
     if (voice) {
       // The final answer was spoken while it streamed (unless the turn was cut short); chat gets it once.
       if (!result.answer && !floor) await this.deliverStreamedSpeech(sessionId, s.meeting, answer);
-      const chatText = q && q.needsLabel && !q.agentNamesTopic && q.topic ? `About ${q.topic}: ${answer}` : answer;
+      const written = this.strictSpeechGuard ? stripPlanningAloud(answer, speaker) || answer : answer;
+      const chatText = q && q.needsLabel && !q.agentNamesTopic && q.topic ? `About ${q.topic}: ${written}` : written;
       try { await s.meeting.sendStatus(chatText); } catch { /* Speech already delivered; chat is best effort. */ }
       // Only the words were kept before, so on the next turn her own looked-up answer seemed unverified and she
       // took it back and refused the follow-up action (live Meet: "wasn't backed by a lookup I actually ran").
