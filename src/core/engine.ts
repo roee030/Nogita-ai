@@ -1,7 +1,7 @@
 import { CodeLookupRateLimitError, SpeechFallbackSentError, SpeechInterruptedError, type ScreenCard, type ActionReceipt, type BoardPort, type BrainPort, type ChatPort, type CodePort, type ConversationTurn, type Evidence,
   type MeetingPort, type MeetingMemoryPort, type PolicyPort, type PullRequestPort, type SpeakOptions, type UsagePort, type Utterance } from './contracts.ts';
 import { runAgent, type AgentResult, type ChatModel, type ChatModelRequest } from './agent.ts';
-import { auditedPorts, buildToolbox, LimitReachedError, type LimitsPort, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
+import { auditedPorts, buildToolbox, LimitReachedError, requestsTaskWrite, type LimitsPort, type MissionPort, type PeopleDirectory, type WriteAudit } from './agent-tools.ts';
 import { ActionItemTracker } from './drafting.ts';
 import { ProviderUnavailableError } from './provider-health.ts';
 import { missionReport, OPEN_MISSION, pendingApprovalsPrompt, type DirectRequest, type Mission, type MissionRunner } from './missions.ts';
@@ -175,6 +175,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_NOISY_TASK_REQUESTS: a task request with fillers ("open, uh, two tasks"), a misheard noun ("tusks") or in Hebrew
    *  passes the explicit-request check. Off unless set. */
   noisyTaskRequests?: boolean;
+  /** NOGITA_OFFER_APPROVAL: a yes to her offer approves the write it named, even without a create verb, capped at its count;
+   *  "turn them into Jira tasks" reads as a request. Off unless set. */
+  offerApproval?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -215,6 +218,27 @@ export function acceptsOffer(text: string): boolean {
 export function offeredAction(question: string): string | undefined {
   const match = question.match(/\b(?:(?:do you |would you |should I|shall I|want me to|like me to)\s*(?:want me to |like me to )?)((?:open|create|add|file|log|make|post|send|move|mark|assign|close)\b[^?.!]*)\?/i);
   return match?.[1]?.trim();
+}
+const COUNT_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10 };
+/**
+ * NOGITA_OFFER_APPROVAL: the write her offer names, as a request the write check reads, and how many tasks it offered.
+ * "Want me to try again with one task covering today's merged PRs?" (live Meet 2026-11-01) offered a task without a
+ * create verb, so the "Yeah, do it" after it approved nothing. `tasks` is undefined when the offer gave no count
+ * ("a task for each one").
+ */
+export function offeredWrite(question: string): { request: string; tasks?: number } | undefined {
+  const offer = question.match(/\b(?:do you want me to|would you like me to|want me to|like me to|should i|shall i)\s+([^?]*)\?/i)?.[1]?.trim();
+  if (!offer) return undefined;
+  const direct = offeredAction(question);
+  const noun = /\b(?:tasks?|tickets?|issues?)\b/i.test(offer);
+  if (!direct && !noun) return undefined;
+  const counted = offer.match(/\b(an?|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[\w'-]+\s+){0,2}?(?:tasks?|tickets?|issues?)\b/i)?.[1]?.toLowerCase();
+  // "A task for each one" offers one per item, not one; "two tasks, one per bug" offers two.
+  const count = counted ? COUNT_WORDS[counted] ?? Number(counted) : undefined;
+  const tasks = !noun || count === undefined || (count === 1 && /\b(?:each|every|per)\b/i.test(offer)) ? undefined : count;
+  const request = direct ?? `create ${offer.replace(/^(?:try (?:it )?again with|go ahead with|go with|start with|do)\s+/i, '')}`;
+  return { request, ...(tasks !== undefined ? { tasks } : {}) };
 }
 /** A barge-in may contain both the control and what to do next: "stop. Just tell me ...". */
 function splitLeadingStop(text: string): { stop: string; remainder: string } | undefined {
@@ -421,6 +445,7 @@ export class NogitaEngine {
   private readonly shortSpokenResults: boolean;
   private readonly taskFromTopic: boolean;
   private readonly noisyTaskRequests: boolean;
+  private readonly offerApproval: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -478,6 +503,7 @@ export class NogitaEngine {
     this.shortSpokenResults = options.shortSpokenResults === true;
     this.taskFromTopic = options.taskFromTopic === true;
     this.noisyTaskRequests = options.noisyTaskRequests === true;
+    this.offerApproval = options.offerApproval === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -969,7 +995,13 @@ export class NogitaEngine {
     const authorized = this.dependencies.policy.mayReadCode(utterance.actor);
     // "Do you want me to open a Jira task for each one?" "Yes, please.": the yes makes her offer the request (live Meet
     // 2026-10-31: the write check saw only "Yes, please" and refused, so no task was opened).
-    const offer = pending?.question && acceptsOffer(request) ? offeredAction(pending.question) : undefined;
+    const offered = !pending?.question || !acceptsOffer(request) ? undefined
+      : this.offerApproval ? offeredWrite(pending.question)
+        : (action => action ? { request: action } as { request: string; tasks?: number } : undefined)(offeredAction(pending.question));
+    const offer = offered?.request;
+    // The yes approves the offer, not more: a count it named caps the tasks this turn, unless the reply asks for more itself.
+    const offeredTasks = this.offerApproval && offered?.tasks !== undefined &&
+      !requestsTaskWrite(request, { noisy: this.noisyTaskRequests }) ? offered.tasks : undefined;
     const writeScope = pending ? [pending.request, offer, request].filter(Boolean).join('\n') : request;
     let userText = pending?.question ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
     // A quick in-memory search runs alongside the repository map, so most code questions need one lookup round fewer.
@@ -988,6 +1020,7 @@ export class NogitaEngine {
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,
+      ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => s.meeting.sendStatus(text) } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
       ...(this.dependencies.limits ? { limits: this.dependencies.limits } : {}),
