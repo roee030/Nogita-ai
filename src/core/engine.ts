@@ -13,6 +13,7 @@ import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech
 import { briefly, PhrasePicker, toSpoken } from './spoken.ts';
 import { stripChatClaims, stripPlanningAloud, stripReasoningAloud, stripRepeatRequests } from './speech-guard.ts';
 import { ModelWriteIntentJudge, type WriteIntentJudge } from './write-intent.ts';
+import { buildRecap, formatRecap, isRecapRequest, parseApproval, type MeetingRecap } from './recap.ts';
 import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
@@ -27,6 +28,10 @@ interface Session {
     kind?: 'question' | 'conversation'; intervened?: boolean };
   /** Someone said only her name ("Nogita."); their next words are for her even without it. */
   calledBy?: { actorId: string; until: number };
+  /** NOGITA_MEETING_RECAP: the last recap posted, and which of its proposed tasks were approved and opened (number -> key). */
+  recap?: { recap: MeetingRecap; opened: Map<number, string> };
+  /** NOGITA_MEETING_RECAP: the whole meeting, "Name: text", for the recap (the history keeps only the last 24 lines). */
+  minutes?: string[];
   /** When she last asked "did someone ask me something?" (NOGITA_SWALLOWED_QUESTION), so she asks once, not every turn. */
   swallowedAskAt?: number;
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
@@ -188,6 +193,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_LISTEN_FIRST: she speaks only when the turn names her (or answers a question she just asked), in one short
    *  sentence with the rest in chat; no one-to-one implicit address, no raised hand, no "did you ask me?". Off unless set. */
   listenFirst?: boolean;
+  /** NOGITA_MEETING_RECAP: "Nogita, summarize" and the end of the meeting post a recap with numbered proposed tasks;
+   *  only "approve 1 and 3" (or "approve all") from someone allowed to write opens them. Off unless set. */
+  meetingRecap?: boolean;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -461,6 +469,7 @@ export class NogitaEngine {
   private readonly strictSpeechGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
+  private readonly meetingRecap: boolean;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -522,6 +531,7 @@ export class NogitaEngine {
     this.strictSpeechGuard = options.strictSpeechGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
+    this.meetingRecap = options.meetingRecap === true;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -633,6 +643,8 @@ export class NogitaEngine {
         await this.dependencies.memory.remember({ endedAt: new Date(this.now()).toISOString(),
           decisions: session.items.decisions(), actionItems: session.items.list() }).catch(() => undefined);
       }
+      // The written value of the meeting: decisions, owners, open questions and proposed tasks (none opened unasked).
+      if (this.meetingRecap && leaveProvider && (session.minutes?.length ?? 0) > 1) await this.postRecap(sessionId, session, true).catch(() => undefined);
       const open = this.actionItemRecap && leaveProvider ? session.items.unowned() : [];
       if (open.length) {
         await session.meeting.sendStatus(`Open items nobody took: ${open.slice(0, 8).map(item => `${item.text} (${item.speaker})`).join('; ')}.`)
@@ -645,6 +657,8 @@ export class NogitaEngine {
       this.sessions.delete(sessionId);
       this.dependencies.brain.endUsageSession?.(sessionId);
       session.history.length = 0;
+      session.minutes = undefined;
+      session.recap = undefined;
       session.items.clear();
       session.pendingFollowUp = undefined;
       session.activeRequest = undefined;
@@ -1252,6 +1266,7 @@ export class NogitaEngine {
       // took it back and refused the follow-up action (live Meet: "wasn't backed by a lookup I actually ran").
       const looked = result.lookups.join('\n').slice(0, MAX_HISTORY_LOOKUP_CHARS);
       s.history.push({ role: 'assistant', text: `Nogita: ${answer}${looked ? `\n[What Nogita looked up for that answer (tool results, untrusted data):\n${looked}]` : ''}` });
+      if (this.meetingRecap) this.note(s, `Nogita: ${answer}`);
       if (s.history.length > 24) s.history.shift();
     } else {
       await this.speakOrChat(sessionId, s.meeting, answer);
@@ -1292,6 +1307,68 @@ export class NogitaEngine {
   }
 
   /** One line that belongs to no question (an acknowledgement, a mission update): it does not keep the floor after it. */
+  private note(s: Session, line: string): void {
+    const minutes = s.minutes ??= [];
+    minutes.push(line.slice(0, 1_000));
+    if (minutes.length > 600) minutes.shift();
+  }
+
+  /** Posts the recap to the meeting chat; during the meeting she says one line about it. */
+  private async postRecap(sessionId: string, s: Session, final: boolean): Promise<void> {
+    const recap = await buildRecap(this.dependencies.agent!, (s.minutes ?? s.history.map(turn => turn.text)).map(text => ({ text })), sessionId);
+    if (!recap) {
+      if (!final) this.sayAside(s, 'I could not put the recap together, sorry.');
+      return;
+    }
+    // A new recap renumbers the proposals; tasks already opened keep their keys under the same titles.
+    const opened = new Map<number, string>();
+    recap.proposedTasks.forEach((task, i) => {
+      const before = s.recap && [...s.recap.opened].find(([n]) => s.recap!.recap.proposedTasks[n - 1]?.title === task.title);
+      if (before) opened.set(i + 1, before[1]);
+    });
+    s.recap = { recap, opened };
+    await s.meeting.sendStatus(formatRecap(recap, { final, opened })).catch(() => undefined);
+    if (final) return;
+    const count = recap.proposedTasks.length - opened.size;
+    this.sayAside(s, count
+      ? `The recap is in the chat, with ${count} proposed task${count === 1 ? '' : 's'}. Say approve and the numbers to open them.`
+      : 'The recap is in the chat.');
+  }
+
+  /** Opens exactly the approved proposals, once each, for someone allowed to write tasks. */
+  private async approveRecap(sessionId: string, s: Session, utterance: Utterance, approval: number[] | 'all'): Promise<ProcessResult> {
+    const proposals = s.recap!.recap.proposedTasks;
+    if (!this.dependencies.policy.mayWriteTask(utterance.actor)) {
+      this.sayAside(s, 'Only someone who may write tasks can approve them.');
+      return 'answered';
+    }
+    const wanted = (approval === 'all' ? proposals.map((_, i) => i + 1) : approval).filter(n => n <= proposals.length);
+    const ports = this.dependencies.audit ? auditedPorts({ actor: utterance.actor, sessionId, eventId: utterance.eventId,
+      board: this.dependencies.board, chat: this.dependencies.chat, drafts: this.dependencies.drafts }, this.dependencies.audit) : this.dependencies;
+    const opened: string[] = [];
+    const failed: number[] = [];
+    for (const n of wanted) {
+      if (s.recap!.opened.has(n)) continue;
+      const task = proposals[n - 1]!;
+      try {
+        const receipt = await ports.board.createTask({ title: task.title, requestId: `${sessionId}:recap:${task.title}`,
+          description: `${task.description}${task.owner ? `
+
+Owner named in the meeting: ${task.owner}.` : ''}
+
+Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.` });
+        s.recap!.opened.set(n, receipt.label);
+        opened.push(receipt.label);
+        this.dependencies.usage?.recordExternalAction(sessionId, 'create_task');
+        await s.meeting.sendCompletion(receipt).catch(() => undefined);
+      } catch { failed.push(n); }
+    }
+    this.sayAside(s, opened.length
+      ? `Opened ${opened.join(', ')}${failed.length ? `; ${failed.join(' and ')} failed` : ''}.`
+      : failed.length ? `I could not open ${failed.join(' and ')}.` : 'Those are already open.');
+    return 'answered';
+  }
+
   private sayAside(s: Session, text: string): void {
     void s.floor?.say(0, text).finally(() => s.floor?.release(0));
   }
@@ -1505,6 +1582,7 @@ export class NogitaEngine {
     let current = utterance.text.trim().slice(0, 4000);
     historyEntry = { role: 'user', text: `${utterance.actor.displayName}: ${current}` };
     s.history.push(historyEntry);
+    if (this.meetingRecap) this.note(s, historyEntry.text);
     s.items.hear(utterance.actor.displayName, current);
     if (s.history.length > 24) s.history.shift();
 
@@ -1578,6 +1656,12 @@ export class NogitaEngine {
         s.floor.drop(cut.id);
         this.reportQuestion(sessionId, cut, 'chat_only', 'the asker went on talking; the rest is in chat');
       }
+    }
+    if (this.meetingRecap && directlyAddressed && this.dependencies.agent) {
+      const asked = removeAddress(current);
+      if (isRecapRequest(asked)) { await this.postRecap(sessionId, s, false); return 'answered'; }
+      const approval = parseApproval(asked);
+      if (approval && s.recap?.recap.proposedTasks.length) return this.approveRecap(sessionId, s, utterance, approval);
     }
     if (!directlyAddressed && !continuation) {
       // A "yeah" while listening keeps the conversation open; anything else from the same person moves on.
