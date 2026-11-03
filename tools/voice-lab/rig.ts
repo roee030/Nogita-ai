@@ -56,6 +56,8 @@ export interface RigOptions {
   earlyCommitMs?: number;
   /** Production's NOGITA_TURN_TAKING_V2 profile: true (default in the lab) or false for the legacy rollback profile. */
   turnTakingV2?: boolean;
+  /** NOGITA_HOLD_PAUSE_FOR_WORDS for this run. */
+  holdPauseForWords?: boolean;
   /** Microphone frame length sent to the hub. */
   frameMs?: number;
   /** For offline tests: replaces the Deepgram sockets. */
@@ -165,7 +167,7 @@ export class VoiceRig {
     this.hub = new AttendeeRealtimeAudioHub({
       baseUrl: 'wss://voice-lab.test/webhooks/attendee/audio', signingSecret,
       deepgramApiKey: this.options.deepgramApiKey, sttMode, ttsModel: this.options.ttsModel,
-      warmSpeech: warmup === 'production', turnTakingV2: this.options.turnTakingV2 !== false, fluxEndOfTurnThreshold: this.options.eotThreshold,
+      warmSpeech: warmup === 'production', turnTakingV2: this.options.turnTakingV2 !== false, holdPauseForWords: this.options.holdPauseForWords === true, fluxEndOfTurnThreshold: this.options.eotThreshold,
       fluxEagerEndOfTurnThreshold: this.options.eagerThreshold,
       createWebSocket: this.options.createWebSocket ?? ((url, options) => {
         // Same socket the hub would open, plus a trace of why a Deepgram stream closed.
