@@ -56,3 +56,26 @@ test('"open a task for me to update the onboarding docs" is created at once with
   assert.ok(!off.model.requests[0]!.stableSystem.includes(TASK_FROM_TOPIC_RULE));
   assert.doesNotMatch(off.model.requests[0]!.tools.find(tool => tool.name === 'create_task')!.description, /create it now/);
 });
+
+test('with the flag, a task is the asker\'s only when their words say so', async () => {
+  const { buildToolbox } = await import('../src/core/agent-tools.ts');
+  const { IdentityDirectory } = await import('../src/core/identity.ts');
+  const { MemoryBoard } = await import('../src/adapters/memory.ts');
+  const people = new IdentityDirectory([{ id: 'roee', displayName: 'Roee Angel' }, { id: 'dana', displayName: 'Dana Katz' }]);
+  const make = async (request: string, assignee: string, taskFromTopic = true) => {
+    const board = new MemoryBoard('Jira', 'KAN', new Map([['roee', 'Roee Angel'], ['dana', 'Dana Katz']]));
+    const { toolbox } = buildToolbox({ actor: { id: 'roee', displayName: 'Roee Angel', verified: true }, request, sessionId: 's',
+      eventId: `${request}-${assignee}-${taskFromTopic}`, policy: new AllowlistPolicy(new Set(['roee'])), code: new DemoCode(), board,
+      people, completed: new Map(), onReceipt: async () => undefined, taskFromTopic, noisyTaskRequests: true });
+    await toolbox.run('create_task', { title: 'Jira retries', description: 'Asked in the meeting.', assignee });
+    return board.tasks[0]?.assigneeId;
+  };
+  assert.equal(await make('open three tasks: cache, jira retries and docs', 'Roee Angel'), undefined, 'nobody said who owns it');
+  assert.equal(await make('open three tasks: cache, jira retries and docs', 'me'), undefined);
+  assert.equal(await make('open three tusks one for cash one for jira retries and one for the voice lab read me', 'Roee Angel'), undefined, '"read me" is a README');
+  assert.equal(await make('open a task for me about jira retries', 'Roee Angel'), 'roee');
+  assert.equal(await make('פתחי לי משימה על jira retries', 'Roee Angel'), 'roee');
+  assert.equal(await make('open a task about jira retries and assign it to Roee', 'Roee'), 'roee', 'he named himself');
+  assert.equal(await make('open a task about jira retries for Dana', 'Dana'), 'dana', 'someone else named');
+  assert.equal(await make('open three tasks: cache, jira retries and docs', 'Roee Angel', false), 'roee', 'flag off: as before');
+});

@@ -100,6 +100,14 @@ export function taskFromTopic(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_NOISY_TASK_REQUESTS: 'true' lets a task request through fillers, a misheard task noun ("tusks") and Hebrew; blank or
+ *  'false' leaves it off. */
+export function noisyTaskRequests(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_NOISY_TASK_REQUESTS?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_NOISY_TASK_REQUESTS must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {
