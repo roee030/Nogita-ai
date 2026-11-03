@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import type { CircuitBreaker } from '../core/provider-health.ts';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { SpeechInterruptedError, type SpeechTrace } from '../core/contracts.ts';
+import { isStopCommand } from '../core/engine.ts';
 
 const AUDIO_PATH = '/webhooks/attendee/audio';
 const AUDIO_SAMPLE_RATE = 16_000;
@@ -153,6 +154,9 @@ export interface RealtimeAudioOptions {
   warmSpeech?: boolean;
   /** Measured pause-and-classify interruption profile. Disabled unless rollout explicitly enables it. */
   turnTakingV2?: boolean;
+  /** NOGITA_STOP_ON_INTERIM: a stop word in a live hypothesis said over her ("I told you wait a second stop") stops her
+   *  at once, without waiting for the own-voice level gate, the final transcript and the router's quiet window. */
+  stopOnInterim?: boolean;
   /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
   keyterms?: readonly string[];
   /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
@@ -754,6 +758,9 @@ export class AttendeeRealtimeAudioHub {
       if (flux ? hasFluxSpeechActivity(message) : hasNova3SpeechActivity(message)) {
         const interim = liveTranscript(message);
         if (interim) this.options.onInterim?.(sessionId, participantUuid, interim);
+        // Live Meet 2026-11-03: Meet's echo cancellation turns the speaker down while she talks, so the level gate never
+        // opened and "I told you wait a second stop" waited ~3 s for the final transcript and the router before she stopped.
+        if (this.options.stopOnInterim && interim && session.ttsPending && isStopCommand(interim)) this.interruptSpeech(sessionId, 'command');
         // Recognition hears speech in the pause: wait for its words before resuming ("yeah" or an interruption).
         if (session.ttsPaused && !session.pauseHeardSpeech) { session.pauseHeardSpeech = true; this.armResume(session); }
         if (ownVoice) {

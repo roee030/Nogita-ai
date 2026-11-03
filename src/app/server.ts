@@ -55,6 +55,10 @@ if (!githubWebhookConfigured(githubPushRefreshEnabled, env.GITHUB_WEBHOOK_SECRET
   console.error('github_webhook_configuration_invalid');
 }
 const turnTakingV2 = env.NOGITA_TURN_TAKING_V2 === 'true';
+if (env.NOGITA_STOP_ON_INTERIM !== undefined && !['', 'true', 'false'].includes(env.NOGITA_STOP_ON_INTERIM.trim())) {
+  throw new Error('NOGITA_STOP_ON_INTERIM must be true or false');
+}
+const stopOnInterim = env.NOGITA_STOP_ON_INTERIM?.trim() === 'true';
 if (env.NOGITA_TURN_TAKING_V2 !== undefined && !['true', 'false'].includes(env.NOGITA_TURN_TAKING_V2)) {
   providerConfigValid = false;
   console.error('turn_taking_v2_configuration_invalid');
@@ -365,7 +369,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       deepgramMipOptOut: env.DEEPGRAM_MIP_OPT_OUT !== 'false',
       ...(providerHealth ? { ttsBreaker: providerHealth.breaker('deepgram', 'my voice service') } : {}),
       sttMode: stt.mode, languages: meetingLanguages,
-      ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true, turnTakingV2,
+      ttsModel: env.DEEPGRAM_TTS_MODEL, warmSpeech: true, turnTakingV2, stopOnInterim,
       ...(env.DEEPGRAM_EOT_THRESHOLD ? { fluxEndOfTurnThreshold: Number(env.DEEPGRAM_EOT_THRESHOLD) } : {}),
       ...(env.DEEPGRAM_EAGER_EOT_THRESHOLD !== 'off'
         ? { fluxEagerEndOfTurnThreshold: Number(env.DEEPGRAM_EAGER_EOT_THRESHOLD || DEFAULT_EAGER_EOT_THRESHOLD) } : {}),
