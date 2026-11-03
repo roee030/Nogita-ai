@@ -18,6 +18,8 @@ const DEEPGRAM_IDLE_MS = 10_000;
 /** In v2, output is paused at the acoustic gate; abandon it if continuous speech outlives STT's backchannel window. */
 const BARGE_IN_CANCEL_MS = 1_500;
 const BACKCHANNEL_PAUSE_MAX_MS = 1_500;
+/** NOGITA_HOLD_PAUSE_FOR_WORDS: how long a pause with heard speech waits for its words before she goes on. */
+const WORDS_PAUSE_MAX_MS = 4_000;
 /**
  * A pause the recognizer heard no speech in (a cough, a laugh, a chair) ends this long after the sound does. In the
  * voice lab Flux reported no activity at all for coughs and laughter, and the 1.5 s backchannel window left her silent
@@ -157,6 +159,9 @@ export interface RealtimeAudioOptions {
   /** NOGITA_STOP_ON_INTERIM: a stop word in a live hypothesis said over her ("I told you wait a second stop") stops her
    *  at once, without waiting for the own-voice level gate, the final transcript and the router's quiet window. */
   stopOnInterim?: boolean;
+  /** NOGITA_HOLD_PAUSE_FOR_WORDS (v2): once recognition heard words in a pause, wait for them (up to 4 s) instead of
+   *  resuming after 1.5 s, and let any words that are not a backchannel end the answer, level gate or not. */
+  holdPauseForWords?: boolean;
   /** Words the recognizer should expect (Deepgram keyterm prompting); always includes the wake word. */
   keyterms?: readonly string[];
   /** Synthesis watchdog; playback may continue after Deepgram confirms Flush. */
@@ -504,8 +509,10 @@ export class AttendeeRealtimeAudioHub {
   private armResume(session: RealtimeSession): void {
     if (session.ttsPauseTimer) clearTimeout(session.ttsPauseTimer);
     const heard = session.pauseHeardSpeech === true;
+    // Live Meet 2026-11-03: a real sentence said over her ("I told you wait a second stop") had no final words after
+    // 1.5 s, so she resumed and talked on; with the flag a pause that heard speech waits for what was said.
     session.ttsPauseTimer = setTimeout(() => this.resumeSpeech(session, heard ? 'timeout' : 'quiet'),
-      heard ? BACKCHANNEL_PAUSE_MAX_MS : QUIET_RESUME_MS);
+      heard ? (this.options.holdPauseForWords ? WORDS_PAUSE_MAX_MS : BACKCHANNEL_PAUSE_MAX_MS) : QUIET_RESUME_MS);
     session.ttsPauseTimer.unref?.();
   }
 
@@ -730,7 +737,7 @@ export class AttendeeRealtimeAudioHub {
     }), pendingAudio: [], finalSegments: [], confidences: [], lastAudioAt: this.now(), speechPeak: 0, loudUntil: 0, loudRunMs: 0, lastVoiceSignalAt: 0 };
     const deliverTurn = (turn: string) => {
       if (this.turnTaking.pauseAndClassify && isBackchannel(turn)) this.resumeSpeech(session, 'backchannel');
-      else if (this.now() <= speaker.loudUntil) this.interruptSpeech(sessionId, 'voice');
+      else if (this.now() <= speaker.loudUntil || (this.options.holdPauseForWords && session.ttsPaused)) this.interruptSpeech(sessionId, 'voice');
       speaker.lastTurnText = turn;
       speaker.lastTurnAt = this.now();
       const scores = speaker.confidences.splice(0);
@@ -773,6 +780,10 @@ export class AttendeeRealtimeAudioHub {
             this.interruptSpeech(sessionId, 'voice');
           }
           this.options.onSpeechActivity?.(sessionId, participantUuid);
+        } else if (this.options.holdPauseForWords && this.turnTaking.pauseAndClassify && session.ttsPaused && interim) {
+          // Paused on this voice, and its words came after the level gate closed (echo cancellation lowers it).
+          if (isBackchannel(interim)) this.resumeSpeech(session, 'backchannel');
+          else this.interruptSpeech(sessionId, 'voice');
         }
       }
       if (flux) {
