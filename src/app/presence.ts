@@ -91,6 +91,15 @@ export interface PresenceOptions {
 }
 
 /** 0..1 from an RMS level: -50 dBFS is silence, -10 dBFS is loud speech. */
+/**
+ * The page Attendee opens as her webcam or shared screen. `hd` (NOGITA_PRESENCE_HD) draws it for the video it becomes:
+ * Attendee renders it at 1280x720 and 15 fps without a GPU and it is encoded twice, so thin type and glows turn to blur.
+ */
+export function presencePageUrl(baseUrl: string, sessionId: string, key: string,
+  options: { mode: 'camera' | 'screenshare'; hd?: boolean }): string {
+  return `${baseUrl}/presence/${encodeURIComponent(sessionId)}?k=${key}${options.mode === 'camera' ? '&view=camera' : ''}${options.hd ? '&hd=1' : ''}`;
+}
+
 export function levelFromRms(rms: number): number {
   if (!(rms > 0)) return 0;
   return Math.max(0, Math.min(1, (20 * Math.log10(rms) + 50) / 40));

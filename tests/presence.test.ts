@@ -177,3 +177,31 @@ test('a card she was asked to show reaches the page, new subscribers too, and ca
   hub.show('s', undefined);
   assert.deepEqual(events.at(-1), ['card', { card: null }]);
 });
+
+// P5-17: the presence page drawn for the video it becomes (NOGITA_PRESENCE_HD).
+import { readFileSync } from 'node:fs';
+import { presencePageUrl } from '../src/app/presence.ts';
+
+test('the presence URL asks for the sharp page only with NOGITA_PRESENCE_HD', () => {
+  assert.equal(presencePageUrl('https://n.example', 'meet 1', 'k1', { mode: 'camera' }), 'https://n.example/presence/meet%201?k=k1&view=camera');
+  assert.equal(presencePageUrl('https://n.example', 's', 'k1', { mode: 'camera', hd: true }), 'https://n.example/presence/s?k=k1&view=camera&hd=1');
+  assert.equal(presencePageUrl('https://n.example', 's', 'k1', { mode: 'screenshare', hd: true }), 'https://n.example/presence/s?k=k1&hd=1');
+});
+
+test('the sharp page drops what video compression smears: thin type, glows, gradients, hairlines', () => {
+  const page = readFileSync(new URL('../src/app/presence-page.html', import.meta.url), 'utf8');
+  assert.match(page, /get\('hd'\) === '1'/);
+  const hdCss = page.split('\n').filter(line => line.trim().startsWith('body.hd'));
+  assert.ok(hdCss.length >= 8);
+  for (const line of hdCss) {
+    assert.doesNotMatch(line, /font-weight: (?:200|300)\b/, line);
+    for (const alpha of line.matchAll(/rgba\(\d+, \d+, \d+, (0\.\d+)\)/g)) {
+      if (!/border/.test(line)) assert.ok(Number(alpha[1]) >= 0.85, line);
+    }
+  }
+  assert.match(page, /body\.hd #title \{[^}]*text-shadow: none/);
+  // Every gradient and the dust are skipped in HD; the remaining gradients sit inside `if (!HD)` or `HD ? ... :`.
+  assert.match(page, /if \(HD\) \{\s*\/\/ A flat background/);
+  assert.match(page, /for \(const d of HD \? \[\] : dust\)/);
+  assert.match(page, /const STROKE = HD \? 2\.6 : 1;/);
+});
