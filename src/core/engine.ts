@@ -6,7 +6,7 @@ import { ActionItemTracker } from './drafting.ts';
 import { ProviderUnavailableError } from './provider-health.ts';
 import { missionReport, OPEN_MISSION, pendingApprovalsPrompt, type DirectRequest, type Mission, type MissionRunner } from './missions.ts';
 import { matchResearchTemplate, type ResearchMatch } from './research-templates.ts';
-import { agentUserMessage, stableAgentPrompt, turnAgentPrompt } from './agent-prompt.ts';
+import { agentUserMessage, stableAgentPrompt, turnAgentPrompt, DESIGN_REVIEW_PROMPT, isDesignQuestion } from './agent-prompt.ts';
 import { MORE_OF_RESULT_SPEC } from './result-digest.ts';
 import { UTC_TEAM, type TeamTime } from './team-time.ts';
 import { SpeechFloor, type SpeakResult, type SpeechFloorOptions } from './speech-floor.ts';
@@ -201,6 +201,9 @@ export interface NogitaEngineOptions {
   meetingRecap?: boolean;
   /** NOGITA_FOLLOW_UP: on joining, post in the chat what happened to the tasks she opened in the last week. Off unless set. */
   followUp?: boolean;
+  /** NOGITA_DESIGN_REVIEW: a question with no single right answer gets options, trade-offs and sources from the code in
+   *  the chat, and one spoken sentence. Off unless set. */
+  designReview?: boolean;
   /** NOGITA_RECAP_CHANNEL: every final recap also goes to this chat channel, which outlives the meeting and the server's
    *  disk. It is also the only place a recap can go when the meeting ended by itself. Unset: meeting chat only. */
   recapChannel?: string;
@@ -326,6 +329,8 @@ const MAX_SPOKEN_WORDS = 60;
 const DETAIL_SPOKEN_WORDS = 120;
 /** NOGITA_LISTEN_FIRST: one short sentence aloud; the rest of the answer is in the chat. */
 const LISTEN_FIRST_SPOKEN_WORDS = 25;
+/** NOGITA_DESIGN_REVIEW: "let me check the code", then the one-sentence recommendation; the options are in the chat. */
+const DESIGN_SPOKEN_WORDS = 40;
 function wantsDetail(request: string): boolean {
   return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
 }
@@ -479,6 +484,7 @@ export class NogitaEngine {
   private readonly listenFirst: boolean;
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
+  private readonly designReview: boolean;
   private readonly recapChannel?: string;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
@@ -543,6 +549,7 @@ export class NogitaEngine {
     this.listenFirst = options.listenFirst === true;
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
+    this.designReview = options.designReview === true;
     this.recapChannel = options.recapChannel?.trim() || undefined;
     this.completed = options.receipts ?? new Map();
   }
@@ -1110,7 +1117,8 @@ export class NogitaEngine {
     const said: Array<{ step: number; leadIn: boolean; outcome: Promise<string> }> = [];
     const leadInSteps = new Set<number>();
     let spokenWords = 0;
-    const maxWords = this.listenFirst ? LISTEN_FIRST_SPOKEN_WORDS : wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
+    const design = this.designReview && authorized && isDesignQuestion(request);
+    const maxWords = design ? DESIGN_SPOKEN_WORDS : this.listenFirst ? LISTEN_FIRST_SPOKEN_WORDS : wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
@@ -1147,6 +1155,8 @@ export class NogitaEngine {
     };
     const spokenPart = (text: string) => unaddressed ? stripRepeatRequests(guarded(text)) : guarded(text);
     const onSpeech = (chunk: string, step: number) => {
+      // A design answer is not streamed: its steps are reading, and only its first sentence is said, at the end.
+      if (design) return;
       // Deliberation is not speech: dropped before it counts as having spoken.
       const raw = spokenPart(chunk);
       if (!raw) return;
@@ -1203,6 +1213,12 @@ export class NogitaEngine {
       return outcomes;
     };
     let result;
+    if (design && voice) {
+      spoke = true;
+      this.clearProgressTimer(s);
+      if (q) this.clearQuestionProgress(q);
+      queueSpeech('Let me look at the code.', 0, true);
+    }
     s.lastModelCallAt = this.now();
     const agentStartedAt = this.now();
     try {
@@ -1216,11 +1232,13 @@ export class NogitaEngine {
           ...(this.research.researchTemplates && authorized
             ? { research: { request, tools: toolbox.specs.map(spec => spec.name), voice } } : {}) }),
           this.pendingApprovals && authorized ? pendingApprovalsPrompt(this.missions!.list({ ownerId: utterance.actor.id }), speaker) : '',
+          design ? DESIGN_REVIEW_PROMPT : '',
         ].filter(Boolean).join('\n'),
         messages: [{ role: 'user', content: agentUserMessage(transcript, speaker, userText) }],
         toolbox, stream: streaming, onSpeech: voice ? onSpeech : undefined, usageContext: sessionId,
-        deadlineMs: voice ? 45_000 : 90_000, maxTokens: voice ? 600 : 1_500, toolStepMaxTokens: voice ? 2_000 : 4_000,
-        maxSteps: voice ? 5 : 8,
+        // The options are read in the chat, so a design answer may be long and reading the code may take a while.
+        deadlineMs: voice && !design ? 45_000 : 90_000, maxTokens: design ? 2_000 : voice ? 600 : 1_500, toolStepMaxTokens: voice ? 2_000 : 4_000,
+        maxSteps: design ? 10 : voice ? 5 : 8,
         // The completion gate counts what was asked for only when it has the words; "what's left?" needs that count.
         ...(this.whatsLeftDirect && authorized ? { request: writeScope } : {}),
         digestResults: this.research.resultDigest, evidenceLedger: this.research.evidenceLedger, proofLevels: this.research.proofLevels,
@@ -1271,6 +1289,11 @@ export class NogitaEngine {
     if (!answer && result.stoppedEarly) answer = 'This is taking me too long. Can you narrow it down a bit?';
     if (floor && q && answer && !result.answer) queueSpeech(answer, result.steps);
     await speech;
+    if (design && voice && answer) {
+      const step = stepMs.length;
+      queueSpeech(firstWords(answer.split(/(?<=[.!?])\s+/)[0]!, DESIGN_SPOKEN_WORDS), step);
+      queueSpeech(this.phrases.pick(REST_IN_CHAT), step);
+    }
     const outcomes = await settleSpeech();
     this.clearProgressTimer(s);
     if (q) this.clearQuestionProgress(q);

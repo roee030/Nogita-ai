@@ -109,6 +109,28 @@ export function turnAgentPrompt(input: { speaker: string; authorized: boolean; n
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * NOGITA_DESIGN_REVIEW: a question with no single right answer ("how should we model this record?", "what do you
+ * think?"), asked of someone who can read the code. Asking for a fact about the code is not one.
+ */
+export function isDesignQuestion(request: string): boolean {
+  const t = request.toLowerCase();
+  return /\bwhat(?:'s| is|'re| are| do| would)? (?:you|your) (?:think|opinion|take|recommend|recommendation|suggest)\b/.test(t) ||
+    /\b(?:should|would) (?:we|i|it)\b.*\b(?:or|instead|rather|store|model|split|use|keep|move|structure|design|normali[sz]e)\b/.test(t) ||
+    /\bhow (?:should|would you|do you think|can we best) (?:we |i |you )?(?:model|design|structure|store|organi[sz]e|split|represent|lay out|architect|approach)\b/.test(t) ||
+    /\b(?:which|what) (?:is|would be|'s) (?:the )?(?:better|best|right|cleanest)\b/.test(t) ||
+    /\btrade-?offs?\b|\bpros and cons\b|\bbetter (?:to|if)\b/.test(t) ||
+    /מה דעתך|מה את חושבת|איך כדאי|מה עדיף|מה יותר נכון/.test(t);
+}
+
+/** How to answer one: from the code, with alternatives, without pretending there is one answer. */
+export const DESIGN_REVIEW_PROMPT = `This is a design question, and there may be no single right answer. Answer as the most experienced engineer on this codebase:
+- Read before you judge: the schema or types involved, the queries or code that read and write them, who else uses those fields, and how the code does similar things today. Write nothing between tool calls; nobody sees it.
+- The first sentence of your answer is the only part said aloud, so it must be your recommendation and its main reason: not what you checked, and no "Yeah" or "So" before it. If it really depends, say so and name what it depends on.
+- Then write "Options:" with two or three real alternatives. For each: what it is, what it makes easier, what it makes harder or more expensive, and the file paths that support that.
+- Then write "Would change my mind:" with the facts that would flip the recommendation, such as expected volume, or a query you could not find.
+- Rest every claim about this system on what you actually read. Say what you did not check. General engineering knowledge is welcome, but say that it is general.`;
+
 /** Formats the recent conversation plus the current request as the user message. */
 export function agentUserMessage(history: readonly string[], speaker: string, request: string): string {
   const transcript = history.slice(-30).map(line => line.slice(0, 600)).join('\n');
