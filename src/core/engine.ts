@@ -40,6 +40,8 @@ interface Session {
   swallowedAskAt?: number;
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
   heard?: Map<string, number>;
+  /** Everyone heard in this meeting; unlike `heard`, nobody ever drops out of it. */
+  voices?: Set<string>;
   /** First names of people heard (actor id -> name), to tell when someone is addressed by name instead of her. */
   names?: Map<string, string>;
   activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
@@ -435,6 +437,15 @@ function questionStartLost(text: string): boolean {
     !/^(?:what|what's|which|who|how|why|when|where|is|are|do|does|did|can|could|would|will|has|have|was|should)\b/i.test(tail);
 }
 /** Words that read as a question or a request (for a turn that did not use her name). */
+/**
+ * Listen-first, after she asked something: "Got it" answers nothing, and with other people in the meeting a question
+ * ("Anything else you want to bring up?") is for them. Words that could be an answer, even "okay", still reach her.
+ */
+function notAReplyToHer(text: string, othersInMeeting: boolean): boolean {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (/^(?:got it|i see|thanks|thank you|cool|nice|great|mm+|m+ ?h+m+|h+m+)$/.test(words)) return true;
+  return othersInMeeting && /\?["')\]]?$/.test(text.trim());
+}
 function looksLikeRequest(text: string): boolean {
   const t = text.trim().toLowerCase();
   return t.endsWith('?') || /^(?:(?:so|okay|ok|and|um|uh|well|now|hey|also|then)[,\s]+)*(?:what|what's|why|where|when|who|which|how|can|could|would|will|is|are|do|does|did|should|please|tell|show|share|open|create|add|give|list|find|check|explain|put|move|i want|i need|i'd like|let's)\b/.test(t);
@@ -1600,6 +1611,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
   private noteSpeaker(s: Session, utterance: Utterance): void {
     const id = utterance.actor.id;
     (s.heard ??= new Map()).set(id, this.now());
+    (s.voices ??= new Set()).add(id);
     const first = utterance.actor.displayName.trim().split(/\s+/)[0] ?? '';
     if (first.length > 1 && utterance.actor.displayName !== 'Meeting participant' && !/^nogita$/i.test(first)) {
       (s.names ??= new Map()).set(id, first);
@@ -1616,6 +1628,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
    */
   private followUpRuledOut(s: Session, pending: NonNullable<Session['pendingFollowUp']>, text: string, actorId: string): boolean {
     if (addressesSomeoneElse(text, this.otherNames(s, actorId))) return true;
+    if (this.listenFirst && pending.kind === 'question' && notAReplyToHer(text, s.voices?.size !== 1)) return true;
     if (this.roomNoiseGuard && s.floor) {
       if (this.isRoomNoise(s, text)) return true;
       // After an answer, words that ask nothing ("Yeah, the huge one. I opened it last week.") are the room talking.
@@ -1730,13 +1743,15 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     const heard = s.heard ??= new Map();
     for (const [actorId, at] of heard) if (this.now() - at > 5 * 60_000) heard.delete(actorId);
     // Only one person and Nogita in the call: their questions are for her, name or not (the agent stays silent otherwise).
-    const oneToOne = !this.listenFirst && !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && heard.size === 1 && looksLikeRequest(current);
+    // Listen-first is stricter about "only one person": nobody else spoke at any point in this meeting.
+    const alone = this.listenFirst ? s.voices?.size === 1 : heard.size === 1;
+    const oneToOne = !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && alone && looksLikeRequest(current);
     let pending = s.pendingFollowUp;
     if (oneToOne && !(pending?.actorId === utterance.actor.id && this.now() <= pending.expiresAt)) {
       pending = { actorId: utterance.actor.id, request: '', question: '', expiresAt: this.now() + 1, afterSequence: arrivalSequence - 1 };
     }
-    // Listen-first: without her name, only the reply to a question she asked is for her.
-    const continuation = !directlyAddressed && pending !== undefined && (!this.listenFirst || pending.kind === 'question') &&
+    // Listen-first: with other people in the meeting, only the reply to a question she asked is for her without her name.
+    const continuation = !directlyAddressed && pending !== undefined && (!this.listenFirst || pending.kind === 'question' || alone) &&
       pending.actorId === utterance.actor.id && arrivalSequence > pending.afterSequence &&
       this.now() <= pending.expiresAt && !this.followUpRuledOut(s, pending, current, utterance.actor.id) &&
       // The agent can tell a real reply from unrelated talk (it answers with silence); the planner cannot.
