@@ -26,6 +26,7 @@ import { SlackConversationRegistry, SlackMissionHandoffs } from './slack-convers
 import { AttendeeRealtimeAudioHub, DEFAULT_EAGER_EOT_THRESHOLD, chooseSttMode, parseLanguages } from './attendee-realtime-audio.ts';
 import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 import { PresenceHub, presencePageUrl as presenceUrl } from './presence.ts';
+import { ScreenCaptureHub, parseScreenResolution, screenWebsocketSettings } from './screen-capture.ts';
 import { buildTurnTrace, TurnLog, parseTurnLogMode } from './turn-log.ts';
 import { FileMissionStore } from './mission-store.ts';
 import { MissionRunner, OPEN_MISSION, type Mission } from '../core/missions.ts';
@@ -194,6 +195,10 @@ if (env.NOGITA_PRESENCE_HD !== undefined && !['', 'true', 'false'].includes(env.
   throw new Error('NOGITA_PRESENCE_HD must be true or false');
 }
 const presenceHd = env.NOGITA_PRESENCE_HD?.trim() === 'true';
+// NOGITA_SCREEN_CAPTURE (720p or 1080p): the shared screen's frames, held in memory for the screen-reading spike.
+const screenResolution = parseScreenResolution(env.NOGITA_SCREEN_CAPTURE);
+const screenCapture = screenResolution && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.ATTENDEE_WEBHOOK_SECRET
+  ? new ScreenCaptureHub(new URL(env.ATTENDEE_AUDIO_WEBSOCKET_URL).origin, env.ATTENDEE_WEBHOOK_SECRET) : undefined;
 const publicBaseUrl = (() => {
   try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
 })();
@@ -463,6 +468,7 @@ async function forgetAttendeeSession(sessionId: string, botId?: string): Promise
   attendeeMeetingsBySession.delete(sessionId);
   attendeeBotsBySession.delete(sessionId);
   realtimeAudio?.closeSession(sessionId);
+  screenCapture?.closeSession(sessionId);
   if (botId) await attendeeBindings.remove(sessionId, botId);
 }
 
@@ -822,6 +828,18 @@ const server = createServer(async (req, res) => {
       const report = sessionUsage.report(sessionId, ai);
       respond(res, report ? 200 : 404, report ?? { error: 'unknown session usage' }); return;
     }
+    const screenMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/screen(?:\/(\d+))?$/);
+    if (req.method === 'GET' && screenMatch && screenCapture) {
+      const sessionId = decodeURIComponent(screenMatch[1]!);
+      if (screenMatch[2]) {
+        const jpeg = screenCapture.frame(sessionId, Number(screenMatch[2]));
+        if (!jpeg) { respond(res, 404, { error: 'unknown frame' }); return; }
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        res.end(jpeg); return;
+      }
+      const report = screenCapture.report(sessionId);
+      respond(res, report ? 200 : 404, report ?? { error: 'unknown session' }); return;
+    }
     if (req.method === 'GET' && pathname === '/api/attendee/enrollment-candidates') {
       respond(res, 200, { candidates: attendeeEnrollment.list(), retentionSeconds: 3600 }); return;
     }
@@ -846,6 +864,8 @@ const server = createServer(async (req, res) => {
         ? attendeeCommands.beginSession(payload.id, owner)
         : undefined;
       const realtimeAudioUrl = provider === 'attendee' && realtimeAudio ? realtimeAudio.register(payload.id) : undefined;
+      const screenSettings = provider === 'attendee' && screenCapture && screenResolution
+        ? screenWebsocketSettings(screenCapture.register(payload.id), screenResolution) : undefined;
       const presencePageUrl = provider === 'attendee' && presenceMode && publicBaseUrl
         ? presenceUrl(publicBaseUrl, payload.id, presence.open(payload.id), { mode: presenceMode, hd: presenceHd }) : undefined;
       const meeting = provider === 'recall'
@@ -858,13 +878,14 @@ const server = createServer(async (req, res) => {
             (stage, durationMs) => sessionUsage.recordSpeechStage(payload.id!, stage, durationMs),
             realtimeAudioUrl, realtimeAudio ? (text, options) => realtimeAudio.speak(payload.id!, text, options) : undefined,
             presencePageUrl && presenceMode ? { url: presencePageUrl, mode: presenceMode } : undefined,
-            realtimeAudio ? () => realtimeAudio.interruptSpeech(payload.id!) : undefined)
+            realtimeAudio ? () => realtimeAudio.interruptSpeech(payload.id!) : undefined, screenSettings)
         : new DemoMeeting(payload.id);
       try {
         await nogita.startSession(payload.id, meeting, payload.meetingUrl);
       } catch (error) {
         if (provider === 'attendee') attendeeCommands.endSession(payload.id);
         realtimeAudio?.closeSession(payload.id);
+        screenCapture?.closeSession(payload.id);
         presence.close(payload.id);
         throw error;
       }
@@ -916,6 +937,7 @@ const server = createServer(async (req, res) => {
   }
 });
 server.on('upgrade', (request, socket, head) => {
+  if (screenCapture?.handleUpgrade(request, socket, head)) return;
   if (!realtimeAudio || !realtimeAudio.handleUpgrade(request, socket, head)) {
     socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
     socket.destroy();

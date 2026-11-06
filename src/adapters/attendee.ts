@@ -29,6 +29,8 @@ export class AttendeeMeeting implements MeetingPort {
     private readonly presence?: { url: string; mode: 'screenshare' | 'camera' },
     /** Stops realtime speech playing now (stop, cancel, correction); false when nothing was playing. */
     private readonly interruptStream?: () => boolean,
+    /** NOGITA_SCREEN_CAPTURE: where Attendee sends the shared screen's frames. */
+    private readonly screenCapture?: Record<string, unknown>,
   ) {
     if (!apiKey.trim()) throw new Error('ATTENDEE_API_KEY is required');
     if (presence && new URL(presence.url).protocol !== 'https:') throw new Error('Presence page URL must use HTTPS');
@@ -95,9 +97,10 @@ export class AttendeeMeeting implements MeetingPort {
         bot_chat_message: { to: 'everyone', message: this.initialChatMessage },
       } : {}),
       debug_settings: { create_debug_recording: false },
-      ...(this.realtimeAudioUrl ? { websocket_settings: { per_participant_audio: {
-        url: this.realtimeAudioUrl, sample_rate: AUDIO_SAMPLE_RATE,
-      } } } : {}),
+      ...(this.realtimeAudioUrl || this.screenCapture ? { websocket_settings: {
+        ...(this.realtimeAudioUrl ? { per_participant_audio: { url: this.realtimeAudioUrl, sample_rate: AUDIO_SAMPLE_RATE } } : {}),
+        ...(this.screenCapture ? { per_participant_video: this.screenCapture } : {}),
+      } } : {}),
       // Attendee loads the page in its browser (1280x720) and shares it; the page itself is silent.
       ...(this.presence ? { voice_agent_settings: this.presence.mode === 'camera'
         ? { url: this.presence.url } : { screenshare_url: this.presence.url } } : {}),
