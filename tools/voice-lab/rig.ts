@@ -54,6 +54,8 @@ export interface RigOptions {
   /** Router quiet window; production uses 1200 ms. */
   routerQuietMs?: number;
   incompleteTurnHoldMs?: number;
+  /** NOGITA_WIDE_INCOMPLETE_TURNS for this run. */
+  wideIncompleteTurns?: boolean;
   /** Commit a complete question after this much own-voice silence past Flux's early end-of-turn (0 = off). */
   earlyCommitMs?: number;
   /** Production's NOGITA_TURN_TAKING_V2 profile: true (default in the lab) or false for the legacy rollback profile. */
@@ -297,7 +299,7 @@ export class VoiceRig {
         } finally { this.pendingEngine--; }
       },
       async (_sessionId, message) => this.meeting.sendStatus(message),
-      { quietMs: this.options.routerQuietMs, incompleteTurnHoldMs: this.options.incompleteTurnHoldMs,
+      { quietMs: this.options.routerQuietMs, wideIncompleteTurns: this.options.wideIncompleteTurns === true, incompleteTurnHoldMs: this.options.incompleteTurnHoldMs,
         earlyCommitMs: this.options.earlyCommitMs, onError: error => this.log('error',
         { detail: `router: ${error instanceof Error ? error.message : String(error)}` }),
       onSpeechActivity: (sessionId, speakerUuid) => this.engine.cancelProgressForSpeechActivity(sessionId, speakerUuid),

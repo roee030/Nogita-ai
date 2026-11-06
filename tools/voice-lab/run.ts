@@ -35,7 +35,7 @@ const { values } = parseArgs({ options: {
   'incomplete-hold-ms': { type: 'string' }, 'early-commit-ms': { type: 'string' }, 'turn-taking': { type: 'string' }, warmup: { type: 'string' },
   research: { type: 'boolean', default: false }, 'room-noise-guard': { type: 'boolean', default: false },
   'swallowed-question': { type: 'boolean', default: false }, 'two-speed': { type: 'boolean', default: false },
-  repeat: { type: 'string', default: '1' }, 'listen-first': { type: 'boolean', default: false }, 'hold-pause-for-words': { type: 'boolean', default: false },
+  repeat: { type: 'string', default: '1' }, 'wide-incomplete': { type: 'boolean', default: false }, 'listen-first': { type: 'boolean', default: false }, 'hold-pause-for-words': { type: 'boolean', default: false },
 } });
 
 if (values.list) {
@@ -166,7 +166,7 @@ for (let repetition = 1; repetition <= repeat; repetition++) {
     const audio: Float32Array[] = [];
     for (const turn of scenario.turns) audio.push(await synthesizeTurn(turn, voices.get(turn.speaker)!, synthesize));
     rig = new VoiceRig({ deepgramApiKey: env.DEEPGRAM_API_KEY, sttMode, ttsModel: env.DEEPGRAM_TTS_MODEL,
-      dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, earlyCommitMs, turnTakingV2: turnTaking === 'v2', holdPauseForWords: values['hold-pause-for-words'], frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
+      dependencies: { ...dependencies, chat }, routerQuietMs, incompleteTurnHoldMs, wideIncompleteTurns: values['wide-incomplete'], earlyCommitMs, turnTakingV2: turnTaking === 'v2', holdPauseForWords: values['hold-pause-for-words'], frameMs, eotThreshold: values.eot ? Number(values.eot) : undefined,
       warmup,
       eagerThreshold: eager !== 'off' ? Number(eager) : undefined,
       // The chat fallback makes a raised hand visible to the lab (LabMeeting has no native hand).

@@ -38,6 +38,8 @@ export interface AttendeeCommandRouterOptions {
   nameOnlyMs?: number;
   /** Opt-in hold for an incomplete request such as "Nogita, can you check?". Zero keeps current behavior. */
   incompleteTurnHoldMs?: number;
+  /** NOGITA_WIDE_INCOMPLETE_TURNS: the hold also covers short fragments ("So, I'm wondering?", "You need to combine."). */
+  wideIncompleteTurns?: boolean;
   /**
    * Opt-in (0 = off, up to 1000): a complete question to her ("Nogita, which file starts the server?") is taken as
    * the end of the turn once the speaker's own voice has been silent this long after Flux's early end-of-turn,
@@ -88,6 +90,7 @@ export class AttendeeCommandRouter {
   private readonly questionQuietMs: number;
   private readonly nameOnlyMs: number;
   private readonly incompleteTurnHoldMs: number;
+  private readonly wideIncompleteTurns: boolean;
   private readonly earlyCommitMs: number;
   private readonly chatAck: boolean;
   private readonly randomCode: () => string;
@@ -111,6 +114,7 @@ export class AttendeeCommandRouter {
     this.questionQuietMs = Math.min(this.quietMs, options.questionQuietMs ?? 300);
     this.nameOnlyMs = options.nameOnlyMs ?? 2_500;
     this.incompleteTurnHoldMs = options.incompleteTurnHoldMs ?? 0;
+    this.wideIncompleteTurns = options.wideIncompleteTurns === true;
     if (!Number.isFinite(this.incompleteTurnHoldMs) || this.incompleteTurnHoldMs < 0 || this.incompleteTurnHoldMs > 5_000) {
       throw new Error('incompleteTurnHoldMs must be between 0 and 5000');
     }
@@ -216,7 +220,7 @@ export class AttendeeCommandRouter {
       const text = normalizeWakeWord(entry.fragments.map(fragment => fragment.text).join(' ').trim());
       if (NAME_ONLY.test(text)) {
         entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.nameOnlyMs);
-      } else if (this.incompleteTurnHoldMs && incompleteRequest(text)) {
+      } else if (this.incompleteTurnHoldMs && incompleteRequest(text, this.wideIncompleteTurns)) {
         entry.timer = this.schedule(() => this.flush(request.sessionId, request.speakerUuid).catch(this.onError), this.incompleteTurnHoldMs);
       } else void this.flush(request.sessionId, request.speakerUuid).catch(this.onError);
     }
@@ -236,7 +240,7 @@ export class AttendeeCommandRouter {
     const actor = state.bindings.get(request.speakerUuid) ??
       (request.utterance.actor.verified ? request.utterance.actor : previous?.actor);
     this.resumeTurn(request.sessionId, request.speakerUuid);
-    if (this.incompleteTurnHoldMs && incompleteRequest(text)) return;
+    if (this.incompleteTurnHoldMs && incompleteRequest(text, this.wideIncompleteTurns)) return;
     if (!actor?.verified || !directlyAddressesNogita(text)) return;
     const handle = this.speculate(request.sessionId, { eventId: `${request.utterance.eventId}-early`, actor, text,
       inputTurnIds: [...new Set([...(previous?.fragments ?? []).flatMap(f => f.inputTurnIds ?? []), ...(request.utterance.inputTurnIds ?? [])])],
@@ -289,7 +293,7 @@ export class AttendeeCommandRouter {
     if (!entry) return;
     this.cancel(entry.timer);
     const text = normalizeWakeWord(entry.fragments.map(fragment => fragment.text).join(' '));
-    const delay = this.incompleteTurnHoldMs && incompleteRequest(text) ? this.incompleteTurnHoldMs : this.quietMs;
+    const delay = this.incompleteTurnHoldMs && incompleteRequest(text, this.wideIncompleteTurns) ? this.incompleteTurnHoldMs : this.quietMs;
     entry.timer = this.schedule(() => this.flush(sessionId, speakerUuid).catch(this.onError), delay);
   }
 
@@ -424,8 +428,30 @@ function remainderAfter(prefix: string, text: string): string | undefined {
   return words.slice(index).join(' ').trim();
 }
 
+/**
+ * NOGITA_WIDE_INCOMPLETE_TURNS: more ways a short turn is not finished, from the Meets of 1 and 3 November, where each of
+ * these got an answer while the speaker went on. A wrong guess costs only the hold: the words are answered when it ends.
+ */
+const FRAGMENTS: readonly RegExp[] = [
+  /\b(?:i'?m|i am|i was|we were) wondering$/,
+  /\b(?:i|we) (?:want|wanted|need|needed|would like) to$/,
+  /\byou (?:need|have|should) to \w+$/,
+  /(?:^|\s)please$/,
+  // A phrase that opens on a preposition or "all the", with no question: "All the PR that we pushed today.", "In jira."
+  /^(?:all the|about|regarding|to|for|with|in|on)\b/,
+];
+const FRAGMENT_MAX_WORDS = 8;
+
+function fragmentOfASentence(text: string): boolean {
+  const request = removeAddress(text).trim();
+  if (request.endsWith('?') && !/\bwondering\?$/i.test(request)) return false;
+  const words = request.toLowerCase().replace(/[^\p{L}\p{N}'\s]+/gu, ' ').trim().replace(/\s+/g, ' ');
+  return words.split(' ').length <= FRAGMENT_MAX_WORDS && FRAGMENTS.some(pattern => pattern.test(words));
+}
+
 /** Narrow incomplete prefixes observed in the lab; complete questions still take the fast path. */
-function incompleteRequest(text: string): boolean {
+function incompleteRequest(text: string, wide = false): boolean {
+  if (wide && fragmentOfASentence(text)) return true;
   // "All the the?": a speaker searching for words, not a finished turn (heard in a live Meet).
   const last = text.toLowerCase().replace(/[^\p{L}\p{N}'\s]+/gu, ' ').trim().split(/\s+/).at(-1);
   if (last && DANGLING.has(last)) return true;
