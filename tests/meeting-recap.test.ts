@@ -61,7 +61,8 @@ class Meeting extends DemoMeeting {
   override async speak(message: string): Promise<void> { this.spoken.push(message); await super.speak(message); }
 }
 const roee = { id: 'roee', displayName: 'Roee Angel', verified: true };
-const guest = { id: 'guest', displayName: 'Guest', verified: false };
+// Verified but not allowed to write: an unverified speaker is ignored before the approval check runs.
+const guest = { id: 'guest', displayName: 'Guest', verified: true };
 
 async function meeting(options: { recapChannel?: string; chat?: ChatPort } = {}) {
   const model = new Model();
@@ -91,6 +92,8 @@ test('"approve 1 and 3" opens exactly those, once; a guest cannot approve', asyn
   await f.say('Nogita, summarize.');
   await f.say('Nogita, approve 1 and 3.', guest);
   assert.equal(f.board.tasks.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(f.m.spoken.join(' '), /Only someone who may write tasks/);
   await f.say('Nogita, approve 1 and 3.');
   assert.deepEqual(f.board.tasks.map(task => task.title), ['Write the release notes', 'Decide the speech guard reviewer']);
   await f.say('Nogita, approve all.');

@@ -164,6 +164,14 @@ export function designReview(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_RETRO: 'true' writes a retro on request from the recap channel, the board and the repository; blank or 'false'
+ *  leaves it off. */
+export function retro(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_RETRO?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_RETRO must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {
