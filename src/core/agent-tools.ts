@@ -67,6 +67,8 @@ export interface ToolboxContext {
   now?: () => number;
   /** Offers create_tasks and update_tasks (up to 10 items each, one chat receipt). Off unless the team turned it on. */
   batchTasks?: boolean;
+  /** NOGITA_STRICT_SPEECH_GUARD: a refusal from her own checks says so, so she doesn't tell the meeting the board refused. */
+  ownRefusals?: boolean;
   /** Offers ci_status (CI runs and the deployed commit). Off unless the team turned it on. */
   ciStatus?: boolean;
   /** Offers mission_status (what a mission did, what failed and what is still open, with sources). Off unless set. */
@@ -351,17 +353,21 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const { board, chat } = ports;
   let writes = 0;
   // With the batch tools on, the model is told whose limit this is: it used to tell the meeting that Jira had rejected them.
-  const tooMany = (start: string) => context.batchTasks
+  const tooMany = (start: string) => context.batchTasks || context.ownRefusals
     ? `${start}: this request reached Nogita's own limit of ${MAX_WRITES_PER_TURN} writes; the board did not refuse anything. Say how many went through and that they can ask for the rest.`
     : `${start}: too many writes in one request.`;
+  // Replays of 6 November: this check refused, she told the room the board had, then opened a task to check Jira's permissions.
+  const mine = (refusal: string) => context.ownRefusals
+    ? `${refusal} This was Nogita's own check: nothing reached the board, and the board refused nothing. Do not try again in this request, and do not mention a tool or a system.`
+    : refusal;
   let taskIndex = 0;
   /** The refusal for a write nobody asked for, or undefined when it was asked: the phrases first, then the judge. */
   const notAsked = async (kind: WriteKind, phrased: boolean, proposed: string, refusal: string): Promise<string | undefined> => {
     if (context.writesApproved || phrased) return undefined;
-    if (!context.writeIntent) return refusal;
+    if (!context.writeIntent) return mine(refusal);
     const verdict = await context.writeIntent.judge({ kind, proposed, request: context.request, speaker: context.actor.displayName,
       ...(context.lastMessage ? { lastMessage: context.lastMessage } : {}) }).catch(() => ({ verdict: 'not_asked' as const }));
-    return verdict.verdict === 'asked' ? undefined : verdict.verdict === 'unclear' ? UNCLEAR(verdict.confirm) : refusal;
+    return verdict.verdict === 'asked' ? undefined : verdict.verdict === 'unclear' ? UNCLEAR(verdict.confirm) : mine(refusal);
   };
   const specs: AgentToolSpec[] = [];
   const handlers = new Map<string, (input: Record<string, unknown>) => Promise<ToolOutcome>>();
@@ -727,7 +733,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const refused = extra.length ? await notAsked('update_task', false, describeUpdates([input]),
         `Not changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`) : undefined;
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not changed'), isError: true };
       const outcome = await updateOne(input);
       if (outcome.isError) return { content: outcome.content, isError: true };
       writes++;
@@ -746,7 +752,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const refused = extra.length ? await notAsked('update_task', false, describeUpdates(list),
         `Nothing changed: the request does not explicitly ask for ${extra.join(' or ')}. Ask the person to confirm with a direct request.`) : undefined;
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not changed: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not changed'), isError: true };
       writes++;
       return runBatch(list, updateOne, 'changed');
     }, true);
@@ -757,7 +763,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         `post to ${str(input.channel, 100) ?? '(no channel)'}: ${str(input.text, 300) ?? ''}`,
         'Not posted: the request does not explicitly ask to send a message. Ask the person to confirm with a direct request.');
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not posted: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not posted'), isError: true };
       const channel = str(input.channel, 100);
       const text = str(input.text, 3000);
       if (!channel || !text) return { content: 'channel and text are required', isError: true };
@@ -784,7 +790,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const refused = await notAsked('open_draft_pr', isExplicitPRRequest(context.request), `open a draft pull request: ${str(input.title, 200) ?? '(no title)'}`,
         'Not opened: the request does not explicitly ask for a pull request. Ask the person to confirm with a direct request.');
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not opened: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not opened'), isError: true };
       const title = str(input.title, 200);
       const description = str(input.description, 6000);
       if (!title || !description) return { content: 'title and description are required', isError: true };

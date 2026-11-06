@@ -12,12 +12,12 @@ const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const people = new IdentityDirectory([{ id: 'lead', displayName: 'Lead Person' }, { id: 'dana', displayName: 'Dana Katz' }, { id: 'roee', displayName: 'Roee Angel' }]);
 const assignable = () => new Map([['lead', 'Lead Person'], ['dana', 'Dana Katz'], ['roee', 'Roee Angel']]);
 
-function setup(request: string, options: { board?: MemoryBoard; completed?: Map<string, ActionReceipt>; eventId?: string; batchTasks?: boolean } = {}) {
+function setup(request: string, options: { board?: MemoryBoard; completed?: Map<string, ActionReceipt>; eventId?: string; batchTasks?: boolean; ownRefusals?: boolean } = {}) {
   const board = options.board ?? new MemoryBoard('memory', 'MEM', assignable());
   const receipts: ActionReceipt[] = [];
   const { toolbox, report } = buildToolbox({ actor: lead, request, sessionId: 's', eventId: options.eventId ?? 'e1', people,
     policy: new AllowlistPolicy(new Set(['lead'])), code: new DemoCode(), board, completed: options.completed ?? new Map(),
-    batchTasks: options.batchTasks ?? true, onReceipt: async receipt => { receipts.push(receipt); } });
+    batchTasks: options.batchTasks ?? true, ownRefusals: options.ownRefusals ?? false, onReceipt: async receipt => { receipts.push(receipt); } });
   return { toolbox, report, board, receipts };
 }
 
@@ -189,4 +189,24 @@ test('ten tasks in one request all open; past the limit the refusal says it is h
   assert.equal(refused.isError, true);
   assert.match(refused.content, /Nogita's own limit/);
   assert.match(refused.content, /did not refuse/);
+});
+
+test('with the strict guard, a refusal from her own check says the board refused nothing, and without it nothing changes', async () => {
+  const on = setup('we should think about the login bug', { ownRefusals: true });
+  const refused = await on.toolbox.run('create_task', { title: 'Login bug', description: 'x' });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content, /does not explicitly ask/);
+  assert.match(refused.content, /board refused nothing/);
+  assert.match(refused.content, /Do not try again/);
+  const off = setup('we should think about the login bug', { batchTasks: false });
+  const plain = await off.toolbox.run('create_task', { title: 'Login bug', description: 'x' });
+  assert.equal(plain.isError, true);
+  assert.doesNotMatch(plain.content, /board refused nothing/);
+});
+
+test('with the strict guard, every write past the limit says the limit is hers', async () => {
+  const f = setup('open tasks and update KAN-1 and move them to done, assign and comment', { batchTasks: false, ownRefusals: true });
+  for (let i = 0; i < 5; i++) await f.toolbox.run('create_task', { title: `Task ${i}`, description: 'x' });
+  const refused = await f.toolbox.run('create_task', { title: 'Too many', description: 'x' });
+  assert.match(refused.content, /Nogita's own limit/);
 });

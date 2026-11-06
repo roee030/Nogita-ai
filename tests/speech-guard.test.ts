@@ -155,3 +155,37 @@ test('planning aloud: saying why the words were not for her is dropped, a real a
     assert.equal(stripPlanningAloud(line, 'Roee'), line, line);
   }
 });
+
+test('strict guard: sorting the request out loud is dropped, and ordinary answers that sound close stay', () => {
+  for (const line of [
+    'The user explicitly asked for a task assigned to Yossi, with a clear topic.',
+    'The user asked me to work on this in the background, but they also said to open a task.',
+    'This is a request to take ownership of KAN 3 and also to open a new task.',
+    'This is a mission-style request.',
+    "This one's a task to own, not a question, so I'll hand it to a mission.",
+    'The request is to open a task for Yossi, so I will create it now.',
+    'That fits delegate mission, but the explicit ask is to open a task.',
+    'The clearest reading is to start a mission to handle KAN 3.',
+    'I should create the task now, assigned to Yossi, rather than delegating.',
+    'The person explicitly asked for a comment on KAN 1 with specific words, so I post it as written.',
+    'The user asked to work on this in the background, so I should start a mission rather than create the task directly.',
+    "Roee's request was explicit, so the tool refusing is odd.",
+    'The previous turn offered that, and "Yeah. Do it." is an explicit request.',
+    'The tool wants confirmation, but Roee already said yes.',
+    "Nothing got created, so I shouldn't retry.",
+    "I'll tell Roee plainly and ask him to say the request directly.",
+  ]) assert.equal(stripPlanningAloud(line), '', line);
+  for (const line of [
+    'Creating it now.',
+    'Done, KAN 7 is with Yossi.',
+    'The user table has an email column.',
+    'The user asked for a refund in KAN-12.',
+    'The person asked to be moved to another team.',
+    'This is a feature request from Dana.',
+    'I should have it by Friday.',
+    'The request is still open.',
+  ]) assert.equal(stripPlanningAloud(line), line, line);
+  assert.equal(stripPlanningAloud("Roee's asking for one task covering today's merged PRs.", 'Roee Angel'), '');
+  assert.equal(stripPlanningAloud("Dana's asking for one task.", 'Roee Angel'), "Dana's asking for one task.");
+  assert.equal(stripPlanningAloud('Got it. The request is to open a task for Yossi, so I will create it now. Done, KAN 7.'), 'Got it. Done, KAN 7.');
+});
