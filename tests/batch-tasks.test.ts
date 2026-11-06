@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildToolbox, combineReceipts } from '../src/core/agent-tools.ts';
+import { batchTasks } from '../src/app/config.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoCode } from '../src/adapters/demo.ts';
 import { MemoryBoard } from '../src/adapters/memory.ts';
@@ -166,4 +167,26 @@ test('combineReceipts keeps a single receipt as it is', () => {
   assert.equal(combineReceipts([one]), one);
   assert.deepEqual(combineReceipts([one, { ...one, label: 'MEM-2', url: 'https://x/2' }]),
     { provider: 'p', kind: 'task', label: 'MEM-1 and MEM-2', url: 'https://x/1 https://x/2' });
+});
+
+test('NOGITA_BATCH_TASKS is off unless set, and read strictly', () => {
+  assert.equal(batchTasks({}), false);
+  assert.equal(batchTasks({ NOGITA_BATCH_TASKS: 'true' }), true);
+  assert.throws(() => batchTasks({ NOGITA_BATCH_TASKS: 'yes' }));
+});
+
+test('ten tasks in one request all open; past the limit the refusal says it is her limit, not the board', async () => {
+  const ten = Array.from({ length: 10 }, (_, i) => ({ title: `PR ${i + 1}`, description: `Merged PR ${i + 1}.` }));
+  const f = setup('open ten tasks, one per PR');
+  const titles: string[] = [];
+  const create = f.board.createTask.bind(f.board);
+  f.board.createTask = async input => { titles.push(input.title); return create(input); };
+  const created = await f.toolbox.run('create_tasks', { tasks: ten });
+  assert.notEqual(created.isError, true, created.content);
+  assert.deepEqual(titles, ten.map(item => item.title));
+  for (let i = 0; i < 4; i++) await f.toolbox.run('create_task', { title: `One more ${i}`, description: 'x' });
+  const refused = await f.toolbox.run('create_task', { title: 'Too many', description: 'x' });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content, /Nogita's own limit/);
+  assert.match(refused.content, /did not refuse/);
 });
