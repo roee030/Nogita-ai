@@ -1,3 +1,4 @@
+import { isDesignQuestion } from '../core/agent-prompt.ts';
 import { InvalidPlanningResponseError, type AiUsage, type BrainPort, type ConversationTurn, type Evidence,
   type Plan } from '../core/contracts.ts';
 import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../core/agent.ts';
@@ -50,6 +51,8 @@ function routingReason(text: string): 'research' | 'multiple_actions' | 'fast_vo
   const quantifiedAction = actions.length > 0 &&
     /\b(?:two|three|four|five|six|seven|eight|nine|ten|multiple|several|a few|\d+)\b/i.test(text);
   if (actions.length >= 2 || quantifiedAction) return 'multiple_actions';
+  // A design question is worth the stronger model when routing is on (NOGITA_MODEL_ROUTING).
+  if (isDesignQuestion(text)) return 'research';
   if (/\b(?:what (?:changed|shipped|landed)|what(?:'s| is) new|today|this week|research|investigate|compare|root cause|why (?:did|does|is|was|are)|ci\b|build (?:failed|failure)|across (?:github|jira|slack|sources))\b/i.test(text)) {
     return 'research';
   }
