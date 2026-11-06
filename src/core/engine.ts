@@ -15,6 +15,7 @@ import { stripChatClaims, stripPlanningAloud, stripReasoningAloud, stripRepeatRe
 import { ModelWriteIntentJudge, type WriteIntentJudge } from './write-intent.ts';
 import { buildRecap, formatRecap, isRecapRequest, parseApproval, type MeetingRecap } from './recap.ts';
 import { followUp } from './follow-up.ts';
+import { isRetroRequest, recapsSince, retroDays, writeRetro } from './retro.ts';
 import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCreateRequest, isExplicitLeaveRequest, isExplicitPRRequest,
   isRepositoryConnectionQuestion, isRepositoryOverviewQuestion, isRepositoryQuestion, normalizeWakeWord, removeAddress } from './policy.ts';
 
@@ -204,6 +205,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_DESIGN_REVIEW: a question with no single right answer gets options, trade-offs and sources from the code in
    *  the chat, and one spoken sentence. Off unless set. */
   designReview?: boolean;
+  /** NOGITA_RETRO: "Nogita, prepare the retro" writes one from the recap channel (NOGITA_RECAP_CHANNEL), the board and
+   *  the repository. Off unless set. */
+  retro?: boolean;
   /** NOGITA_RECAP_CHANNEL: every final recap also goes to this chat channel, which outlives the meeting and the server's
    *  disk. It is also the only place a recap can go when the meeting ended by itself. Unset: meeting chat only. */
   recapChannel?: string;
@@ -485,6 +489,7 @@ export class NogitaEngine {
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
   private readonly designReview: boolean;
+  private readonly retro: boolean;
   private readonly recapChannel?: string;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
@@ -550,6 +555,7 @@ export class NogitaEngine {
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
     this.designReview = options.designReview === true;
+    this.retro = options.retro === true;
     this.recapChannel = options.recapChannel?.trim() || undefined;
     this.completed = options.receipts ?? new Map();
   }
@@ -1405,6 +1411,36 @@ export class NogitaEngine {
     }
   }
 
+  /** One line aloud in a voice meeting, in the chat otherwise. */
+  private tell(s: Session, text: string): Promise<void> {
+    if (s.floor) { this.sayAside(s, text); return Promise.resolve(); }
+    return s.meeting.sendStatus(text).catch(() => undefined);
+  }
+
+  /** The data is gathered here, and the model writes only from it. Nothing is written without recaps to write from. */
+  private async prepareRetro(sessionId: string, s: Session, utterance: Utterance, request: string): Promise<void> {
+    if (!this.dependencies.policy.mayReadCode(utterance.actor)) return this.tell(s, 'Only the team can ask me for a retro.');
+    if (!this.recapChannel || !this.dependencies.chat) return this.tell(s, 'I have no recap channel set up, so I have no meetings to base a retro on.');
+    await this.tell(s, 'Let me pull the recaps.');
+    const days = retroDays(request);
+    const since = this.now() - days * 86_400_000;
+    let messages;
+    try { messages = await this.dependencies.chat.readChannel(this.recapChannel, 50); }
+    catch { return this.tell(s, `I could not read ${this.recapChannel}, so there is no retro. The bot may need read access to that channel.`); }
+    const recaps = recapsSince(messages, since);
+    if (!recaps.length) return this.tell(s, `I found no meeting recaps from the last ${days} days, so I have nothing to base a retro on.`);
+    const [tasks, activity] = await Promise.all([
+      (this.dependencies.board.searchTasks?.({ jql: `updated >= -${days}d`, limit: 30 }) ?? Promise.resolve([])).catch(() => []),
+      this.dependencies.code.repoActivity?.({ since: new Date(since).toISOString() }).catch(() => undefined),
+    ]);
+    const text = await writeRetro(this.dependencies.agent!, { days, recaps, tasks, ...(activity ? { activity } : {}) }, sessionId);
+    if (!text) return this.tell(s, 'I could not write the retro, sorry.');
+    await s.meeting.sendStatus(text).catch(() => undefined);
+    // The channel keeps it too: the meeting chat goes when the meeting does.
+    await this.dependencies.chat.postMessage(this.recapChannel, `Retro, last ${days} days, from ${recaps.length} meetings\n${text}`).catch(() => undefined);
+    await this.tell(s, `The retro is in the chat, from ${recaps.length} meeting${recaps.length === 1 ? '' : 's'}. ${firstWords(text.split(/(?<=[.!?])\s+/)[0]!, 30)}`);
+  }
+
   /** Opens exactly the approved proposals, once each, for someone allowed to write tasks. */
   private async approveRecap(sessionId: string, s: Session, utterance: Utterance, approval: number[] | 'all'): Promise<ProcessResult> {
     const proposals = s.recap!.recap.proposedTasks;
@@ -1730,6 +1766,10 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
         s.floor.drop(cut.id);
         this.reportQuestion(sessionId, cut, 'chat_only', 'the asker went on talking; the rest is in chat');
       }
+    }
+    if (this.retro && directlyAddressed && this.dependencies.agent && isRetroRequest(removeAddress(current))) {
+      await this.prepareRetro(sessionId, s, utterance, removeAddress(current));
+      return 'answered';
     }
     if (this.meetingRecap && directlyAddressed && this.dependencies.agent) {
       const asked = removeAddress(current);
