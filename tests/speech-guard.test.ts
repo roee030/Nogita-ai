@@ -143,3 +143,15 @@ test('"the link is in the chat" stays when the turn really posted a receipt', as
   ], "Nogita, create the Jira task for today's merged PRs.");
   assert.match(spoken, /The link is in the chat/);
 });
+
+test('planning aloud: saying why the words were not for her is dropped, a real answer is not', () => {
+  for (const line of ["That was just an acknowledgement and not a request, so there's nothing for me to act on.",
+    "Roee's question is directed at John's standup, not at me, and he's moved on to Evan.",
+    'The request got cut off, so I need to know what he wants.', "I'll ask him in a few words.", '.',
+    "I already have the summary from the earlier lookup, so I'll give the detail from that without another round."]) {
+    assert.equal(stripPlanningAloud(line, 'Roee'), '', line);
+  }
+  for (const line of ['The alert is directed at the on-call team.', 'There is nothing on the board about the reset bug.', 'This was meant for staging, not production.', 'Dana owns it, so I would ask her first.', 'KAN-30.']) {
+    assert.equal(stripPlanningAloud(line, 'Roee'), line, line);
+  }
+});

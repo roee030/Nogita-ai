@@ -53,6 +53,16 @@ const PLANNING: readonly RegExp[] = [
   /\bI(?:'ll| will| should)\s+(?:answer|reply|respond)\s+with\b/i,
   /\bpoint (?:to|them to|him to|her to) the chat\b/i,
   /\bthe earlier (?:lookup|search|result)s?\s+(?:covered|showed|found|has|had)\b/i,
+  // Saying why the words were not for her (replay of 3 November and the stand-up video: "That was just an acknowledgement
+  // and not a request, so there's nothing for me to act on", "Roee's question is directed at John's standup, not at me").
+  /\bnothing for me to (?:act on|do|answer|respond to|reply to)\b/i,
+  /\bjust an? (?:acknowledge?ment|aside|backchannel)\b/i,
+  /\b(?:addressed|directed|aimed|meant)\s+(?:to|at|for)\b.*\bnot\s+(?:at|to|for)\s+me\b/i,
+  // Talking about the person in front of her (replay of 1 November: "so I need to know what he wants. I'll ask him in a few words.").
+  /\bwhat (?:he|she) (?:wants|means|meant|is asking)\b/i,
+  /\bask (?:him|her) (?:in a few words|briefly|once)\b/i,
+  // Replay of 1 November: "I already have the summary from the earlier lookup, so I'll give the detail from that".
+  /\b(?:from|in) the earlier (?:lookup|search)\b/i,
 ];
 const ABOUT_SPEAKER = String.raw`\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b`;
 
@@ -60,6 +70,8 @@ export function isPlanningAloud(sentence: string, speaker?: string): boolean {
   const text = sentence.trim();
   if (!text) return false;
   if (PLANNING.some(pattern => pattern.test(text))) return true;
+  // A stripped reply can leave only punctuation, and the voice then says "dot".
+  if (!/[\p{L}\p{N}]/u.test(text)) return true;
   const first = speaker?.trim().split(/\s+/)[0];
   if (!first || first.length < 2) return false;
   return new RegExp(`^${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${ABOUT_SPEAKER}`, 'iu').test(text);
