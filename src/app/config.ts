@@ -148,6 +148,14 @@ export function meetingRecap(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_FOLLOW_UP: 'true' posts, on joining, where the tasks she opened in the last week stand; blank or 'false' leaves
+ *  it off. */
+export function followUpOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_FOLLOW_UP?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_FOLLOW_UP must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_PROVIDER_BREAKER: 'true' puts a circuit breaker on each provider (Jira, GitHub, Slack, Anthropic, Deepgram), so an
  *  outage gets one short line instead of retries and timeouts; blank or 'false' leaves it off. */
 export function providerBreakers(env: NodeJS.ProcessEnv = process.env): boolean {

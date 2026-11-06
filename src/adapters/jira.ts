@@ -1,3 +1,4 @@
+import type { OwnTask } from '../core/follow-up.ts';
 import { createHash } from 'node:crypto';
 import { readToken, type TokenSource } from './token-source.ts';
 import type { ActionReceipt, AssigneeCandidate, BoardPort, CreateTask, TaskDetail, TaskSearch, TaskSummary, UpdateTask } from '../core/contracts.ts';
@@ -116,6 +117,27 @@ export class JiraBoard implements BoardPort {
       assignee: fields.assignee?.displayName ?? undefined, type: fields.issuetype?.name,
       priority: fields.priority?.name ?? undefined, updated: fields.updated?.slice(0, 10),
       url: this.receipt(issue.key).url };
+  }
+  /** Her own tasks from the last days: created in the project and carrying her request property. */
+  async ownRecentTasks(days: number): Promise<OwnTask[]> {
+    const response = await this.http(this.api('/rest/api/3/search/jql'), { method: 'POST', headers: await this.headers(),
+      body: JSON.stringify({ jql: `project = "${this.config.projectKey}" AND created >= -${Math.max(1, Math.min(30, Math.round(days)))}d ORDER BY created DESC`,
+        maxResults: 30, fields: ['summary', 'status', 'assignee', 'created', 'updated'] }), signal: AbortSignal.timeout(12000) });
+    if (!response.ok) throw new Error(`Jira search failed: HTTP ${response.status}`);
+    const issues = ((await response.json()) as { issues?: Array<JiraIssue & { fields?: { status?: { name?: string; statusCategory?: { key?: string } } } }> }).issues ?? [];
+    const own: OwnTask[] = [];
+    for (const issue of issues) {
+      if (typeof issue.key !== 'string' || !KEY_PATTERN.test(issue.key)) continue;
+      const mine = await this.http(this.api(`/rest/api/3/issue/${encodeURIComponent(issue.key)}/properties/${REQUEST_PROPERTY}`),
+        { headers: await this.headers(), signal: AbortSignal.timeout(8000) });
+      if (!mine.ok) continue;
+      const fields = issue.fields ?? {};
+      own.push({ key: issue.key, title: fields.summary ?? '(no title)', status: fields.status?.name,
+        done: fields.status?.statusCategory?.key === 'done', created: Date.parse(fields.created ?? '') || 0,
+        updated: Date.parse(fields.updated ?? '') || 0, ...(fields.assignee?.displayName ? { assignee: fields.assignee.displayName } : {}),
+        url: this.receipt(issue.key).url });
+    }
+    return own;
   }
   async searchTasks(query: TaskSearch): Promise<TaskSummary[]> {
     const only = query.board && this.readProjects.find(key => key.toUpperCase() === query.board!.toUpperCase());
