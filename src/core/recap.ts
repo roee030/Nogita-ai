@@ -78,6 +78,10 @@ export async function buildRecap(model: ChatModel, history: readonly { text: str
   } catch { return undefined; }
 }
 
+/**
+ * `final`: the meeting is over, so nobody can approve by voice any more and the bot cannot read a reply in the meeting
+ * chat. Only a recap during the meeting offers approval and asks for the minutes saved.
+ */
 export function formatRecap(recap: MeetingRecap, options: { final: boolean; opened?: ReadonlyMap<number, string> }): string {
   const lines: string[] = [options.final ? 'Meeting recap' : 'Recap so far'];
   const section = (title: string, items: string[]) => { if (items.length) lines.push('', `${title}:`, ...items.map(item => `- ${item}`)); };
@@ -91,11 +95,11 @@ export function formatRecap(recap: MeetingRecap, options: { final: boolean; open
       lines.push(`${i + 1}. ${task.title}${task.owner ? ` (${task.owner})` : ''}${opened ? ` — opened ${opened}` : ''}`);
     });
     const example = recap.proposedTasks.length > 1 ? 'approve 1 and 2' : 'approve 1';
-    lines.push(options.final ? `They were not opened. Say "Nogita, ${example}" in the next meeting to open them.`
+    lines.push(options.final ? 'None of these was opened unless it says so.'
       : `Say "Nogita, ${example}" (or "approve all") to open them.`);
   }
   if (lines.length === 1) lines.push('', 'Nothing was decided or assigned.');
-  if (options.final) lines.push('', 'How many minutes did this save you? Write "saved" and a number here.');
+  if (!options.final) lines.push('', 'How many minutes did this save you? Write "saved" and a number here before the meeting ends.');
   return lines.join('\n');
 }
 

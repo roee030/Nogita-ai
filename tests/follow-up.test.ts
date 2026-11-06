@@ -26,15 +26,21 @@ class Meeting extends DemoMeeting {
   override async sendStatus(message: string): Promise<void> { this.chat.push(message); }
 }
 
-test('NOGITA_FOLLOW_UP: on joining she posts the follow-up in the chat and says nothing', async () => {
+test('NOGITA_FOLLOW_UP: posted once, on the first words heard, because the provider refuses chat from the lobby', async () => {
   const board = Object.assign(new DemoBoard(), { ownRecentTasks: async () => [task('KAN-32', 'Cache headers', false, 3)] });
+  const actor = { id: 'roee', displayName: 'Roee', verified: true };
   for (const followUpOn of [true, false]) {
     const m = new Meeting('m');
     const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(), policy: new AllowlistPolicy(new Set()) },
       { schedule: () => 0, cancel: () => undefined, followUp: followUpOn, now: () => now });
-    await engine.startSession(`s-${followUpOn}`, m);
+    const id = `s-${followUpOn}`;
+    await engine.startSession(id, m);
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(m.chat.some(text => text.startsWith('Follow-up on the 1 task')), followUpOn);
+    assert.equal(m.chat.length, 0, 'nothing while she may still be in the lobby');
+    await engine.onUtterance(id, { text: 'Good morning everyone.', eventId: '1', actor });
+    await engine.onUtterance(id, { text: 'Let us start.', eventId: '2', actor });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(m.chat.filter(text => text.startsWith('Follow-up on the 1 task')).length, followUpOn ? 1 : 0);
   }
 });
 
