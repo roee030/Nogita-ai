@@ -350,6 +350,10 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
   const { code } = context;
   const { board, chat } = ports;
   let writes = 0;
+  // With the batch tools on, the model is told whose limit this is: it used to tell the meeting that Jira had rejected them.
+  const tooMany = (start: string) => context.batchTasks
+    ? `${start}: this request reached Nogita's own limit of ${MAX_WRITES_PER_TURN} writes; the board did not refuse anything. Say how many went through and that they can ask for the rest.`
+    : `${start}: too many writes in one request.`;
   let taskIndex = 0;
   /** The refusal for a write nobody asked for, or undefined when it was asked: the phrases first, then the judge. */
   const notAsked = async (kind: WriteKind, phrased: boolean, proposed: string, refusal: string): Promise<string | undefined> => {
@@ -684,7 +688,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         `create 1 task: ${str(input.title, 200) ?? '(no title)'}`,
         'Not created: the request does not explicitly ask to create a task. Ask the person to confirm with a direct request.');
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not created'), isError: true };
       const pastOffered = pastOffer(1);
       if (pastOffered) return { content: pastOffered, isError: true };
       const outcome = await createOne(input);
@@ -704,7 +708,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         `create ${list.length} tasks: ${list.map(item => str(item.title, 200) ?? '(no title)').join('; ')}`,
         'Not created: the request does not explicitly ask to create tasks. Ask the person to confirm with a direct request.');
       if (refused) return { content: refused, isError: true };
-      if (writes >= MAX_WRITES_PER_TURN) return { content: 'Not created: too many writes in one request.', isError: true };
+      if (writes >= MAX_WRITES_PER_TURN) return { content: tooMany('Not created'), isError: true };
       const pastOffered = pastOffer(list.length);
       if (pastOffered) return { content: pastOffered, isError: true };
       writes++;

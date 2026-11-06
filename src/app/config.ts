@@ -108,6 +108,13 @@ export function noisyTaskRequests(env: NodeJS.ProcessEnv = process.env): boolean
   return value === 'true';
 }
 
+/** NOGITA_BATCH_TASKS: 'true' lets her open or change up to 10 tasks in one write ("ten tasks, one per PR"); blank or 'false' leaves it off. */
+export function batchTasks(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_BATCH_TASKS?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_BATCH_TASKS must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_OFFER_APPROVAL: 'true' lets a yes to her offer approve the write it named (capped at its count) and reads "turn
  *  them into Jira tasks" as a request; blank or 'false' leaves it off. */
 export function offerApproval(env: NodeJS.ProcessEnv = process.env): boolean {

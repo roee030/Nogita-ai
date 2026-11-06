@@ -190,6 +190,8 @@ export interface NogitaEngineOptions {
   /** NOGITA_OFFER_APPROVAL: a yes to her offer approves the write it named, even without a create verb, capped at its count;
    *  "turn them into Jira tasks" reads as a request. Off unless set. */
   offerApproval?: boolean;
+  /** NOGITA_BATCH_TASKS: offers create_tasks and update_tasks, up to 10 items in one write. Off unless set. */
+  batchTasks?: boolean;
   /** NOGITA_STRICT_SPEECH_GUARD: also drop planning aloud ("I'll answer with the count", "Roee wants ...") and, when the turn
    *  sent the chat nothing, "the details are in the chat". Off unless set. */
   strictSpeechGuard?: boolean;
@@ -494,6 +496,7 @@ export class NogitaEngine {
   private readonly taskFromTopic: boolean;
   private readonly noisyTaskRequests: boolean;
   private readonly offerApproval: boolean;
+  private readonly batchTasks: boolean;
   private readonly strictSpeechGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
@@ -560,6 +563,7 @@ export class NogitaEngine {
     this.taskFromTopic = options.taskFromTopic === true;
     this.noisyTaskRequests = options.noisyTaskRequests === true;
     this.offerApproval = options.offerApproval === true;
+    this.batchTasks = options.batchTasks === true;
     this.strictSpeechGuard = options.strictSpeechGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
@@ -1106,6 +1110,7 @@ export class NogitaEngine {
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,
       ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
+      ...(this.batchTasks ? { batchTasks: true } : {}),
       ...(this.writeIntent ? { writeIntent: this.writeIntent, ...(pending?.question ? { lastMessage: pending.question } : {}) } : {}),
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => { detailsPosted = true; return s.meeting.sendStatus(text); } } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
