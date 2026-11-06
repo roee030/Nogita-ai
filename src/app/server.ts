@@ -221,6 +221,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     listenFirst: listenFirst(env),
     meetingRecap: meetingRecap(env),
     followUp: followUpOn(env),
+    ...(env.NOGITA_RECAP_CHANNEL?.trim() ? { recapChannel: env.NOGITA_RECAP_CHANNEL.trim() } : {}),
     receipts: actionReceipts,
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);

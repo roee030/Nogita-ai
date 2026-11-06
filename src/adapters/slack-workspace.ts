@@ -127,7 +127,9 @@ export class SlackWorkspace implements ChatPort {
   }
 
   async postMessage(channel: string, text: string): Promise<ActionReceipt> {
-    const target = await this.resolve(channel);
+    // A channel id needs no listing, so posting by id works with chat:write alone (the bot must be in the channel).
+    const id = channel.trim();
+    const target = /^[CG][A-Z0-9]{8,}$/.test(id) ? { id, name: id } : await this.resolve(channel);
     const posted = await this.call('chat.postMessage', { channel: target.id, text: text.slice(0, 3000) }, this.botToken, true);
     const ts = typeof posted.ts === 'string' ? posted.ts : '';
     let url = '';

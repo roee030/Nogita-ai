@@ -33,6 +33,8 @@ interface Session {
   recap?: { recap: MeetingRecap; opened: Map<number, string> };
   /** NOGITA_MEETING_RECAP: the whole meeting, "Name: text", for the recap (the history keeps only the last 24 lines). */
   minutes?: string[];
+  /** NOGITA_FOLLOW_UP: already posted in this meeting. */
+  followUpPosted?: boolean;
   /** When she last asked "did someone ask me something?" (NOGITA_SWALLOWED_QUESTION), so she asks once, not every turn. */
   swallowedAskAt?: number;
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
@@ -199,6 +201,9 @@ export interface NogitaEngineOptions {
   meetingRecap?: boolean;
   /** NOGITA_FOLLOW_UP: on joining, post in the chat what happened to the tasks she opened in the last week. Off unless set. */
   followUp?: boolean;
+  /** NOGITA_RECAP_CHANNEL: every final recap also goes to this chat channel, which outlives the meeting and the server's
+   *  disk. It is also the only place a recap can go when the meeting ended by itself. Unset: meeting chat only. */
+  recapChannel?: string;
 }
 
 /** How long, and how many, direct requests per person "what's left?" can see. */
@@ -474,6 +479,7 @@ export class NogitaEngine {
   private readonly listenFirst: boolean;
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
+  private readonly recapChannel?: string;
   /** Per person, newest first: requests handled in the turn itself (NOGITA_WHATS_LEFT_DIRECT). */
   private readonly directRequests = new Map<string, DirectRequest[]>();
   private team(): TeamTime {
@@ -537,6 +543,7 @@ export class NogitaEngine {
     this.listenFirst = options.listenFirst === true;
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
+    this.recapChannel = options.recapChannel?.trim() || undefined;
     this.completed = options.receipts ?? new Map();
   }
 
@@ -627,10 +634,12 @@ export class NogitaEngine {
     } finally {
       this.startingSessions.delete(sessionId);
     }
-    if (this.followUp && this.dependencies.board.ownRecentTasks) void this.postFollowUp(meeting);
   }
 
-  /** Closing the loop: what closed, moved or got stuck since she opened it. In the chat only; she says nothing. */
+  /**
+   * Closing the loop: what closed, moved or got stuck since she opened it. In the chat only; she says nothing. Runs on the
+   * first words heard, not on joining: until someone admits her from the lobby the provider refuses chat messages.
+   */
   private async postFollowUp(meeting: MeetingPort): Promise<void> {
     try {
       const text = followUp(await this.dependencies.board.ownRecentTasks!(7), this.now());
@@ -658,7 +667,12 @@ export class NogitaEngine {
           decisions: session.items.decisions(), actionItems: session.items.list() }).catch(() => undefined);
       }
       // The written value of the meeting: decisions, owners, open questions and proposed tasks (none opened unasked).
-      if (this.meetingRecap && leaveProvider && (session.minutes?.length ?? 0) > 1) await this.postRecap(sessionId, session, true).catch(() => undefined);
+      // A meeting that ended by itself has no chat left, and it is the usual ending: the channel is where its recap goes.
+      if (this.meetingRecap && (session.minutes?.length ?? 0) > 1 && (leaveProvider || this.recapChannel)) {
+        const posting = this.postRecap(sessionId, session, true, leaveProvider).catch(() => undefined);
+        // With the provider gone this runs inside its webhook: the model call must not hold that up.
+        if (leaveProvider) await posting;
+      }
       const open = this.actionItemRecap && leaveProvider ? session.items.unowned() : [];
       if (open.length) {
         await session.meeting.sendStatus(`Open items nobody took: ${open.slice(0, 8).map(item => `${item.text} (${item.speaker})`).join('; ')}.`)
@@ -1328,8 +1342,10 @@ export class NogitaEngine {
   }
 
   /** Posts the recap to the meeting chat; during the meeting she says one line about it. */
-  private async postRecap(sessionId: string, s: Session, final: boolean): Promise<void> {
-    const recap = await buildRecap(this.dependencies.agent!, (s.minutes ?? s.history.map(turn => turn.text)).map(text => ({ text })), sessionId);
+  private async postRecap(sessionId: string, s: Session, final: boolean, inMeeting = true): Promise<void> {
+    // Copied first: the session's transcript is cleared at the end of a meeting, possibly before the model answers.
+    const lines = [...(s.minutes ?? s.history.map(turn => turn.text))];
+    const recap = await buildRecap(this.dependencies.agent!, lines.map(text => ({ text })), sessionId);
     if (!recap) {
       if (!final) this.sayAside(s, 'I could not put the recap together, sorry.');
       return;
@@ -1341,12 +1357,29 @@ export class NogitaEngine {
       if (before) opened.set(i + 1, before[1]);
     });
     s.recap = { recap, opened };
-    await s.meeting.sendStatus(formatRecap(recap, { final, opened })).catch(() => undefined);
-    if (final) return;
+    const text = formatRecap(recap, { final, opened });
+    if (inMeeting) await s.meeting.sendStatus(text).catch(() => undefined);
+    if (final) {
+      await this.archiveRecap(sessionId, s, text, inMeeting);
+      return;
+    }
     const count = recap.proposedTasks.length - opened.size;
     this.sayAside(s, count
       ? `The recap is in the chat, with ${count} proposed task${count === 1 ? '' : 's'}. Say approve and the numbers to open them.`
       : 'The recap is in the chat.');
+  }
+
+  /** The channel copy of a final recap. A failure never affects the meeting; while she is still there, she says so. */
+  private async archiveRecap(sessionId: string, s: Session, text: string, inMeeting: boolean): Promise<void> {
+    if (!this.recapChannel || !this.dependencies.chat) return;
+    const actor = { id: 'nogita', displayName: 'Nogita', verified: true };
+    const ports = this.dependencies.audit ? auditedPorts({ actor, sessionId, eventId: `${sessionId}:recap`, board: this.dependencies.board,
+      chat: this.dependencies.chat, drafts: this.dependencies.drafts }, this.dependencies.audit) : this.dependencies;
+    try {
+      await ports.chat!.postMessage(this.recapChannel, `Meeting ${sessionId}\n${text}`);
+    } catch {
+      if (inMeeting) await s.meeting.sendStatus(`I could not save this recap to ${this.recapChannel}.`).catch(() => undefined);
+    }
   }
 
   /** Opens exactly the approved proposals, once each, for someone allowed to write tasks. */
@@ -1586,6 +1619,10 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     if (this.sessions.get(sessionId) !== s) throw new Error('unknown session');
     if (s.eventIds.has(utterance.eventId)) return 'ignored';
     s.eventIds.add(utterance.eventId);
+    if (this.followUp && !s.followUpPosted && this.dependencies.board.ownRecentTasks) {
+      s.followUpPosted = true;
+      void this.postFollowUp(s.meeting);
+    }
     const historyBefore = s.history.slice();
     const pendingBefore = s.pendingFollowUp;
     const raisedBefore = s.raised;
