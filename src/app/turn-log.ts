@@ -25,6 +25,7 @@ export type TurnLogEvent =
   | { type: 'speech'; id: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }
   | { type: 'audio'; id?: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; playedMs?: number; ttfaMs?: number }
   | { type: 'audio_pause'; id?: number; playbackId?: number; latencyMs: number; playedMs: number }
+  | { type: 'audio_resume'; id?: number; playbackId?: number; cause: 'backchannel' | 'quiet' | 'timeout'; pausedMs: number }
   | { type: 'interrupt'; cause: string; latencyMs?: number; playedMs: number; id?: number; playbackId?: number }
   | { type: 'ui'; state: string; status: string; open: number }
   | { type: 'stale_question'; id: number }

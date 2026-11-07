@@ -133,3 +133,24 @@ test('release report summarizes research sources, omitted items and sourced clai
   assert.match(text, /Research claims backed by a source \| 2 \/ 3 \(67%\)/);
   assert.match(text, /Research results shortened \/ omitted items \| 1 \/ 184/);
 });
+
+test('the v2 trial: stops and false pauses per meeting, with a backchannel and a real stop kept apart', () => {
+  const report = analyse('meet-1', [
+    { at: 1, type: 'audio_pause', playbackId: 1, latencyMs: 90, playedMs: 500 },
+    { at: 2, type: 'audio_resume', playbackId: 1, cause: 'quiet', pausedMs: 700 },
+    { at: 3, type: 'audio_pause', playbackId: 2, latencyMs: 110, playedMs: 500 },
+    { at: 4, type: 'audio_resume', playbackId: 2, cause: 'backchannel', pausedMs: 1_200 },
+    { at: 5, type: 'audio_pause', playbackId: 3, latencyMs: 120, playedMs: 500 },
+    { at: 6, type: 'interrupt', cause: 'voice', playbackId: 3, latencyMs: 300, playedMs: 600 },
+  ]);
+  assert.equal(report.pauses, 3);
+  assert.deepEqual(report.resumes, [{ cause: 'quiet', pausedMs: 700 }, { cause: 'backchannel', pausedMs: 1_200 }]);
+  const text = render([report]);
+  assert.match(text, /## Turn-taking by meeting/);
+  assert.match(text, /\| meet-1 \| 0\.12 s \(3\) \| 3 \| 1 \| 1 \| 0 \| 0\.70 s \/ 0\.70 s \|/);
+  assert.match(text, /no pass mark/);
+});
+
+test('a meeting with no pauses or stops adds no turn-taking section', () => {
+  assert.doesNotMatch(render([analyse('quiet', [{ at: 1, type: 'session', phase: 'start' }])]), /Turn-taking by meeting/);
+});
