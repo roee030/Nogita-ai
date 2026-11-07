@@ -3,8 +3,9 @@
 How Nogita becomes a meeting assistant that product engineering teams would miss if it were gone, with a path to other
 meeting types later.
 
-**Status:** proposal for Roee to review. Repository state observed on 2026-11-07 at `origin/main` `a220941`. This
-document changes no code, API, configuration, provider behavior or board task. Tasks marked **new** are not on the board.
+**Status:** order and product-engineering focus accepted by Roee on 2026-11-07, with the conditions in section 8.
+Repository state observed the same day at `origin/main` `a220941`. This document changes no code, API, configuration or
+provider behavior. Its P9 tasks are defined in [TASK_BOARD.md](TASK_BOARD.md), and GitHub remains the source of status.
 
 ## 1. The short version
 
@@ -33,25 +34,29 @@ Each comes from checking the repository while writing this. Later sections act o
 
 ## 2. Where the product stands
 
-Evidence levels follow the project's own proof ladder: planned, in code, tested, voice lab, tried in a meeting, in
-production. Simulation and replay are named separately, because neither proves meeting behavior.
+Three questions are kept apart here: is it implemented, what has been checked without a real meeting, and what still needs
+a real meeting. "Simulation" means a simulated meeting platform or synthetic inputs. "Replay" means real recordings passed
+through the voice path, where the audio cannot react to Nogita. Neither proves behavior in a meeting.
 
 Which flags are on in production cannot be confirmed from this repository. Roee sets them on Render, and the phase 8
 flags are not listed in [`config/render-flags.env`](../config/render-flags.env), so nothing below claims production use.
 
-| Capability | Flag (off by default) | Strongest evidence today | Still missing |
-|---|---|---|---|
-| Meeting scorecard (P8-1) | none, a tool | Used on three real meetings. An unknown minutes-saved value can never pass | Recap and decision corrections; a meeting where minutes are actually recorded |
-| Turn-taking v2 | `NOGITA_TURN_TAKING_V2` | Voice lab: stops in about 0.2 s against 1.3 s for legacy | Meet listener measurement; the P5-9 decision. Production ran legacy as of the [1 November decision data](TURN_TAKING_DECISION.md) |
-| Listen-first (P8-2) | `NOGITA_LISTEN_FIRST` | Tests, voice lab, replay of real recordings | A scored real meeting |
-| Recap with numbered approval (P8-3, P8-10) | `NOGITA_MEETING_RECAP`, `NOGITA_RECAP_CHANNEL` | Unit tests with a stand-in model | Live-model eval; smoke check P8-12 |
-| Follow-up (P8-4) | `NOGITA_FOLLOW_UP` | Unit tests | Smoke check P8-12 |
-| Design review opinion (P8-9) | `NOGITA_DESIGN_REVIEW` | Unit tests with a stand-in model | Live-model eval; a real design review |
-| Retro (P8-11) | `NOGITA_RETRO` | Unit tests with simulated recaps | Live-model eval; a real retro |
-| Screen capture and reading (P8-7) | `NOGITA_SCREEN_CAPTURE` | **Simulation only**: two synthetic IDE screens with no Meet compression | P8-13. One frame was checked by eye; the rest were not checked line by line |
-| Conversation about the screen (P8-8) | `NOGITA_SCREEN_CONTEXT` (planned, not in code) | Planned; waits on P8-13 | Everything |
-| Team memory | `NOGITA_MEETING_MEMORY=decisions` | In code and tested: decisions and action items, 90-day retention | Workspace scope; durable storage |
-| Meeting profiles | none | Not started | Everything |
+| Capability | Flag (off by default) | Implemented | Checked without a real meeting | Real-meeting verification |
+|---|---|---|---|---|
+| Meeting scorecard (P8-1) | none, a tool | Yes. Corrections cover tasks only. An unknown minutes-saved value can never pass | Unit tests | Applied to three real meetings. Recap and decision corrections pending (P9-2) |
+| Turn-taking v2 | `NOGITA_TURN_TAKING_V2` | Yes | Voice lab: stops in about 0.2 s against 1.3 s for legacy; a cough or laugh often pauses it for about 0.8 s | **Required.** Controlled trial approved (P9-3, P9-4); final decision after review (P5-9) |
+| Chat delivery | none | Yes | Unit tests | **Required.** Not seen by Roee on 1 November (P8-12) |
+| Listen-first (P8-2) | `NOGITA_LISTEN_FIRST` | Yes | Unit tests, voice lab, replay | **Required** (P8-5) |
+| Recap with numbered approval (P8-3, P8-10) | `NOGITA_MEETING_RECAP`, `NOGITA_RECAP_CHANNEL` | Yes | Unit tests with a stand-in model. Live-model eval pending (P9-1) | **Required** (P8-12) |
+| Follow-up (P8-4) | `NOGITA_FOLLOW_UP` | Yes | Unit tests | **Required** (P8-12) |
+| Design review opinion (P8-9) | `NOGITA_DESIGN_REVIEW` | Yes | Unit tests with a stand-in model. Live-model eval pending (P9-1) | **Required**: a real design review |
+| Retro (P8-11) | `NOGITA_RETRO` | Yes | Unit tests with simulated recaps. Live-model eval pending (P9-1) | **Required**: a real retro |
+| Screen capture and reading tool (P8-7) | `NOGITA_SCREEN_CAPTURE` | Yes, for the experiment | **Simulation only**: two synthetic IDE screens with no Meet compression. One frame checked by eye | **Required** (P8-13) |
+| Local screen-change gate | none | No (P9-14) | None | Calibrated from P8-13 frames |
+| Conversation about the screen (P8-8) | `NOGITA_SCREEN_CONTEXT` (planned) | No | None | **Required** after it is built |
+| Meeting memory across meetings | `NOGITA_MEETING_MEMORY=decisions` | Yes: decisions and action items, 90-day retention | Unit tests | Not verified. **Stays off**; see section 8 |
+| Meeting profiles | `NOGITA_MEETING_PROFILE` (planned) | No (P9-5 to P9-8) | None | **Required** (P9-9) |
+| Candidate improvement loop | none | No (P9-19, P9-20) | None | Each promoted change is checked in real meetings |
 
 **Automated assets.** [`npm run eval`](../tests/eval/run.ts) has 106 cases in 18 groups, with deterministic checks and
 real model calls. [`npm run voice-lab`](VOICE_LAB.md) has 36 scenarios, real audio through the production path and a
@@ -93,12 +98,12 @@ sentence. That is why turn-taking and listen-first come before any new capabilit
 
 **Two limits of "memory-only" that must be stated plainly**
 - `npm run screen-spike -- collect` writes frames to the operator's disk under the git-ignored `.voice-lab/`. That is
-  acceptable for a consented experiment. The frames should be deleted once the report is checked (**new**: record the
-  deletion in the experiment notes).
+  acceptable for a consented experiment. The frames should be deleted once the report is checked, and the deletion recorded
+  in the experiment notes (P8-13).
 - The rule covers Nogita's server, not the meeting vendor. The 6 November replay work downloaded recordings that Attendee
   keeps for bots, the code requests no change to that, and nothing calls Attendee's
   [`delete_data`](https://docs.attendee.dev/) endpoint. Whether those recordings include shared screens is unverified.
-  **Resolve this before P8-13**, and review the existing `ATTENDEE_PRIVACY_REVIEWED` setting against the answer.
+  **Resolve this before P8-13** (P9-12), and review the existing `ATTENDEE_PRIVACY_REVIEWED` setting against the answer.
 
 **Known blocker that affects the design.** A verified questioner may share a meeting with people who should not see the
 answer ([SECURITY.md](SECURITY.md), audience-level authorization). Richer context makes this worse, so team memory and
@@ -106,6 +111,11 @@ screen-derived answers must not widen what the meeting can hear.
 
 **Cost.** Screen analysis stays at or below $0.50 per hour. The existing per-session budget (`NOGITA_SESSION_BUDGET`)
 remains in place for model calls.
+
+**Numbers.** Targets the project already approved stay release gates: five consecutive meetings with zero interruptions,
+zero corrections and at least ten minutes saved; 90% reading accuracy and at most $0.50 per hour for the screen; and the
+existing voice, action-safety and cost checks. Every other number here is a **proposal**. It may be reported, but it
+cannot release anything until Roee approves it before the measurement begins.
 
 ## 4. Meeting understanding and useful context
 
@@ -130,7 +140,7 @@ a recap channel unless both people ask for it.
 
 ### Inference
 
-1. **Signals, strongest first:** a person's correction; a hint given at join time (**new**, an optional field); the
+1. **Signals, strongest first:** a person's correction; a hint given at join time (an optional new field); the
    meeting title if one is ever supplied; early conversation. Calendar access remains postponed, as in the work plan.
 2. **Decide late and cheaply.** Run on a bounded window of early transcript and re-check once as more arrives. Reuse the
    small model tier.
@@ -140,17 +150,21 @@ a recap channel unless both people ask for it.
    it. Corrections become labeled test cases (section 6).
 5. **Stay silent about it.** Announcing the type aloud would add the interruption the product is trying to remove.
 
-**Proposed measurements, to be fixed before evaluation begins:** on a reviewed, labeled set, at least 85% correct when a
+**Proposed measurements, not release gates until approved in P9-6:** on a reviewed, labeled set, at least 85% correct when a
 type is asserted, at most 25% `uncertain`, and zero change in permissions or write attempts compared with having no
 profile.
 
 ### Team context
 
-Useful context is small and specific: project vocabulary and misheard names, who owns which area, which repository and
+**First stage, decided by Roee: context lives only for the meeting.** Persistent team memory is not added until there is a
+decision on team isolation, deletion, retention and durable storage (P9-10). `NOGITA_MEETING_MEMORY` stays off during this
+work. The Slack recap channel (P8-10) is existing delivery of a written output, not learned memory, and it is not extended.
+
+The rest of this section is the design for that later decision. Useful context is small and specific: project vocabulary and misheard names, who owns which area, which repository and
 board apply, decisions already made, recurring problems. Building on `MeetingRecord` means storing only an allowlist of
 those fields, never a transcript.
 
-Requirements before any of this ships:
+Requirements before persistent memory ships:
 
 | Requirement | Today | Needed |
 |---|---|---|
@@ -201,19 +215,21 @@ size. Calibration must test exactly this, and the working size may need to stay 
 Every threshold above is a value to measure, not to assume.
 
 - Simulated frames lack Meet's compression, so they can test the code but cannot set thresholds.
-- Calibration needs **unfiltered** consecutive frames from a consented Meet session (**new**: a capture option behind the
-  existing flag, see stage 3). Finding 3 explains why the current capture is not enough.
+- Calibration needs **unfiltered** consecutive frames from a consented Meet session (P9-13, behind the existing flag). Finding 3 explains why the current capture is not enough.
 - Label events in the capture: tab change, scroll, one-line edit, cursor only, presenter idle, video in the shared window.
 - Replay the gate offline at several settings, and record kept frames per hour, missed changes and CPU per frame.
 
-**Proposed measurements, to be fixed before calibration begins:** at least 95% of labeled meaningful changes retained
+**Proposed measurements, not release gates until approved before calibration:** at least 95% of labeled meaningful changes retained
 within 3 seconds (tab and scroll events must all be retained), no more than 5% of frames kept on a still screen, and no
 measurable effect on voice latency in the same process.
 
 ### When a model sees a frame
 
-Frames go to a model only when someone asks about the screen, or when a workflow needs it (for example, a design review
-recap citing the shown schema). A static screen with nobody asking sends nothing.
+Collection and measurement come first, as Roee decided: P8-13 collects frames with consent, and any reading of them is a
+bounded offline analysis of selected frames. **Continuous vision analysis is not turned on at any stage.**
+
+Later, once P8-8 is allowed, frames go to a model only when someone asks about the screen, or when a workflow needs it (for
+example, a design review recap citing the shown schema). A static screen with nobody asking sends nothing.
 
 | Step | Rule |
 |---|---|
@@ -294,7 +310,7 @@ through a written reconstruction or a consented transcript.
 
 This follows [Anthropic's evaluation guidance](https://platform.claude.com/docs/en/test-and-evaluate/develop-tests):
 specific measurable criteria, cases that mirror real use including edge cases, the fastest reliable grading method, and
-checking a model grader's reliability before scaling it. Therefore (**new**) sample judge scores against human labels
+checking a model grader's reliability before scaling it. Therefore (P9-18) sample judge scores against human labels
 before they influence a decision. [OpenAI's evals guide](https://developers.openai.com/api/docs/guides/evals) describes the
 same describe, run, analyze and iterate cycle against labeled data. It is cited for the method only, because that page says
 the platform shuts down on 30 November 2026, and this roadmap depends on no vendor's eval product.
@@ -319,7 +335,7 @@ failure or correction -> reviewed regression case -> candidate change (offline)
 
 ### How a change earns promotion
 
-Numeric margins are **proposed** and must be fixed before the comparison runs.
+Numeric margins are **proposals** and cannot release a change until approved before the comparison runs.
 
 | Result | Condition |
 |---|---|
@@ -327,7 +343,7 @@ Numeric margins are **proposed** and must be fixed before the comparison runs.
 | **Rejected** | The targeted failures do not improve; or held-out quality falls by more than 2 percentage points; or p90 response time rises by more than 10%; or cost per meeting rises by more than 10% without a person accepting that trade |
 | **Inconclusive, no rollout** | The difference is within the noise of repeated runs |
 | **Eligible** | Hard checks clean, targeted failures improve, held-out cases hold, cost within budget |
-| **Rolled out** | Roee approves; ships behind a flag that is off by default; PR and CI as usual |
+| **Rolled out** | Tests pass and Roee approves; ships behind a flag that is off by default; PR and CI as usual |
 | **Kept** | Later real-meeting scorecards are no worse. Otherwise the flag goes off and the failure returns to intake |
 
 Production behavior never rewrites itself. Team context learned at runtime (section 4) is data inside a workspace. It is
@@ -335,18 +351,20 @@ visible, deletable and unable to change prompts, rules or permissions.
 
 ## 7. Roadmap
 
-Owners are Roee and Claude. Roee runs meetings and sets production configuration; Claude builds and analyzes. **New**
-tasks reach the board through a separate PR, after Roee accepts this roadmap.
+Owners are Roee and Claude. Roee runs meetings, makes decisions and sets production configuration; Claude builds and
+analyzes. Each task is either **verify** or **build**, and this is kept separate on the board too. Task IDs are in
+[TASK_BOARD.md](TASK_BOARD.md).
 
 ### Stage 0: make real meetings measurable (now)
 
-| Task | Owner | Board |
-|---|---|---|
-| Decide turn-taking v2 or legacy. The data [recommends v2](TURN_TAKING_DECISION.md) | Roee | P5-9 |
-| Set and confirm the phase 8 flags on Render: `NOGITA_LISTEN_FIRST`, `NOGITA_MEETING_RECAP`, `NOGITA_FOLLOW_UP`, `NOGITA_RECAP_CHANNEL` | Roee | part of P8-12 |
-| Smoke check in Meet: chat messages visible, recap, "approve", follow-up, Slack recap when a meeting ends by itself | Roee | P8-12 |
-| Count recap and decision corrections on the scorecard | Claude | **new** |
-| Add recap, retro and design review cases to the live-model eval, so a weak recap is caught before it costs a meeting | Claude | **new** |
+| Task | Type | Owner | Board |
+|---|---|---|---|
+| Add recap, retro and design review cases to the live-model eval, so a weak recap is caught before it costs a meeting | Build | Claude | P9-1 |
+| Count recap and decision corrections on the scorecard | Build | Claude | P9-2 |
+| Report v2 stops and false pauses per meeting; list the trial and phase 8 flags in `config/render-flags.env` | Build | Claude | P9-3 |
+| Turn on the v2 trial and phase 8 flags on Render. The code default stays legacy | Verify | Roee | P9-4 |
+| Smoke check in Meet: chat messages visible, recap, "approve", follow-up, Slack recap when a meeting ends by itself | Verify | Roee | P8-12 |
+| Review the v2 measurements and make the final decision. v2 does not become the default for everyone before this | Verify | Roee | P5-9 |
 
 **Exit:** all smoke items pass in one real meeting. **If chat does not appear,** stop and fix it first, since it carries
 most of the value in listen-first mode.
@@ -355,57 +373,63 @@ most of the value in listen-first mode.
 
 | Task | Owner | Board |
 |---|---|---|
-| Run real meetings with a scorecard for each | Roee | P8-5 |
-| Turn each failure into a regression case and a fix | Claude | existing rule |
+| Verify: run real meetings with a scorecard for each | Roee | P8-5 |
+| Build: turn each failure into a regression case and a fix | Claude | existing rule |
 
 **Exit, unchanged:** five consecutive meetings with zero interruptions, zero corrections and at least ten minutes saved in
 each. No new capability ships before this, as the work plan requires.
 
-**Proposed rules for reading the gate, to be fixed before the first counted meeting:**
+**Proposed rules for reading the gate, which apply only if approved before the first counted meeting:**
 - Only real working meetings count. Scripted gate runs (P3-10, P4-9) are useful but do not count toward the five.
 - If ten counted meetings pass without five in a row, stop and review the product idea, rather than continuing to tune.
 - These meetings also count toward the larger P5-8 sample.
 
-### Stage 2: meeting profiles and workspace context
+### Stage 2: meeting profiles, then a decision on persistent context
 
-| Task | Owner | Board | When |
-|---|---|---|---|
-| Build a labeled set from synthetic and consented transcripts | Claude, Roee reviews | **new** | Can start during stage 1: measurement only |
-| Profile inference in shadow mode: logged, changes nothing | Claude | **new** | Can start during stage 1 |
-| Decide durable storage for team context | Roee | P1-7 or **new** | Before workspace memory |
-| Profiles drive evidence and output, behind a flag, with correction | Claude | **new** | After stage 1 |
-| Workspace-scoped memory with consent, deletion and "what do you remember?" | Claude | **new** | After the storage decision |
+| Task | Type | Owner | Board | When |
+|---|---|---|---|---|
+| Labeled set from synthetic and consented transcripts, and an offline inference check | Build | Claude | P9-5 | Can start during stage 1: measurement only |
+| Review labels; approve or replace the proposed targets | Verify | Roee | P9-6 | Before shadow mode |
+| Inference in shadow mode: logged, changes nothing, kept for the meeting only | Build | Claude | P9-7 | Can start during stage 1 |
+| Profiles drive evidence and output, behind a flag, with correction | Build | Claude | P9-8 | After P8-5 passes |
+| Real meetings with profiles on, with the same gates | Verify | Roee | P9-9 | After P9-8 |
+| Decide isolation, deletion, retention and durable storage | Verify | Roee | P9-10 | After P9-9 |
+| Workspace-scoped memory with consent, deletion and "what do you remember?" | Build | Claude | P9-11 | Only after P9-10 approves it |
 
-**Exit:** the proposed profile targets from section 4 are met, cross-workspace tests show no leakage, and the value gate
-still holds in three further real meetings (**proposed**) with profiles on. Profiles must show a benefit in the recap. If
-people do not prefer the result, remove them.
+**Exit:** targets approved in P9-6 are met, and the value gate still holds with profiles on. Three further meetings is a
+proposal. Profiles must show a benefit in the recap. If people do not prefer the result, remove them.
 
 ### Stage 3: screen reading in a real meeting
 
-| Task | Owner | Board |
-|---|---|---|
-| Resolve whether Attendee retains shared-screen video, and how to remove it | Roee, Claude helps | **new**, before P8-13 |
-| Add unfiltered capture for calibration, behind `NOGITA_SCREEN_CAPTURE` | Claude | **new** |
-| Run the 10-minute experiment with participants' consent, on a known source file; delete local frames afterward | Roee | P8-13 |
-| Score reading accuracy, cost, traffic and vendor billing | Claude | part of P8-13 |
-| Build and calibrate the local change gate offline | Claude | part of P8-8 |
-| Conversation about the screen, with budget enforcement and injection tests | Claude | P8-8 |
+| Task | Type | Owner | Board |
+|---|---|---|---|
+| Ask Attendee: are frames stored, for how long, and how are they deleted? | Verify | Roee | P9-12 |
+| Add unfiltered capture for calibration, behind `NOGITA_SCREEN_CAPTURE` | Build | Claude | P9-13 |
+| Collect and measure in a 10-minute experiment with consent, on a known source file; delete local frames afterward | Verify | Roee | P8-13 |
+| Build and calibrate the local change gate offline from those frames | Build | Claude | P9-14 |
+| Conversation about the screen, with budget enforcement and injection tests | Build | Claude | P8-8 |
 
-**Exit:** at least 90% of table and column names read correctly and at most $0.50 per hour, in a real meeting; proposed
-gate targets from section 5 met; a static screen sends nothing to any model; on-screen instructions trigger nothing.
+**Questions for Attendee (P9-12):** Are frames sent over `per_participant_video` stored? Do bot recordings include shared
+screens? How long is each kept? Does `delete_data` remove all of it, and can recording be turned off? Does video change the
+price?
 
-**Note on order.** P8-13 is marked ready on the board and is a measurement, so a suitable meeting may run it early, once
-the retention question and calibration capture are done. Building P8-8 still waits for the stage 1 gate.
+**Exit:** at least 90% of table and column names read correctly and at most $0.50 per hour, in a real meeting; a static
+screen sends nothing to any model; on-screen instructions trigger nothing. The gate targets in section 5 are proposals.
+
+**Note on order.** P8-13 is a measurement, so a suitable meeting may run it during stage 1, once P9-12 and P9-13 are done.
+Building P8-8 still waits for the P8-5 gate.
 
 ### Stage 4: scenario matrix and controlled improvement
 
-| Task | Owner | Board |
-|---|---|---|
-| Publish the matrix as a coverage report over the existing tools | Claude | **new** |
-| Add missing scenarios: planning, incident, one-to-one, design review and retro by voice, screen fixtures, chat failure | Claude | **new** |
-| Run the live-model eval on a schedule with a fixed budget | Claude; Roee provides the CI secret and budget | **new** |
-| Check the model judge against human labels | Claude, Roee labels | **new** |
-| Offline candidate generation, with held-out cases and a decision packet | Claude | **new** |
+| Task | Type | Owner | Board |
+|---|---|---|---|
+| Publish the matrix as a coverage report; add missing scenarios: planning, incident, one-to-one, design review and retro by voice, screen fixtures, chat failure | Build | Claude | P9-15 |
+| Provide the CI secret and a budget for scheduled eval runs | Verify | Roee | P9-16 |
+| Run the live-model eval on a schedule | Build | Claude | P9-17 |
+| Check the model judge against human labels | Verify | Roee | P9-18 |
+| Turn failures and corrections into proposed regression cases, which a person confirms | Build | Claude | P9-19 |
+| Offline candidate generation, with held-out cases and a decision packet | Build | Claude | P9-20 |
+| Take one candidate through the full path, and confirm a deliberately bad one is rejected | Verify | Roee | P9-21 |
 
 Failure intake does not wait for this stage. It already applies today. The candidate generator comes last because it is
 only as trustworthy as the cases and grading around it.
@@ -420,13 +444,20 @@ the outside-team gate. Add a new meeting type only when real demand exists, it h
 the same gates. Sales or customer meetings would need new integrations and a fresh consent review, since the current tools
 center on GitHub and Jira.
 
-## 8. Decisions needed from Roee
+## 8. Decisions recorded on 2026-11-07
 
-1. **Accept or change this order.** Everything marked **new** waits on this.
-2. **Turn-taking (P5-9):** the first real scored meetings should not start until this is decided.
-3. **Storage for team context:** a persistent disk (P1-7) or another store.
-4. **Attendee retention:** what may remain with the vendor, and for how long.
-5. **Proposed numbers:** confirm or replace them before each measurement starts.
+Roee accepted this order and the initial focus on product engineering teams, on condition that the tasks keep the existing
+acceptance gates and separate verification from building.
+
+| Topic | Decision | Effect |
+|---|---|---|
+| Turn-taking (P5-9) | v2 in a controlled trial in the next meetings, behind the existing flag. Measure both stopping on interruption and false pauses. Not the default for everyone before the measurements are reviewed | P9-3, P9-4; P5-9 stays open as the final decision |
+| Team memory | Per-meeting only in the first stage. No persistent memory before a decision on team isolation, deletion, retention and durable storage | P9-10 comes before P9-11 |
+| Screen sharing | Before P8-13, find out from Attendee whether frames are stored, for how long and how to delete them. Collect and measure with consent first. No continuous vision analysis | P9-12 and P9-13 come before P8-13 |
+| New measurements | Approved targets remain gates. New numbers are marked as proposals and release nothing until approved in advance | Section 3 |
+| Automatic improvement | The system may generate regression cases and improvement proposals. Every behavior change passes tests and approval before production | P9-19 to P9-21 |
+
+**Still open:** storage for persistent context (P9-10), the final v2 decision (P5-9), and every number marked as a proposal.
 
 ## 9. Main risks
 
