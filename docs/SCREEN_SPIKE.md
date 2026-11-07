@@ -30,7 +30,9 @@ Two simulated IDE screens (a SQL schema, and a TypeScript file with a file tree)
 
 ## What to do in the real meeting (P8-13)
 
-1. On Render, set `NOGITA_SCREEN_CAPTURE=720p`. Tell the participants the screen is being read.
+0. Before anything else, get Attendee's answers on storing and deleting frames (P9-12) and write them here.
+1. On Render, set `NOGITA_SCREEN_CAPTURE=720p` and `NOGITA_SCREEN_CAPTURE_ALL=true`, which keeps every frame so the change gate can be calibrated later. Tell the participants the screen is being captured and read.
 2. Bring her in, and share a schema or SQL file and a code file at your usual font size for 10 minutes. Scroll, and change tabs.
 3. During the meeting run `npm run screen-spike -- collect --session <id>`, then `npm run screen-spike -- analyze`.
-4. Compare `report.md` with what was on screen, against the gate. If 720p isn't enough, try `1080p`.
+4. Compare `report.md` with what was on screen, against the gate. If 720p isn't enough, try `1080p`. `analyze` reads an evenly spaced sample of at most 20 frames (`--max-frames`), never every frame.
+5. When calibration (P9-14) has what it needs, delete the local frames in `.voice-lab/screen-spike/<id>` and note it here.
