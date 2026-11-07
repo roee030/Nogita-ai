@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { corrections, gatePassed, interruptions, minutesSaved, scorecard, tableRow, type Segment } from '../tools/scorecard/score.ts';
+import { corrections, gatePassed, interruptions, markdown, minutesSaved, outputCorrections, scorecard, tableRow, type Segment } from '../tools/scorecard/score.ts';
 
 const s = (speaker: string, start: number, end: number, text: string): Segment => ({ speaker, start: start * 1000, end: end * 1000, text, nogita: speaker === 'Nogita' });
 
@@ -43,11 +43,32 @@ test('minutes saved from the chat, in English or Hebrew', () => {
 
 test('pass needs all three targets; unknown minutes is undecided; the gate is five passes in a row', () => {
   const clean = [s('Roee', 0, 2, 'Nogita, summarize the decisions.'), s('Nogita', 3, 8, 'Two decisions, posted in the chat.')];
-  assert.equal(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: ['saved 15'] }).pass, true);
+  assert.equal(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: ['saved 15', 'corrected 0'] }).pass, true);
   assert.equal(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: ['saved 5'] }).pass, false);
   assert.equal(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: [] }).pass, null);
-  const row = (result: boolean) => tableRow(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: [result ? 'saved 15' : 'saved 1'] }), 'f.md');
+  const row = (result: boolean) => tableRow(scorecard({ session: 'm', date: '2026-11-04', segments: clean, tasks: [], chat: [result ? 'saved 15' : 'saved 1', 'corrected 0'] }), 'f.md');
   assert.equal(gatePassed([row(true), row(true), row(true), row(true)]), false);
   assert.equal(gatePassed([row(false), row(true), row(true), row(true), row(true), row(true)]), true);
   assert.equal(gatePassed([row(true), row(true), row(true), row(true), row(false)]), false);
+});
+
+test('recap and decision corrections, from the chat, in English or Hebrew', () => {
+  assert.equal(outputCorrections(['corrected 2', 'thanks']), 2);
+  assert.equal(outputCorrections(['corrected 0 items']), 0);
+  assert.equal(outputCorrections(['תיקנתי 3 סעיפים']), 3);
+  assert.equal(outputCorrections(['I corrected the title']), undefined);
+  assert.equal(outputCorrections(['great meeting']), undefined);
+});
+
+test('a recap fix fails the meeting like a task fix; an unreported one leaves it undecided, never passed', () => {
+  const base = { session: 'm', date: '2026-11-04', segments: [] as Segment[], tasks: [] };
+  const failed = scorecard({ ...base, chat: ['saved 15', 'corrected 1'] });
+  assert.equal(failed.pass, false);
+  assert.match(tableRow(failed, 'f.md'), /\| 1 \| 15 \| fail \|/);
+  assert.match(markdown(failed), /recap and decisions: 1/);
+  const undecided = scorecard({ ...base, chat: ['saved 15'] });
+  assert.equal(undecided.pass, null);
+  assert.match(markdown(undecided), /undecided \(recap corrections not given\)/);
+  assert.equal(scorecard({ ...base, chat: ['saved 15'], outputCorrections: 0 }).pass, true, 'or given on the command line');
+  assert.equal(scorecard({ ...base, chat: ['saved 5'] }).pass, false, 'a miss on another target still fails');
 });

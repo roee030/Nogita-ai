@@ -104,7 +104,7 @@ export function formatRecap(recap: MeetingRecap, options: { final: boolean; open
       : `Say "Nogita, ${example}" (or "approve all") to open them.`);
   }
   if (lines.length === 1) lines.push('', 'Nothing was decided or assigned.');
-  if (!options.final) lines.push('', 'How many minutes did this save you? Write "saved" and a number here before the meeting ends.');
+  if (!options.final) lines.push('', 'How many minutes did this save you? Write "saved" and a number here before the meeting ends. If you fixed anything in this recap, write "corrected" and how many items; if not, "corrected 0".');
   return lines.join('\n');
 }
 
