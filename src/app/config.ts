@@ -155,6 +155,14 @@ export function listenFirst(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_ROOM_AWARE: 'true' makes "alone with her" depend on who is in the call, not only on who was heard, so the first
+ *  speaker in a group is not answered without her name; blank or 'false' leaves it off. */
+export function roomAware(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_ROOM_AWARE?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_ROOM_AWARE must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_MEETING_RECAP: 'true' posts a recap with proposed tasks that open only when approved; blank or 'false' leaves it
  *  off. */
 export function meetingRecap(env: NodeJS.ProcessEnv = process.env): boolean {

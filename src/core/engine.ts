@@ -43,6 +43,10 @@ interface Session {
   heard?: Map<string, number>;
   /** Everyone heard in this meeting; unlike `heard`, nobody ever drops out of it. */
   voices?: Set<string>;
+  /** Who is in the call now, by actor id (NOGITA_ROOM_AWARE), whether they spoke or not. Unset: not reported yet. */
+  room?: Set<string>;
+  /** Restored after a restart: who joined before it is lost, so the room stays unknown for this meeting. */
+  roomLost?: boolean;
   /** First names of people heard (actor id -> name), to tell when someone is addressed by name instead of her. */
   names?: Map<string, string>;
   activeRequest?: { actorId: string; request: string; startedAt: number; firstSpeechRecorded: boolean };
@@ -204,6 +208,8 @@ export interface NogitaEngineOptions {
   /** NOGITA_LISTEN_FIRST: she speaks only when the turn names her (or answers a question she just asked), in one short
    *  sentence with the rest in chat; no one-to-one implicit address, no raised hand, no "did you ask me?". Off unless set. */
   listenFirst?: boolean;
+  /** NOGITA_ROOM_AWARE: "alone with her" needs the call itself to say so; hearing one voice is not enough. */
+  roomAware?: boolean;
   /** NOGITA_MEETING_RECAP: "Nogita, summarize" and the end of the meeting post a recap with numbered proposed tasks;
    *  only "approve 1 and 3" (or "approve all") from someone allowed to write opens them. Off unless set. */
   meetingRecap?: boolean;
@@ -506,6 +512,7 @@ export class NogitaEngine {
   private readonly commentRetryGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
+  private readonly roomAware: boolean;
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
   private readonly designReview: boolean;
@@ -574,6 +581,7 @@ export class NogitaEngine {
     this.commentRetryGuard = options.commentRetryGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
+    this.roomAware = options.roomAware === true;
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
     this.designReview = options.designReview === true;
@@ -684,6 +692,12 @@ export class NogitaEngine {
   restoreSession(sessionId: string, meeting: MeetingPort): void {
     if (this.sessions.has(sessionId) || this.startingSessions.has(sessionId)) throw new Error('session already exists');
     this.addSession(sessionId, meeting);
+    this.sessions.get(sessionId)!.roomLost = true;
+  }
+  /** Everyone in the call now, except her (NOGITA_ROOM_AWARE). */
+  noteRoom(sessionId: string, actorIds: Iterable<string>): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !session.roomLost) session.room = new Set(actorIds);
   }
   hasSession(sessionId: string): boolean { return this.sessions.has(sessionId); }
   async endSession(sessionId: string, leaveProvider = true): Promise<void> {
@@ -1635,6 +1649,17 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     const pending = s.pendingFollowUp;
     if (pending?.kind === 'conversation' && pending.actorId !== id && !isBackchannel(utterance.text)) pending.intervened = true;
   }
+  /**
+   * Only this person and Nogita in the call: their questions are for her, name or not. Listen-first is stricter about who
+   * was heard: nobody else spoke at any point in this meeting. With NOGITA_ROOM_AWARE the first speaker in a group is not
+   * alone just because nobody else spoke yet: the call must report this person as its only participant, and until it does
+   * she waits for her name. Being wrong that way costs saying "Nogita"; the other way costs interrupting the meeting.
+   */
+  private aloneWithHer(s: Session, actorId: string): boolean {
+    const nobodyElseHeard = this.listenFirst ? s.voices?.size === 1 : s.heard?.size === 1;
+    if (!nobodyElseHeard || !this.roomAware) return nobodyElseHeard;
+    return s.room?.size === 1 && s.room.has(actorId);
+  }
   private otherNames(s: Session, actorId: string): string[] {
     return [...(s.names ?? new Map<string, string>())].filter(([id]) => id !== actorId).map(([, name]) => name);
   }
@@ -1644,7 +1669,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
    */
   private followUpRuledOut(s: Session, pending: NonNullable<Session['pendingFollowUp']>, text: string, actorId: string): boolean {
     if (addressesSomeoneElse(text, this.otherNames(s, actorId))) return true;
-    if (this.listenFirst && pending.kind === 'question' && notAReplyToHer(text, s.voices?.size !== 1)) return true;
+    if (this.listenFirst && pending.kind === 'question' && notAReplyToHer(text, !this.aloneWithHer(s, actorId))) return true;
     if (this.roomNoiseGuard && s.floor) {
       if (this.isRoomNoise(s, text)) return true;
       // After an answer, words that ask nothing ("Yeah, the huge one. I opened it last week.") are the room talking.
@@ -1764,9 +1789,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     const directlyAddressed = directlyAddressesNogita(current) || called || wholeRequest !== undefined;
     const heard = s.heard ??= new Map();
     for (const [actorId, at] of heard) if (this.now() - at > 5 * 60_000) heard.delete(actorId);
-    // Only one person and Nogita in the call: their questions are for her, name or not (the agent stays silent otherwise).
-    // Listen-first is stricter about "only one person": nobody else spoke at any point in this meeting.
-    const alone = this.listenFirst ? s.voices?.size === 1 : heard.size === 1;
+    const alone = this.aloneWithHer(s, utterance.actor.id);
     const oneToOne = !directlyAddressed && Boolean(s.floor && this.dependencies.agent) && alone && looksLikeRequest(current);
     let pending = s.pendingFollowUp;
     if (oneToOne && !(pending?.actorId === utterance.actor.id && this.now() <= pending.expiresAt)) {
