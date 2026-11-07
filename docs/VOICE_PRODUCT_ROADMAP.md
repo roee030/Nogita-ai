@@ -47,7 +47,7 @@ flags are not listed in [`config/render-flags.env`](../config/render-flags.env),
 | Turn-taking v2 | `NOGITA_TURN_TAKING_V2` | Yes | Voice lab: stops in about 0.2 s against 1.3 s for legacy; a cough or laugh often pauses it for about 0.8 s | **Required.** Controlled trial approved (P9-3, P9-4); final decision after review (P5-9) |
 | Chat delivery | none | Yes | Unit tests | **Required.** Not seen by Roee on 1 November (P8-12) |
 | Listen-first (P8-2) | `NOGITA_LISTEN_FIRST` | Yes | Unit tests, voice lab, replay | **Required** (P8-5) |
-| Recap with numbered approval (P8-3, P8-10) | `NOGITA_MEETING_RECAP`, `NOGITA_RECAP_CHANNEL` | Yes | Unit tests with a stand-in model. Live-model eval pending (P9-1) | **Required** (P8-12) |
+| Recap with numbered approval (P8-3, P8-10) | `NOGITA_MEETING_RECAP`, `NOGITA_RECAP_CHANNEL` | Yes. Participant notice and read-back limits pending (P9-22) | Unit tests with a stand-in model. Live-model eval pending (P9-1) | **Required** (P8-12) |
 | Follow-up (P8-4) | `NOGITA_FOLLOW_UP` | Yes | Unit tests | **Required** (P8-12) |
 | Design review opinion (P8-9) | `NOGITA_DESIGN_REVIEW` | Yes | Unit tests with a stand-in model. Live-model eval pending (P9-1) | **Required**: a real design review |
 | Retro (P8-11) | `NOGITA_RETRO` | Yes | Unit tests with simulated recaps. Live-model eval pending (P9-1) | **Required**: a real retro |
@@ -156,9 +156,19 @@ profile.
 
 ### Team context
 
-**First stage, decided by Roee: context lives only for the meeting.** Persistent team memory is not added until there is a
-decision on team isolation, deletion, retention and durable storage (P9-10). `NOGITA_MEETING_MEMORY` stays off during this
-work. The Slack recap channel (P8-10) is existing delivery of a written output, not learned memory, and it is not extended.
+**First stage, decided by Roee: context lives only for the meeting.** Nogita does not use information from an earlier meeting
+to interpret a new one, unless a capability such as Retro was explicitly turned on. Persistent team memory is not added until
+there is a decision on team isolation, deletion, retention and durable storage (P9-10). `NOGITA_MEETING_MEMORY` stays off
+during this work.
+
+**The Slack recap channel (P8-10) is a team output, not system memory.** A recap in a configured channel is something the team
+can read. The rules (P9-22):
+- Sending stays off unless a channel is explicitly configured.
+- Only the recap is sent, never a recording or a full transcript.
+- Participants are told that the recap is saved in Slack.
+- Only Retro reads recaps back, and only when Retro is explicitly on. Earlier recaps do not enter a new meeting's context by
+  default, and this includes Nogita's general Slack lookup tools.
+- Turning meeting memory off does not stop the recap from being sent.
 
 The rest of this section is the design for that later decision. Useful context is small and specific: project vocabulary and misheard names, who owns which area, which repository and
 board apply, decisions already made, recurring problems. Building on `MeetingRecord` means storing only an allowlist of
@@ -361,6 +371,7 @@ analyzes. Each task is either **verify** or **build**, and this is kept separate
 |---|---|---|---|
 | Add recap, retro and design review cases to the live-model eval, so a weak recap is caught before it costs a meeting | Build | Claude | P9-1 |
 | Count recap and decision corrections on the scorecard | Build | Claude | P9-2 |
+| Recap channel boundary: tell participants, and keep earlier recaps out of new meetings | Build | Claude | P9-22 |
 | Report v2 stops and false pauses per meeting; list the trial and phase 8 flags in `config/render-flags.env` | Build | Claude | P9-3 |
 | Turn on the v2 trial and phase 8 flags on Render. The code default stays legacy | Verify | Roee | P9-4 |
 | Smoke check in Meet: chat messages visible, recap, "approve", follow-up, Slack recap when a meeting ends by itself | Verify | Roee | P8-12 |
@@ -453,6 +464,7 @@ acceptance gates and separate verification from building.
 |---|---|---|
 | Turn-taking (P5-9) | v2 in a controlled trial in the next meetings, behind the existing flag. Measure both stopping on interruption and false pauses. Not the default for everyone before the measurements are reviewed | P9-3, P9-4; P5-9 stays open as the final decision |
 | Team memory | Per-meeting only in the first stage. No persistent memory before a decision on team isolation, deletion, retention and durable storage | P9-10 comes before P9-11 |
+| Recap channel | Stays. A recap in a configured Slack channel is a team output, not system memory. Off without an explicit channel; recap only; participants told; Retro reads recaps only when explicitly on | P9-22, checked in P8-12 |
 | Screen sharing | Before P8-13, find out from Attendee whether frames are stored, for how long and how to delete them. Collect and measure with consent first. No continuous vision analysis | P9-12 and P9-13 come before P8-13 |
 | New measurements | Approved targets remain gates. New numbers are marked as proposals and release nothing until approved in advance | Section 3 |
 | Automatic improvement | The system may generate regression cases and improvement proposals. Every behavior change passes tests and approval before production | P9-19 to P9-21 |
