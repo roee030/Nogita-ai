@@ -20,6 +20,9 @@ export interface SessionReport {
   firstAudioMs: number[];
   interruptMs: number[];
   commandStops: number;
+  /** v2: how often output paused, and each pause that ended with her going on rather than stopping. */
+  pauses: number;
+  resumes: Array<{ cause: string; pausedMs: number }>;
   missed: Array<{ at: number; why: string; text?: string }>;
   unnamedActivations: Array<{ at: number; result: string; text?: string }>;
   staleSpeech: number;
@@ -50,7 +53,7 @@ export function percentile(values: readonly number[], p: number): number | undef
 
 export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const events = [...lines].sort((a, b) => a.at - b.at);
-  const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0,
+  const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0, pauses: 0, resumes: [],
     missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
     firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 },
     traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {}, errors: {},
@@ -145,7 +148,11 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
               !(typeof event.playbackId === 'number' && pausedPlaybacks.has(event.playbackId))) report.interruptMs.push(event.latencyMs);
         } else report.commandStops++;
         break;
+      case 'audio_resume':
+        if (typeof event.pausedMs === 'number') report.resumes.push({ cause: String(event.cause), pausedMs: event.pausedMs });
+        break;
       case 'audio_pause':
+        report.pauses++;
         if (typeof event.latencyMs === 'number') report.interruptMs.push(event.latencyMs);
         if (typeof event.playbackId === 'number') pausedPlaybacks.add(event.playbackId);
         break;
@@ -313,6 +320,17 @@ export function render(reports: readonly SessionReport[]): string {
     `| Research results shortened / omitted items | ${research.truncatedResults} / ${research.omittedItems}${research.omittedLines ? ` (+ ${research.omittedLines} lines)` : ''} | diagnostic | — |`,
     '', `Final statuses: ${Object.entries(finals).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`, '',
   ];
+  if (reports.some(r => r.pauses || r.interruptMs.length)) {
+    lines.push('## Turn-taking by meeting (for the v2 trial, P5-9)', '',
+      'A pause ending in "quiet" is a false pause: a sound with no speech stopped her for that long. "backchannel" is someone saying "mm-hm", where a short pause is expected. The trial has no pass mark here: Roee reviews these numbers. These are server-side times; what listeners hear may lag.', '',
+      '| Meeting | Stops p95 (n) | Pauses | False pauses (quiet) | Backchannel | Timed out | False pause p50 / p90 |', '|---|---|---|---|---|---|---|');
+    for (const r of reports) {
+      const of = (cause: string) => r.resumes.filter(resume => resume.cause === cause);
+      const quiet = of('quiet').map(resume => resume.pausedMs);
+      lines.push(`| ${r.name} | ${fmt(percentile(r.interruptMs, 95))} (${r.interruptMs.length}) | ${r.pauses} | ${quiet.length} | ${of('backchannel').length} | ${of('timeout').length} | ${fmt(percentile(quiet, 50))} / ${fmt(percentile(quiet, 90))} |`);
+    }
+    lines.push('');
+  }
   if (missed.length) {
     lines.push('## Missed or lost', '');
     for (const r of reports) for (const m of r.missed) lines.push(`- ${r.name} @${new Date(m.at).toISOString()}: ${m.why}${m.text ? ` — "${m.text}"` : ''}`);

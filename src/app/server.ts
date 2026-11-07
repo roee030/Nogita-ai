@@ -434,6 +434,8 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
         playedMs: interrupt.playedMs, ...(interrupt.latencyMs !== undefined ? { latencyMs: interrupt.latencyMs } : {}) }),
       onSpeechPause: (sessionId, pause) => turnLog.record(sessionId, { type: 'audio_pause',
         id: pause.questionId, playbackId: pause.playbackId, playedMs: pause.playedMs, latencyMs: pause.latencyMs }),
+      onSpeechResume: (sessionId, resume) => turnLog.record(sessionId, { type: 'audio_resume',
+        id: resume.questionId, playbackId: resume.playbackId, cause: resume.cause, pausedMs: resume.pausedMs }),
       onError: code => console.error(code),
       onUsage: (sessionId, usage) => {
         if (usage.sttBytes) sessionUsage.recordDeepgramSttBytes(sessionId, usage.sttBytes);
