@@ -5,6 +5,11 @@
  */
 import type { ChatModel } from './agent.ts';
 
+/** Her own copy of a recap or retro in the recap channel: a team output that only an enabled retro reads back (P9-22). */
+export function isArchivedRecap(text: string): boolean {
+  return /^Meeting \S+\s+Meeting recap\b/.test(text) || /^Retro, last \d+ days, from \d+ meetings\b/.test(text);
+}
+
 export interface ProposedTask { title: string; description: string; owner?: string }
 export interface MeetingRecap {
   decisions: string[];

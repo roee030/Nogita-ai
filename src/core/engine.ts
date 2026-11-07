@@ -36,6 +36,7 @@ interface Session {
   minutes?: string[];
   /** NOGITA_FOLLOW_UP: already posted in this meeting. */
   followUpPosted?: boolean;
+  recapNoticePosted?: boolean;
   /** When she last asked "did someone ask me something?" (NOGITA_SWALLOWED_QUESTION), so she asks once, not every turn. */
   swallowedAskAt?: number;
   /** People heard recently (actor id -> last time), to tell a one-to-one call from a group. */
@@ -1709,6 +1710,12 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     if (this.followUp && !s.followUpPosted && this.dependencies.board.ownRecentTasks) {
       s.followUpPosted = true;
       void this.postFollowUp(s.meeting);
+    }
+    // Sent on the first words heard for the same reason as the follow-up: the provider refuses chat before she is admitted.
+    if (this.meetingRecap && this.recapChannel && this.dependencies.chat && !s.recapNoticePosted) {
+      s.recapNoticePosted = true;
+      void s.meeting.sendStatus(`The recap of this meeting will be saved in the team's ${this.dependencies.chat.name} recap channel. It is a summary, not a recording or a full transcript.`)
+        .catch(() => undefined);
     }
     const historyBefore = s.history.slice();
     const pendingBefore = s.pendingFollowUp;

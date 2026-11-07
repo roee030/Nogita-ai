@@ -1,5 +1,6 @@
 import type { ActionReceipt, Actor, BoardPort, ChatPort, CiStatus, CodeChange, CodePort, Evidence, ExternalAction, MeetingMemoryPort, PolicyPort, PullRequestPort, RepoActivity, ScreenCard, TaskSearch } from './contracts.ts';
 import { isExplicitPRRequest } from './policy.ts';
+import { isArchivedRecap } from './recap.ts';
 import type { WriteIntentJudge, WriteKind } from './write-intent.ts';
 import { findVolunteer, withMeetingQuotes, type ActionItem } from './drafting.ts';
 import type { AgentToolbox, AgentToolSpec, ToolOutcome } from './agent.ts';
@@ -552,21 +553,27 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         const channels = await chat.listChannels();
         return { content: channels.length ? channels.map(c => `#${c.name} (${c.id})`).join('\n') : 'Nogita is not a member of any channel.' };
       });
+      // Earlier recaps are for people to read, and for a retro when it is on: they never reach a meeting through a lookup.
+      const peopleOnly = <T extends { text: string }>(messages: readonly T[]) => {
+        const kept = messages.filter(message => !isArchivedRecap(message.text));
+        const left = messages.length - kept.length;
+        return { kept, note: left ? `\n(${left} archived meeting recap${left === 1 ? ' was' : 's were'} left out: only the retro reads them.)` : '' };
+      };
       add({ name: 'read_channel', description: `Read the most recent messages in a ${chat.name} channel Nogita is a member of.`,
         input_schema: { type: 'object', properties: { channel: { type: 'string', description: 'Channel name like #dev or an ID.' }, limit: { type: 'integer' } }, required: ['channel'] } },
       async input => {
         const channel = str(input.channel, 100);
         if (!channel) return { content: 'channel is required', isError: true };
-        const messages = await chat.readChannel(channel, int(input.limit, 1, 50) ?? 20);
-        return { content: messages.length ? messages.map(m => `[${m.at}] ${m.author}: ${m.text}`).join('\n') : 'No recent messages.' };
+        const { kept: messages, note } = peopleOnly(await chat.readChannel(channel, int(input.limit, 1, 50) ?? 20));
+        return { content: (messages.length ? messages.map(m => `[${m.at}] ${m.author}: ${m.text}`).join('\n') : 'No recent messages.') + note };
       });
       if (chat.searchMessages) add({ name: 'search_messages', description: `Search ${chat.name} messages across channels.`,
         input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
       async input => {
         const query = str(input.query, 300);
         if (!query) return { content: 'query is required', isError: true };
-        const messages = await chat.searchMessages!(query, 15);
-        return { content: messages.length ? messages.map(m => `[${m.at}] #${m.channel} ${m.author}: ${m.text}${m.url ? ` ${m.url}` : ''}`).join('\n') : 'No matching messages.' };
+        const { kept: messages, note } = peopleOnly(await chat.searchMessages!(query, 15));
+        return { content: (messages.length ? messages.map(m => `[${m.at}] #${m.channel} ${m.author}: ${m.text}${m.url ? ` ${m.url}` : ''}`).join('\n') : 'No matching messages.') + note };
       });
     }
   }
