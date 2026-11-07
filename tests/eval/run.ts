@@ -54,6 +54,8 @@ const research = values.research ? ALL_RESEARCH_FEATURES : researchFeatures(proc
 const taskFromTopic = values['task-from-topic'] || process.env.NOGITA_TASK_FROM_TOPIC === 'true';
 const noisyTaskRequests = values['noisy-task-requests'] || process.env.NOGITA_NOISY_TASK_REQUESTS === 'true';
 const writeIntent = values['write-intent'] || process.env.NOGITA_WRITE_INTENT === 'true';
+const batchTasks = process.env.NOGITA_BATCH_TASKS === 'true';
+const strictSpeechGuard = process.env.NOGITA_STRICT_SPEECH_GUARD === 'true';
 const researchOn = Object.entries(research).filter(([, on]) => on).map(([feature]) => feature);
 
 interface Pass { routing: boolean; model: string; summary: Summary; ms: number; scores: CaseScore[]; runs: unknown[] }
@@ -69,7 +71,7 @@ async function runAll(routed: boolean): Promise<Pass> {
   const began = Date.now();
   for (const item of cases) {
     for (let attempt = 0; attempt < repeat; attempt++) {
-      const run = await runCase(model, item, { research, taskFromTopic, noisyTaskRequests, writeIntent });
+      const run = await runCase(model, item, { research, taskFromTopic, noisyTaskRequests, writeIntent, batchTasks, strictSpeechGuard });
       const score = scoreCase(item, run);
       scores.push(score);
       runs.push({ id: item.id, turns: run.turns, tools: run.tools, stops: run.stops, writes: run.calls.filter(call =>

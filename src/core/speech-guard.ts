@@ -63,8 +63,27 @@ const PLANNING: readonly RegExp[] = [
   /\bask (?:him|her) (?:in a few words|briefly|once)\b/i,
   // Replay of 1 November: "I already have the summary from the earlier lookup, so I'll give the detail from that".
   /\b(?:from|in) the earlier (?:lookup|search)\b/i,
+  // Sorting the request out loud (eval of 6 November: "The user explicitly asked for a task", "This is a request to take
+  // ownership of KAN 3", "The clearest reading is to start a mission"). "The user table" and "a feature request" stay.
+  /^the (?:user|person|speaker)\s+(?:(?:explicitly|clearly|just|also)\s+\w+|(?:asked|wants|is asking|said|needs)\s+(?:me|you|us)\b|asked to (?:work|open|create|handle|add|update)\b)/i,
+  /\brequest was explicit\b/i,
+  // Replays of the fixed code: "...is an explicit request", "The tool wants confirmation, but Roee already said", "I'll tell Roee plainly".
+  /\bis an explicit request\b/i,
+  /^the previous turn\b/i,
+  /^the (?:tool|system) (?:wants|asks|asked)\b/i,
+  /\bso I shouldn't retry\b/i,
+  /^I'll tell [\p{L}'-]+ plainly\b/iu,
+  /\bso I should (?:start|create|open|use|delegate|hand)\b/i,
+  /^this(?: one)?(?:'s| is)\s+(?:a\s+|an\s+)?(?:request to|mission-style|mission\b|task to own|background job)/i,
+  /^the (?:request|ask) is (?:to|for)\b/i,
+  /\bthe explicit ask\b/i,
+  /^the (?:clearest|best|most likely|simplest) reading\b/i,
+  /^I should (?:create|open|update|start|delegate|call|use|hand)\b/i,
+  /\brather than delegat(?:e|ing)\b/i,
+  /\bhand(?:ing)? (?:it|this|that)(?: off)? to a mission\b/i,
+  /\b(?:delegate[_ ]mission|create_tasks?|update_tasks?|missions?_status|decide_mission)\b/i,
 ];
-const ABOUT_SPEAKER = String.raw`\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b`;
+const ABOUT_SPEAKER = String.raw`(?:'s asking\b|\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b)`;
 
 export function isPlanningAloud(sentence: string, speaker?: string): boolean {
   const text = sentence.trim();

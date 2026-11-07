@@ -1111,6 +1111,7 @@ export class NogitaEngine {
       noisyTaskRequests: this.noisyTaskRequests,
       ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
       ...(this.batchTasks ? { batchTasks: true } : {}),
+      ...(this.strictSpeechGuard ? { ownRefusals: true } : {}),
       ...(this.writeIntent ? { writeIntent: this.writeIntent, ...(pending?.question ? { lastMessage: pending.question } : {}) } : {}),
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => { detailsPosted = true; return s.meeting.sendStatus(text); } } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
