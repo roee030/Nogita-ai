@@ -58,6 +58,8 @@ export interface ToolboxContext {
   offerApproval?: boolean;
   /** A yes to her offer of this many tasks approves that many and no more in this turn. */
   offeredTasks?: number;
+  /** The offer named no number, so `offeredTasks` is only the limit for that. */
+  offerUncounted?: boolean;
   /** NOGITA_WRITE_INTENT: asked when the phrases say a write was not asked for; it reads the meaning instead. */
   writeIntent?: WriteIntentJudge;
   /** Her message just before this request, when the person is answering it (for the write-intent judge). */
@@ -572,7 +574,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     let offeredLeft = context.offeredTasks;
     const pastOffer = (count: number): string | undefined => {
       if (offeredLeft === undefined) return undefined;
-      if (count > offeredLeft) return `Not created: they said yes to ${context.offeredTasks} task(s) you offered, and this would make more. Ask before creating more.`;
+      if (count > offeredLeft) return context.offerUncounted
+        ? `Not created: your offer named no number, so their yes covers at most ${context.offeredTasks} tasks, and this would make more. Say how many tasks it would be and ask them. A yes to that number opens them.`
+        : `Not created: they said yes to ${context.offeredTasks} task(s) you offered, and this would make more. Ask before creating more.`;
       offeredLeft -= count;
       return undefined;
     };

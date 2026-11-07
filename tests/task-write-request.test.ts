@@ -93,7 +93,7 @@ function offerFixture(steps: OfferStep[], offerApproval: boolean) {
   const board = new DemoBoard();
   const engine = new NogitaEngine({ board, code: new DemoCode(), brain: new DemoBrain(), policy: new AllowlistPolicy(new Set(['roee'])),
     agent: model, people: new IdentityDirectory([{ id: 'roee', displayName: 'Roee Angel' }]) },
-  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 20, talkingMs: 20 }, offerApproval });
+  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 20, talkingMs: 20 }, offerApproval, batchTasks: true });
   const utter = (text: string, eventId: string) => engine.onUtterance('s', { text, eventId, actor: roee });
   return { engine, board, model, utter, meeting: new DemoMeeting('m') };
 }
@@ -142,6 +142,39 @@ test('a yes to one offered task does not approve several', async () => {
   await f.utter('Yeah, do it.', '2');
   assert.equal(f.board.tasks.length, 1);
   assert.match(f.model.toolResults.join('\n'), /said yes to 1 task\(s\) you offered/);
+});
+
+const task = (n: number) => ({ title: `PR ${n}`, description: 'd' });
+const VAGUE_OFFER = 'Want me to open tasks for those PRs?';
+
+test('a yes to an offer with no number does not open a batch: she has to say how many first', async () => {
+  const f = offerFixture([
+    { text: VAGUE_OFFER },
+    { tools: [{ name: 'create_tasks', input: { tasks: [1, 2, 3, 4, 5, 6].map(task) } }] },
+    { text: 'That would be six tasks, one per PR. Should I open six tasks?' },
+    { tools: [{ name: 'create_tasks', input: { tasks: [1, 2, 3, 4, 5, 6].map(task) } }] },
+    { text: 'Done.' },
+  ], true);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, what did we merge today?', '1');
+  await f.utter('Yeah, do it.', '2');
+  assert.equal(f.board.tasks.length, 0);
+  assert.match(f.model.toolResults.join(' '), /named no number/);
+  await f.utter('Yes.', '3');
+  assert.equal(f.board.tasks.length, 6);
+});
+
+test('a yes to an offer with no number still opens a few, one at a time or together', async () => {
+  const f = offerFixture([
+    { text: 'Do you want me to open a Jira task for each one?' },
+    { tools: [{ name: 'create_tasks', input: { tasks: [1, 2, 3].map(task) } }] },
+    { tools: [{ name: 'create_task', input: task(4) }] },
+    { text: 'Three are open.' },
+  ], true);
+  await f.engine.startSession('s', f.meeting);
+  await f.utter('Nogita, which PRs are blocked?', '1');
+  await f.utter('Yes, please.', '2');
+  assert.equal(f.board.tasks.length, 3);
 });
 
 test('a bare yes with no offer before it opens nothing', async () => {
