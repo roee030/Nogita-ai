@@ -256,6 +256,8 @@ export function offeredAction(question: string): string | undefined {
   const match = question.match(/\b(?:(?:do you |would you |should I|shall I|want me to|like me to)\s*(?:want me to |like me to )?)((?:open|create|add|file|log|make|post|send|move|mark|assign|close)\b[^?.!]*)\?/i);
   return match?.[1]?.trim();
 }
+/** NOGITA_OFFER_APPROVAL: the most tasks a yes opens when her offer named no number. More needs the number said and a yes to it. */
+const UNCOUNTED_OFFER_TASKS = 3;
 const COUNT_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
   eight: 8, nine: 9, ten: 10 };
 /**
@@ -1088,8 +1090,10 @@ export class NogitaEngine {
         : (action => action ? { request: action } as { request: string; tasks?: number } : undefined)(offeredAction(pending.question));
     const offer = offered?.request;
     // The yes approves the offer, not more: a count it named caps the tasks this turn, unless the reply asks for more itself.
-    const offeredTasks = this.offerApproval && offered?.tasks !== undefined &&
-      !requestsTaskWrite(request, { noisy: this.noisyTaskRequests }) ? offered.tasks : undefined;
+    // An offer with no number covers only a few (1 November recording: "Want me to open tasks for those PRs?" opened 12).
+    const capOffer = this.offerApproval && offered !== undefined && !requestsTaskWrite(request, { noisy: this.noisyTaskRequests });
+    const offeredTasks = capOffer ? offered.tasks ?? UNCOUNTED_OFFER_TASKS : undefined;
+    const offerUncounted = capOffer && offered.tasks === undefined;
     const writeScope = pending ? [pending.request, offer, request].filter(Boolean).join('\n') : request;
     let userText = pending?.question ? `(Your previous message to ${speaker} was: "${pending.question}")\n${request}` : request;
     // A quick in-memory search runs alongside the repository map, so most code questions need one lookup round fewer.
@@ -1109,7 +1113,7 @@ export class NogitaEngine {
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,
-      ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
+      ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}), ...(offerUncounted ? { offerUncounted: true } : {}),
       ...(this.batchTasks ? { batchTasks: true } : {}),
       ...(this.strictSpeechGuard ? { ownRefusals: true } : {}),
       ...(this.writeIntent ? { writeIntent: this.writeIntent, ...(pending?.question ? { lastMessage: pending.question } : {}) } : {}),
