@@ -12,12 +12,12 @@ const lead = { id: 'lead', displayName: 'Lead', verified: true };
 const people = new IdentityDirectory([{ id: 'lead', displayName: 'Lead Person' }, { id: 'dana', displayName: 'Dana Katz' }, { id: 'roee', displayName: 'Roee Angel' }]);
 const assignable = () => new Map([['lead', 'Lead Person'], ['dana', 'Dana Katz'], ['roee', 'Roee Angel']]);
 
-function setup(request: string, options: { board?: MemoryBoard; completed?: Map<string, ActionReceipt>; eventId?: string; batchTasks?: boolean; ownRefusals?: boolean } = {}) {
+function setup(request: string, options: { board?: MemoryBoard; completed?: Map<string, ActionReceipt>; eventId?: string; batchTasks?: boolean; ownRefusals?: boolean; commentRetryGuard?: boolean } = {}) {
   const board = options.board ?? new MemoryBoard('memory', 'MEM', assignable());
   const receipts: ActionReceipt[] = [];
   const { toolbox, report } = buildToolbox({ actor: lead, request, sessionId: 's', eventId: options.eventId ?? 'e1', people,
     policy: new AllowlistPolicy(new Set(['lead'])), code: new DemoCode(), board, completed: options.completed ?? new Map(),
-    batchTasks: options.batchTasks ?? true, ownRefusals: options.ownRefusals ?? false, onReceipt: async receipt => { receipts.push(receipt); } });
+    batchTasks: options.batchTasks ?? true, ownRefusals: options.ownRefusals ?? false, commentRetryGuard: options.commentRetryGuard ?? false, onReceipt: async receipt => { receipts.push(receipt); } });
   return { toolbox, report, board, receipts };
 }
 
@@ -209,4 +209,30 @@ test('with the strict guard, every write past the limit says the limit is hers',
   for (let i = 0; i < 5; i++) await f.toolbox.run('create_task', { title: `Task ${i}`, description: 'x' });
   const refused = await f.toolbox.run('create_task', { title: 'Too many', description: 'x' });
   assert.match(refused.content, /Nogita's own limit/);
+});
+
+async function boardWithTask() {
+  const board = new MemoryBoard('memory', 'MEM', assignable());
+  const task = await board.createTask!({ title: 'Token refresh', description: 'x', requestId: 'seed' });
+  const key = task.label.match(/MEM-\d+/)![0];
+  return { board, key, comments: async () => (await board.getTask!(key))!.comments.length };
+}
+
+test('with the retry guard, the same request after a restart does not post its comment again in other words', async () => {
+  for (const [commentRetryGuard, expected] of [[true, 1], [false, 2]] as const) {
+    const { board, key, comments } = await boardWithTask();
+    const completed = new Map<string, ActionReceipt>();
+    const request = `add a comment on ${key} saying the token refresh is deployed`;
+    await setup(request, { board, completed, commentRetryGuard }).toolbox.run('update_task', { key, comment: 'The token refresh is deployed.' });
+    await setup(request, { board, completed, commentRetryGuard }).toolbox.run('update_task', { key, comment: 'Token refresh has been deployed.' });
+    assert.equal(await comments(), expected);
+  }
+});
+
+test('with the retry guard, two comments in one request are both posted', async () => {
+  const { board, key, comments } = await boardWithTask();
+  const { toolbox } = setup(`add a comment on ${key} saying one and add a comment saying two`, { board, commentRetryGuard: true });
+  await toolbox.run('update_task', { key, comment: 'One.' });
+  await toolbox.run('update_task', { key, comment: 'Two.' });
+  assert.equal(await comments(), 2);
 });

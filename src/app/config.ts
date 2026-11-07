@@ -123,6 +123,14 @@ export function offerApproval(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_COMMENT_RETRY_GUARD: 'true' keys a comment by its place in the request, not its wording, so the same request after
+ *  a restart does not post it twice; blank or 'false' leaves it off. */
+export function commentRetryGuard(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_COMMENT_RETRY_GUARD?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_COMMENT_RETRY_GUARD must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_STRICT_SPEECH_GUARD: 'true' also drops planning aloud ("I'll answer with the count", "Roee wants ...") and "the
  *  details are in the chat" when nothing more was sent; blank or 'false' leaves it off. */
 export function strictSpeechGuard(env: NodeJS.ProcessEnv = process.env): boolean {
