@@ -89,6 +89,12 @@ export function minutesSaved(messages: readonly string[]): number | undefined {
   return values.length ? Math.max(...values) : undefined;
 }
 
+/** "corrected 2", "corrected 0 items", "תיקנתי 2", "תוקנו 3": fixes to her recap and decisions, the largest number anyone wrote. */
+export function outputCorrections(messages: readonly string[]): number | undefined {
+  const values = messages.flatMap(text => [...text.matchAll(/(?:\bcorrected\b|תיקנתי|תיקנו|תוקנו)\D{0,15}?(\d{1,3})/giu)].map(m => Number(m[1])));
+  return values.length ? Math.max(...values) : undefined;
+}
+
 export interface Scorecard {
   session: string;
   date: string;
@@ -98,31 +104,38 @@ export interface Scorecard {
   tasks: string[];
   corrections: Array<{ key: string; why: string }>;
   minutesSaved?: number;
+  /** Fixes to the recap and decisions, as people reported them. Their edits leave no history to read, unlike a task's. */
+  outputCorrections?: number;
   pass: boolean | null;
 }
 
 export const TARGETS = { interruptions: 0, corrections: 0, minutesSaved: 10 };
 
 export function scorecard(input: { session: string; date: string; segments: Segment[]; tasks: TaskHistory[]; chat: string[];
-  minutesSaved?: number }): Scorecard {
+  minutesSaved?: number; outputCorrections?: number }): Scorecard {
   const found = interruptions(input.segments);
   const fixed = corrections(input.tasks);
   const saved = input.minutesSaved ?? minutesSaved(input.chat);
   const span = input.segments.length ? Math.max(...input.segments.map(s => s.end)) - Math.min(...input.segments.map(s => s.start)) : 0;
-  // Unknown minutes saved leaves the meeting undecided, never passed.
-  const pass = found.length > TARGETS.interruptions || fixed.length > TARGETS.corrections || (saved !== undefined && saved < TARGETS.minutesSaved)
-    ? false : saved === undefined ? null : true;
+  const output = input.outputCorrections ?? outputCorrections(input.chat);
+  // Unknown minutes saved or unreported recap corrections leave the meeting undecided, never passed.
+  const pass = found.length > TARGETS.interruptions || fixed.length + (output ?? 0) > TARGETS.corrections || (saved !== undefined && saved < TARGETS.minutesSaved)
+    ? false : saved === undefined || output === undefined ? null : true;
   return { session: input.session, date: input.date, minutes: Math.round(span / 60_000), answers: bursts(input.segments).length,
-    interruptions: found, tasks: input.tasks.map(task => task.key), corrections: fixed, ...(saved !== undefined ? { minutesSaved: saved } : {}), pass };
+    interruptions: found, tasks: input.tasks.map(task => task.key), corrections: fixed, ...(saved !== undefined ? { minutesSaved: saved } : {}),
+    ...(output !== undefined ? { outputCorrections: output } : {}), pass };
 }
 
+const correctionCount = (card: Scorecard) => card.corrections.length + (card.outputCorrections ?? 0);
+
 export function markdown(card: Scorecard): string {
-  const verdict = card.pass === true ? 'passed' : card.pass === false ? '**failed**' : 'undecided (minutes saved not given)';
+  const missing = [...(card.minutesSaved === undefined ? ['minutes saved'] : []), ...(card.outputCorrections === undefined ? ['recap corrections'] : [])];
+  const verdict = card.pass === true ? 'passed' : card.pass === false ? '**failed**' : `undecided (${missing.join(' and ')} not given)`;
   const lines = [`# Meeting scorecard: ${card.session} (${card.date})`, '',
     `**Result: ${verdict}.** Targets: ${TARGETS.interruptions} interruptions, ${TARGETS.corrections} corrections, at least ${TARGETS.minutesSaved} minutes saved.`, '',
     '| | Value | Target |', '|---|---|---|',
     `| Interruptions | ${card.interruptions.length} | 0 |`,
-    `| Corrections to her output | ${card.corrections.length} (tasks she made: ${card.tasks.length ? card.tasks.join(', ') : 'none'}) | 0 |`,
+    `| Corrections to her output | ${correctionCount(card)} (tasks she made: ${card.tasks.length ? card.tasks.join(', ') : 'none'}; recap and decisions: ${card.outputCorrections ?? 'not given'}) | 0 |`,
     `| Minutes saved | ${card.minutesSaved ?? 'not given'} | ≥ 10 |`,
     `| Meeting length, her answers | ${card.minutes} min, ${card.answers} | |`, ''];
   if (card.interruptions.length) {
@@ -142,7 +155,7 @@ export function markdown(card: Scorecard): string {
 /** One row of docs/scorecards/README.md, and whether the last five rows in a row passed (the phase 8 gate). */
 export function tableRow(card: Scorecard, file: string): string {
   const result = card.pass === true ? 'pass' : card.pass === false ? 'fail' : 'undecided';
-  return `| ${card.date} | [${card.session}](${file}) | ${card.interruptions.length} | ${card.corrections.length} | ${card.minutesSaved ?? '-'} | ${result} |`;
+  return `| ${card.date} | [${card.session}](${file}) | ${card.interruptions.length} | ${correctionCount(card)} | ${card.minutesSaved ?? '-'} | ${result} |`;
 }
 export function gatePassed(rows: readonly string[]): boolean {
   const results = rows.map(row => row.split('|').map(cell => cell.trim()).at(-2));

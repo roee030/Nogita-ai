@@ -1,9 +1,10 @@
 /**
  * The product test for one meeting (phase 8):
  *
- *   npm run scorecard -- --bot <attendee bot id> [--minutes 15] [--session meet-2026-11-03-2113] [--no-write]
+ *   npm run scorecard -- --bot <attendee bot id> [--minutes 15] [--corrected 0] [--session meet-2026-11-03-2113] [--no-write]
  *
- * Reads Attendee's transcript and the meeting chat ("saved 15" there, or --minutes, is the minutes saved), finds the
+ * Reads Attendee's transcript and the meeting chat ("saved 15" there, or --minutes, is the minutes saved; "corrected 2"
+ * there, or --corrected, is how many items of her recap and decisions people fixed, 0 included), finds the
  * Jira tasks she opened during the meeting (their Nogita request property marks them; the keys she said are checked
  * too, so a deleted one counts), reads their change history for a day after, and writes
  * docs/scorecards/<date>-<session>.md plus a row in docs/scorecards/README.md.
@@ -13,7 +14,7 @@ import { parseArgs } from 'node:util';
 import { loadDotEnv } from '../../src/app/config.ts';
 import { gatePassed, markdown, scorecard, tableRow, type Segment, type TaskHistory } from './score.ts';
 
-const { values } = parseArgs({ options: { bot: { type: 'string' }, minutes: { type: 'string' }, session: { type: 'string' },
+const { values } = parseArgs({ options: { bot: { type: 'string' }, minutes: { type: 'string' }, corrected: { type: 'string' }, session: { type: 'string' },
   'no-write': { type: 'boolean', default: false } } });
 if (!values.bot) throw new Error('usage: npm run scorecard -- --bot <attendee bot id> [--minutes N]');
 loadDotEnv();
@@ -65,7 +66,8 @@ if (env.JIRA_BASE_URL && Number.isFinite(joined)) {
 }
 
 const date = new Date(Number.isFinite(joined) ? joined : Date.now()).toISOString().slice(0, 10);
-const card = scorecard({ session, date, segments, tasks, chat, ...(values.minutes ? { minutesSaved: Number(values.minutes) } : {}) });
+const card = scorecard({ session, date, segments, tasks, chat, ...(values.minutes ? { minutesSaved: Number(values.minutes) } : {}),
+  ...(values.corrected ? { outputCorrections: Number(values.corrected) } : {}) });
 const text = markdown(card);
 console.log(text);
 if (!values['no-write']) {
