@@ -29,6 +29,9 @@ class TracedModel implements ChatModel {
   readonly ledger = new EvidenceLedger();
   /** The text of every result recorded in the ledger. */
   readonly evidence: string[] = [];
+  /** Requests the model is answering now, and when the last one ended: recaps and retros run in the background. */
+  inFlight = 0;
+  lastActivity = 0;
   private readonly uses = new Map<string, { name: string; input: Record<string, unknown>; step: number }>();
   private readonly recorded = new Set<string>();
   private steps = 0;
@@ -36,7 +39,13 @@ class TracedModel implements ChatModel {
   get agentModel(): string { return this.inner.agentModel; }
   async streamChat(request: ChatModelRequest, onText: (delta: string) => void): Promise<ChatModelResponse> {
     this.record(request);
-    const response = await this.inner.streamChat(request, onText);
+    // A recap or retro writes only from the data in its prompt, so that data is its source.
+    if (request.stableSystem.startsWith(WRITES_FROM_ITS_PROMPT[0]!) || request.stableSystem.startsWith(WRITES_FROM_ITS_PROMPT[1]!)) {
+      for (const message of request.messages) if (typeof message.content === 'string') this.add('prompt_data', {}, message.content, this.steps);
+    }
+    this.inFlight++;
+    this.lastActivity = Date.now();
+    const response = await this.inner.streamChat(request, onText).finally(() => { this.inFlight--; this.lastActivity = Date.now(); });
     this.stops.push(response.stopReason);
     for (const block of response.content) {
       if (block.type !== 'tool_use') continue;
@@ -72,6 +81,8 @@ class TracedModel implements ChatModel {
   }
 }
 const PREFETCH = 'Quick search results for this request';
+const WRITES_FROM_ITS_PROMPT = ['You write the recap', "You write a team's retro"];
+const OUTPUT_WAIT_MS = 120_000;
 
 class EvalMeeting extends DemoMeeting {
   spoken: string[] = [];
@@ -90,7 +101,7 @@ class EvalMeeting extends DemoMeeting {
 const MISSION_WAIT_MS = 180_000;
 
 export async function runCase(model: ChatModel, item: EvalCase, options: { research?: ResearchFeatures; taskFromTopic?: boolean; noisyTaskRequests?: boolean; writeIntent?: boolean; batchTasks?: boolean; strictSpeechGuard?: boolean; commentRetryGuard?: boolean } = {}): Promise<CaseRun> {
-  const world = evalWorld();
+  const world = evalWorld(undefined, item.outputs?.retro);
   const traced = new TracedModel(model);
   const voice = (item.mode ?? 'voice') === 'voice';
   const meetingFor = (id: string, inVoice: boolean) =>
@@ -117,6 +128,8 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy, agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
+    ...(item.outputs ? { listenFirst: true, meetingRecap: true, designReview: true } : {}),
+    ...(item.outputs?.retro ? { retro: true, recapChannel: 'meeting-recaps' } : {}),
     research: options.research, ...(options.batchTasks ? { batchTasks: true } : {}), ...(options.strictSpeechGuard ? { strictSpeechGuard: true } : {}), ...(options.commentRetryGuard ? { commentRetryGuard: true } : {}), ...(options.taskFromTopic ? { taskFromTopic: true } : {}), ...(options.noisyTaskRequests ? { noisyTaskRequests: true } : {}), ...(options.writeIntent ? { writeIntent: true, offerApproval: true } : {}), ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true, whatsLeftDirect: true, shortSpokenResults: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
   engine = newEngine();
@@ -133,6 +146,14 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
     meeting.chat = [];
     const result = await engine.onUtterance(sessionId, { eventId, text, actor: speakerAt(index) });
     await settle();
+    // Recaps and retros are posted after the turn returns: wait until the model has been quiet for a moment.
+    if (item.outputs) {
+      const waitedFrom = Date.now();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      while ((traced.inFlight > 0 || Date.now() - traced.lastActivity < 500) && Date.now() - waitedFrom < OUTPUT_WAIT_MS) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
     run.turns.push({ text, result, spoken: meeting.spoken, chat: meeting.chat, tasksAfter: world.board.tasks.length });
   };
   if (item.interruptedWrite) await runner?.resumeAll();
@@ -247,7 +268,9 @@ export function isBacked(claim: Claim, evidence: readonly string[]): boolean {
 export function claimCoverage(item: EvalCase, run: CaseRun): { total: number; backed: number; unbacked: Claim[] } {
   const claims = run.turns.flatMap((turn, index) => turn.result === 'ignored' ? []
     : claimsIn(turn, item.turns.slice(0, index + 1).join('\n'), run.receipts));
-  const unbacked = claims.filter(claim => !isBacked(claim, run.evidence));
+  // A receipt is the board's own answer: "Opened KAN-7." after an approval rests on it, with no tool result in between.
+  const sources = [...run.evidence, ...run.receipts.flatMap(receipt => [receipt.label, receipt.url])];
+  const unbacked = claims.filter(claim => !isBacked(claim, sources));
   return { total: claims.length, backed: claims.length - unbacked.length, unbacked };
 }
 

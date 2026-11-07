@@ -216,17 +216,29 @@ const CHANNELS: Array<ChatChannel & { messages: Array<Omit<ChatMessage, 'channel
   ] },
 ];
 
+/** What the recap channel holds after three meetings: the same stuck work keeps coming back. */
+const RECAP_CHANNEL = { id: 'C9', name: 'meeting-recaps', messages: [
+  { author: 'Nogita', at: '2026-10-27 09:30', text: 'Meeting m1\nMeeting recap\n\nDecisions:\n- Ship the board sync on 29 October\n\nWho does what:\n- Fix the cache headers (Yossi, by 28 October)' },
+  { author: 'Nogita', at: '2026-10-28 09:30', text: 'Meeting m2\nMeeting recap\n\nWho does what:\n- Fix the cache headers (Yossi)\n\nOpen questions:\n- Why are the cache headers still not fixed?' },
+  { author: 'Nogita', at: '2026-10-30 09:30', text: 'Meeting m3\nMeeting recap\n\nDecisions:\n- The board sync shipped on 29 October\n\nOpen questions:\n- Who takes the cache headers from Yossi?' },
+] };
+
 export class EvalChat implements ChatPort {
   readonly name = 'Slack';
   readonly posted: Array<{ channel: string; text: string }> = [];
+  private readonly channels: typeof CHANNELS;
+  /** A recap channel with three meetings' recaps, or an empty one, for the cases that read it. */
+  constructor(recaps?: 'seeded' | 'empty') {
+    this.channels = recaps ? [...CHANNELS, { ...RECAP_CHANNEL, messages: recaps === 'seeded' ? RECAP_CHANNEL.messages : [] }] : CHANNELS;
+  }
   private find(channel: string) {
     const wanted = channel.replace(/^#/, '').toLowerCase();
-    return CHANNELS.find(item => item.id.toLowerCase() === wanted || item.name === wanted);
+    return this.channels.find(item => item.id.toLowerCase() === wanted || item.name === wanted);
   }
   private message(channel: (typeof CHANNELS)[number], message: Omit<ChatMessage, 'channel'>): ChatMessage {
     return { ...message, channel: channel.name, url: `https://slack.invalid/${channel.id}/${message.at}` };
   }
-  async listChannels(): Promise<ChatChannel[]> { return CHANNELS.map(({ id, name }) => ({ id, name })); }
+  async listChannels(): Promise<ChatChannel[]> { return this.channels.map(({ id, name }) => ({ id, name })); }
   async readChannel(channel: string, limit = 20): Promise<ChatMessage[]> {
     const found = this.find(channel);
     if (!found) throw new Error(`no channel ${channel}`);
@@ -235,7 +247,7 @@ export class EvalChat implements ChatPort {
   /** Messages with any of the words, the ones with most of them first. */
   async searchMessages(query: string, limit = 15): Promise<ChatMessage[]> {
     const words = query.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(word => word.length > 2);
-    return CHANNELS.flatMap(channel => channel.messages.map(message => ({ hit: this.message(channel, message),
+    return this.channels.flatMap(channel => channel.messages.map(message => ({ hit: this.message(channel, message),
       score: words.filter(word => message.text.toLowerCase().includes(word)).length })))
       .filter(item => item.score > 0).sort((a, b) => b.score - a.score).slice(0, limit).map(item => item.hit);
   }
@@ -278,11 +290,11 @@ export interface World {
   ports: { code: CodePort; board: BoardPort; chat: ChatPort };
 }
 
-export function evalWorld(files = repositoryFiles()): World {
+export function evalWorld(files = repositoryFiles(), recaps?: 'seeded' | 'empty'): World {
   const calls: PortCall[] = [];
   const code = new EvalCode(files);
   const board = evalBoard();
-  const chat = new EvalChat();
+  const chat = new EvalChat(recaps);
   return { code, board, chat, people: new IdentityDirectory(PEOPLE), calls,
     ports: { code: recorded(code, 'code', calls), board: recorded(board, 'board', calls), chat: recorded(chat, 'chat', calls) } };
 }
