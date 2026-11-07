@@ -25,9 +25,11 @@ class ScriptedModel implements ChatModel {
 const byId = (id: string): EvalCase => CASES.find(item => item.id === id)!;
 const failed = (score: ReturnType<typeof scoreCase>) => score.checks.filter(check => !check.pass).map(check => check.name);
 
-test('the set has 106 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research, missions, noisy transcripts, several speakers and write intent (P5-19)', () => {
-  assert.equal(CASES.length, 106);
-  assert.equal(new Set(CASES.map(item => item.id)).size, 106);
+test('the set has 115 cases with unique ids: the two live failures, 2 to 10 actions, an unknown owner, retries, research, missions, noisy transcripts, several speakers and write intent (P5-19)', () => {
+  assert.equal(CASES.length, 115);
+  assert.equal(new Set(CASES.map(item => item.id)).size, 115);
+  assert.deepEqual([CASES.filter(item => item.group === 'recap').length, CASES.filter(item => item.group === 'retro').length,
+    CASES.filter(item => item.group === 'design_review').length], [5, 2, 2]);
   const groups = (group: EvalCase['group']) => CASES.filter(item => item.group === group).length;
   assert.deepEqual([groups('research'), groups('cross_source'), groups('ci'), groups('missions'), groups('noisy_transcript'), groups('multi_speaker')], [12, 10, 8, 16, 8, 6]);
   const missions = CASES.filter(item => item.missions);
@@ -269,4 +271,18 @@ test('each turn comes from its own speaker: Dana\'s "for me" task is hers', asyn
   const run = await runCase(model, item);
   assert.deepEqual(run.board.tasks.slice(6).map(task => [task.title, task.assigneeId ?? null]), [['Cache headers', null], ['Retry backoff', 'dana']]);
   assert.deepEqual(failed(scoreCase(item, run)), []);
+});
+
+test('a recap case: the recap posted after the turn is what gets scored, and a recap that opens nothing passes', async () => {
+  const recap = JSON.stringify({ decisions: ['The board sync ships on Thursday'],
+    actionItems: [{ what: 'Write the release notes', owner: 'Dana' }, { what: 'Fix the cache headers', owner: 'Yossi' }], openQuestions: [], proposedTasks: [] });
+  const item = byId('recap-decisions-and-owners');
+  const score = scoreCase(item, await runCase(new ScriptedModel([{ text: recap }]), item));
+  assert.deepEqual(failed(score), []);
+});
+
+test('a retro case with no recaps makes no model call for the retro, and says why', async () => {
+  const item = byId('retro-with-no-recaps');
+  const run = await runCase(new ScriptedModel([]), item);
+  assert.match(run.turns[0]!.spoken.join(' ') + run.turns[0]!.chat.join(' '), /no meeting recaps/);
 });
