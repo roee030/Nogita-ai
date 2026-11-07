@@ -198,7 +198,8 @@ const presenceHd = env.NOGITA_PRESENCE_HD?.trim() === 'true';
 // NOGITA_SCREEN_CAPTURE (720p or 1080p): the shared screen's frames, held in memory for the screen-reading spike.
 const screenResolution = parseScreenResolution(env.NOGITA_SCREEN_CAPTURE);
 const screenCapture = screenResolution && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.ATTENDEE_WEBHOOK_SECRET
-  ? new ScreenCaptureHub(new URL(env.ATTENDEE_AUDIO_WEBSOCKET_URL).origin, env.ATTENDEE_WEBHOOK_SECRET) : undefined;
+  ? new ScreenCaptureHub(new URL(env.ATTENDEE_AUDIO_WEBSOCKET_URL).origin, env.ATTENDEE_WEBHOOK_SECRET, Date.now,
+    { keepAll: env.NOGITA_SCREEN_CAPTURE_ALL === 'true' }) : undefined;
 const publicBaseUrl = (() => {
   try { return new URL(env.NOGITA_PUBLIC_URL || env.ATTENDEE_WEBHOOK_URL || '').origin; } catch { return undefined; }
 })();

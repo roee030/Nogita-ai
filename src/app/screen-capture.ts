@@ -6,6 +6,9 @@
  * Only frames where the screen changed are kept. Each frame is re-encoded, so a hash of the JPEG always differs; its
  * size barely moves on a still screen, though, and that needs no decoder. A change that keeps the size is caught by
  * also keeping one frame every 30 seconds. The spike measures how good this is.
+ *
+ * NOGITA_SCREEN_CAPTURE_ALL (P9-13): keeps every frame instead, because a frame the size rule dropped cannot calibrate a
+ * better rule later. Each frame is marked with what the size rule would have done. Memory stays bounded in bytes either way.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
@@ -17,11 +20,12 @@ const CHANGED_SIZE_RATIO = 0.03;
 const KEEP_AT_LEAST_EVERY_MS = 30_000;
 const MAX_KEPT_FRAMES = 40;
 const MAX_FRAME_BYTES = 2_000_000;
+const MAX_HELD_BYTES = 64_000_000;
 
-export interface KeptFrame { n: number; at: number; bytes: number; jpeg: Buffer }
-export interface ScreenStats { received: number; receivedBytes: number; kept: number; firstAt?: number; lastAt?: number }
+export interface KeptFrame { n: number; at: number; bytes: number; sizeRule: boolean; jpeg: Buffer }
+export interface ScreenStats { received: number; receivedBytes: number; kept: number; keptBySizeRule: number; evicted: number; firstAt?: number; lastAt?: number }
 
-interface Capture { stats: ScreenStats; frames: KeptFrame[]; lastBytes?: number; lastKeptAt: number; socket?: WebSocket }
+interface Capture { stats: ScreenStats; frames: KeptFrame[]; heldBytes: number; lastBytes?: number; lastKeptAt: number; socket?: WebSocket }
 
 /** Whether a frame is worth keeping, from its size and the last one kept. */
 export function screenChanged(bytes: number, lastBytes: number | undefined, sinceKeptMs: number): boolean {
@@ -45,7 +49,8 @@ export class ScreenCaptureHub {
   private readonly captures = new Map<string, Capture>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES * 2 });
 
-  constructor(private readonly baseOrigin: string, private readonly secret: string, private readonly now: () => number = Date.now) {
+  constructor(private readonly baseOrigin: string, private readonly secret: string, private readonly now: () => number = Date.now,
+    private readonly options: { keepAll?: boolean; maxHeldBytes?: number } = {}) {
     if (!secret.trim()) throw new Error('screen capture needs a signing secret');
     if (new URL(baseOrigin).protocol !== 'wss:') throw new Error('screen capture needs a WSS origin');
   }
@@ -56,7 +61,7 @@ export class ScreenCaptureHub {
 
   /** The signed URL to give Attendee for this session. */
   register(sessionId: string): string {
-    this.captures.set(sessionId, { stats: { received: 0, receivedBytes: 0, kept: 0 }, frames: [], lastKeptAt: 0 });
+    this.captures.set(sessionId, { stats: { received: 0, receivedBytes: 0, kept: 0, keptBySizeRule: 0, evicted: 0 }, frames: [], heldBytes: 0, lastKeptAt: 0 });
     const url = new URL(SCREEN_PATH, this.baseOrigin);
     url.searchParams.set('session_id', sessionId);
     url.searchParams.set('signature', this.signature(sessionId));
@@ -98,17 +103,25 @@ export class ScreenCaptureHub {
     stats.receivedBytes += jpeg.length;
     stats.firstAt ??= now;
     stats.lastAt = now;
-    if (!screenChanged(jpeg.length, capture.lastBytes, now - capture.lastKeptAt)) return;
-    capture.lastBytes = jpeg.length;
-    capture.lastKeptAt = now;
-    capture.frames.push({ n: ++stats.kept, at: now, bytes: jpeg.length, jpeg });
-    if (capture.frames.length > MAX_KEPT_FRAMES) capture.frames.shift();
+    const sizeRule = screenChanged(jpeg.length, capture.lastBytes, now - capture.lastKeptAt);
+    if (sizeRule) {
+      capture.lastBytes = jpeg.length;
+      capture.lastKeptAt = now;
+      stats.keptBySizeRule++;
+    } else if (!this.options.keepAll) return;
+    capture.frames.push({ n: ++stats.kept, at: now, bytes: jpeg.length, sizeRule, jpeg });
+    capture.heldBytes += jpeg.length;
+    const maxBytes = this.options.maxHeldBytes ?? MAX_HELD_BYTES;
+    while (capture.frames.length && ((!this.options.keepAll && capture.frames.length > MAX_KEPT_FRAMES) || capture.heldBytes > maxBytes)) {
+      capture.heldBytes -= capture.frames.shift()!.bytes;
+      stats.evicted++;
+    }
   }
 
   /** What was received, and the frames still held (without their pixels). */
-  report(sessionId: string): { stats: ScreenStats; frames: Array<{ n: number; at: number; bytes: number }> } | undefined {
+  report(sessionId: string): { stats: ScreenStats; frames: Array<{ n: number; at: number; bytes: number; sizeRule: boolean }> } | undefined {
     const capture = this.captures.get(sessionId);
-    return capture && { stats: { ...capture.stats }, frames: capture.frames.map(({ n, at, bytes }) => ({ n, at, bytes })) };
+    return capture && { stats: { ...capture.stats }, frames: capture.frames.map(({ n, at, bytes, sizeRule }) => ({ n, at, bytes, sizeRule })) };
   }
 
   frame(sessionId: string, n: number): Buffer | undefined {

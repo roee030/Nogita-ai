@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
+import { sampleFrames } from '../tools/screen-spike/run.ts';
 import { ScreenCaptureHub, parseScreenResolution, screenChanged, screenWebsocketSettings } from '../src/app/screen-capture.ts';
 
 test('a still screen is not kept; a size change or 30 seconds is', () => {
@@ -67,4 +68,53 @@ test('a wrong signature, or a session it does not know, is refused', async () =>
   assert.match(error.message, /401/);
   await close();
   assert.throws(() => new ScreenCaptureHub('https://nogita.example', 'secret'), /WSS/);
+});
+
+function frameMessage(bytes: number): string {
+  return JSON.stringify({ trigger: 'realtime_video.per_participant', data: { source: 'screenshare', format: 'jpeg', frame: Buffer.alloc(bytes, 1).toString('base64') } });
+}
+function deliver(hub: ScreenCaptureHub, sessionId: string, sizes: number[]): void {
+  const capture = (hub as unknown as { captures: Map<string, unknown>; onMessage(capture: unknown, data: Buffer): void });
+  for (const size of sizes) capture.onMessage(capture.captures.get(sessionId), Buffer.from(frameMessage(size)));
+}
+
+test('keep all: a still screen is kept too, and each frame says what the size rule would have done', () => {
+  let now = 1_000;
+  const hub = new ScreenCaptureHub('wss://nogita.example', 'secret', () => now++, { keepAll: true });
+  hub.register('s');
+  deliver(hub, 's', [1_000, 1_000, 1_000, 2_000]);
+  const report = hub.report('s')!;
+  assert.deepEqual(report.frames.map(frame => frame.sizeRule), [true, false, false, true]);
+  assert.equal(report.stats.kept, 4);
+  assert.equal(report.stats.keptBySizeRule, 2);
+});
+
+test('the default still drops a still screen', () => {
+  const hub = new ScreenCaptureHub('wss://nogita.example', 'secret', () => 1_000);
+  hub.register('s');
+  deliver(hub, 's', [1_000, 1_000, 1_000]);
+  assert.equal(hub.report('s')!.frames.length, 1);
+});
+
+test('memory stays bounded in bytes: the oldest frames go, are counted, and the session end wipes the rest', () => {
+  const hub = new ScreenCaptureHub('wss://nogita.example', 'secret', () => 1_000, { keepAll: true, maxHeldBytes: 2_500 });
+  hub.register('s');
+  deliver(hub, 's', [1_000, 1_000, 1_000, 1_000]);
+  const report = hub.report('s')!;
+  assert.deepEqual(report.frames.map(frame => frame.n), [3, 4]);
+  assert.equal(report.stats.evicted, 2);
+  assert.equal(hub.frame('s', 1), undefined);
+  hub.closeSession('s');
+  assert.equal(hub.report('s'), undefined);
+});
+
+test('the read is a bounded, evenly spaced sample with both ends', () => {
+  const frames = Array.from({ length: 600 }, (_, i) => i);
+  const sample = sampleFrames(frames, 20);
+  assert.equal(sample.length, 20);
+  assert.equal(sample[0], 0);
+  assert.equal(sample.at(-1), 599);
+  assert.equal(new Set(sample).size, 20);
+  assert.deepEqual(sampleFrames([1, 2], 20), [1, 2]);
+  assert.deepEqual(sampleFrames(frames, 0), []);
 });
