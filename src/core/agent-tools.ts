@@ -69,6 +69,8 @@ export interface ToolboxContext {
   batchTasks?: boolean;
   /** NOGITA_STRICT_SPEECH_GUARD: a refusal from her own checks says so, so she doesn't tell the meeting the board refused. */
   ownRefusals?: boolean;
+  /** NOGITA_COMMENT_RETRY_GUARD: a comment is keyed by its place in the request, because the model rewords it on a retry. */
+  commentRetryGuard?: boolean;
   /** Offers ci_status (CI runs and the deployed commit). Off unless the team turned it on. */
   ciStatus?: boolean;
   /** Offers mission_status (what a mission did, what failed and what is still open, with sources). Off unless set. */
@@ -361,6 +363,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     ? `${refusal} This was Nogita's own check: nothing reached the board, and the board refused nothing. Do not try again in this request, and do not mention a tool or a system.`
     : refusal;
   let taskIndex = 0;
+  const commentsOn = new Map<string, number>();
   /** The refusal for a write nobody asked for, or undefined when it was asked: the phrases first, then the judge. */
   const notAsked = async (kind: WriteKind, phrased: boolean, proposed: string, refusal: string): Promise<string | undefined> => {
     if (context.writesApproved || phrased) return undefined;
@@ -649,7 +652,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         assigneeId = resolved.id;
         assigneeName = resolved.displayName;
       }
-      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${comment ?? ''}`;
+      // The eval's comment-retry-after-restart: the same request after a restart posted a second comment in other words.
+      const commentKey = comment && context.commentRetryGuard ? `comment#${commentsOn.set(key, (commentsOn.get(key) ?? 0) + 1).get(key)}` : comment ?? '';
+      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${commentKey}`;
       let receipt = context.completed.get(requestId);
       const fresh = !receipt;
       if (!receipt) {

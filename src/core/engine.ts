@@ -195,6 +195,8 @@ export interface NogitaEngineOptions {
   /** NOGITA_STRICT_SPEECH_GUARD: also drop planning aloud ("I'll answer with the count", "Roee wants ...") and, when the turn
    *  sent the chat nothing, "the details are in the chat". Off unless set. */
   strictSpeechGuard?: boolean;
+  /** NOGITA_COMMENT_RETRY_GUARD: the same request after a restart does not post its comment again in other words. */
+  commentRetryGuard?: boolean;
   /** NOGITA_WRITE_INTENT: when the phrases say a write was not asked for, the model judges the meaning; unclear gets one
    *  yes/no question. Off unless set. */
   writeIntent?: boolean;
@@ -498,6 +500,7 @@ export class NogitaEngine {
   private readonly offerApproval: boolean;
   private readonly batchTasks: boolean;
   private readonly strictSpeechGuard: boolean;
+  private readonly commentRetryGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
   private readonly meetingRecap: boolean;
@@ -565,6 +568,7 @@ export class NogitaEngine {
     this.offerApproval = options.offerApproval === true;
     this.batchTasks = options.batchTasks === true;
     this.strictSpeechGuard = options.strictSpeechGuard === true;
+    this.commentRetryGuard = options.commentRetryGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
     this.meetingRecap = options.meetingRecap === true;
@@ -1112,6 +1116,7 @@ export class NogitaEngine {
       ...(this.offerApproval ? { offerApproval: true } : {}), ...(offeredTasks !== undefined ? { offeredTasks } : {}),
       ...(this.batchTasks ? { batchTasks: true } : {}),
       ...(this.strictSpeechGuard ? { ownRefusals: true } : {}),
+      ...(this.commentRetryGuard ? { commentRetryGuard: true } : {}),
       ...(this.writeIntent ? { writeIntent: this.writeIntent, ...(pending?.question ? { lastMessage: pending.question } : {}) } : {}),
       ...(this.shortSpokenResults && voice ? { postDetails: (text: string) => { detailsPosted = true; return s.meeting.sendStatus(text); } } : {}),
       ...(this.dependencies.audit ? { audit: this.dependencies.audit } : {}),
