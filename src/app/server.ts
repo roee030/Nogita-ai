@@ -396,6 +396,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       onTranscript: async (sessionId, participantUuid, text, participant, recognition) => {
         const request = transcriptRequest(sessionId, participantUuid, text, participant, recognition?.inputTurnId);
         turnLog.record(sessionId, { type: 'heard', speaker: turnLog.person(request.utterance.actor.displayName),
+          member: turnLog.member(sessionId, request.utterance.actor.id),
           inputTurnId: recognition?.inputTurnId,
           addressed: directlyAddressesNogita(normalizeWakeWord(text)), verified: request.utterance.actor.verified,
           words: text.trim().split(/\s+/).length, ...(recognition?.confidence !== undefined ? { confidence: recognition.confidence } : {}), text });
@@ -484,11 +485,13 @@ async function forgetAttendeeSession(sessionId: string, botId?: string): Promise
 function noteParticipant(sessionId: string, participantUuid: string, eventType: 'join' | 'leave', attendeeUserUuid?: string, displayName?: string): void {
   const participants = participantsBySession.get(sessionId) ?? new Map<string, { verified: boolean; actorId: string }>();
   participantsBySession.set(sessionId, participants);
+  const actorId = participants.get(participantUuid)?.actorId ?? roomActorId(participantUuid, attendeeUserUuid, dependencies.identities);
+  const herself = displayName?.trim().toLowerCase() === 'nogita';
   if (eventType === 'leave') participants.delete(participantUuid);
-  else if (displayName?.trim().toLowerCase() !== 'nogita') {
-    participants.set(participantUuid, { verified: Boolean(attendeeUserUuid && dependencies.identities.fromAttendee(attendeeUserUuid)),
-      actorId: roomActorId(participantUuid, attendeeUserUuid, dependencies.identities) });
+  else if (!herself) {
+    participants.set(participantUuid, { verified: Boolean(attendeeUserUuid && dependencies.identities.fromAttendee(attendeeUserUuid)), actorId });
   }
+  if (!herself) turnLog.record(sessionId, { type: 'participant', phase: eventType, member: turnLog.member(sessionId, actorId), room: participants.size });
   nogita.noteRoom(sessionId, [...participants.values()].map(person => person.actorId));
 }
 

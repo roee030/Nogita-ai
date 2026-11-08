@@ -15,7 +15,9 @@ export type TurnLogMode = 'off' | 'redacted' | 'full';
 
 export type TurnLogEvent =
   | { type: 'session'; phase: 'start' | 'restore' | 'end' }
-  | { type: 'heard'; speaker: string; addressed: boolean; verified: boolean; words: number; confidence?: number; text?: string; inputTurnId?: string }
+  /** Attendee's join and leave events (P9-23): who the call reports, as meeting-scoped hashes, and how many are in it now. */
+  | { type: 'participant'; phase: 'join' | 'leave'; member: string; room: number }
+  | { type: 'heard'; speaker: string; member?: string; addressed: boolean; verified: boolean; words: number; confidence?: number; text?: string; inputTurnId?: string }
   | { type: 'turn'; speaker: string; addressed: boolean; words: number; result: string; ms: number; text?: string }
   | { type: 'question'; id: number; status: string; speaker: string; detail?: string; request?: string; inputTurnIds?: string[] }
   | { type: 'tool'; id?: number; tools: string[] }
@@ -123,6 +125,14 @@ export class TurnLog {
   /** A person as the log shows them: a stable pseudonym, or the name itself in full mode. */
   person(name: string): string {
     return this.mode === 'full' ? name : `p_${this.hash(`person\0${name}`).slice(0, 10)}`;
+  }
+
+  /**
+   * A person in one meeting, as the participant and heard lines show them: a keyed hash of the meeting and the person, so
+   * the same person matches inside a meeting and cannot be linked across meetings. Never a name or a raw id, in any mode.
+   */
+  member(sessionId: string, actorId: string): string {
+    return `m_${this.hash(`member\0${sessionId}\0${actorId}`).slice(0, 12)}`;
   }
 
   record(sessionId: string, event: TurnLogEvent): void {

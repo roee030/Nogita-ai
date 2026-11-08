@@ -6,6 +6,10 @@ import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/dem
 import { IdentityDirectory } from '../src/core/identity.ts';
 import { parseAttendeeTranscript, roomActorId } from '../src/app/attendee-webhook.ts';
 import { roomAware } from '../src/app/config.ts';
+import { TurnLog } from '../src/app/turn-log.ts';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
 
 class Scripted implements ChatModel {
@@ -129,4 +133,23 @@ test('a participant and the same person speaking get one id, mapped or not', () 
   assert.equal(roomActorId('p1', 'user-roee', identities), spoken('user-roee', 'p1'));
   assert.equal(roomActorId('p2', 'user-dana', identities), spoken('user-dana', 'p2'));
   assert.equal(roomActorId('p3', undefined, identities), spoken(undefined, 'p3'));
+});
+
+test('the log shows who joined as a hash per meeting: never a name or a raw id, in any mode', async () => {
+  for (const mode of ['redacted', 'full'] as const) {
+    const directory = await mkdtemp(join(tmpdir(), 'nogita-room-'));
+    const log = new TurnLog(directory, mode, 'secret', () => 1);
+    const actor = 'unmapped:attendee:user-dana-1234';
+    const member = log.member('meeting-1', actor);
+    assert.match(member, /^m_[0-9a-f]{12}$/);
+    assert.equal(log.member('meeting-1', actor), member, 'the same person matches inside a meeting');
+    assert.notEqual(log.member('meeting-2', actor), member, 'and cannot be linked across meetings');
+    assert.notEqual(log.member('meeting-1', 'roee'), member);
+    log.record('meeting-1', { type: 'participant', phase: 'join', member, room: 2 });
+    await log.flush();
+    const [name] = await readdir(join(directory, 'turns'));
+    const line = await readFile(join(directory, 'turns', name!), 'utf8');
+    assert.deepEqual(JSON.parse(line), { at: 1, type: 'participant', phase: 'join', member, room: 2 });
+    assert.doesNotMatch(line, /dana|user-|unmapped|roee/i, mode);
+  }
 });
