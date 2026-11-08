@@ -6,10 +6,10 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, roomAware, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
-import { parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
+import { roomActorId, parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
 import { buildReadinessReport, validAdminToken, withLiveJira } from './readiness.ts';
 import { FileBindingRegistry, FileEventLedger } from './event-ledger.ts';
 import { finishEventClaim } from './claimed-event.ts';
@@ -187,7 +187,7 @@ function showMission(sessionId: string): void {
 }
 
 /** Meeting participants by session (participant uuid -> mapped to a team member), for who can see the shared screen. */
-const participantsBySession = new Map<string, Map<string, boolean>>();
+const participantsBySession = new Map<string, Map<string, { verified: boolean; actorId: string }>>();
 // In Attendee meetings the presence page is her webcam (a normal participant tile) unless NOGITA_PRESENCE says
 // screenshare or off. Attendee mixes the (silent) page audio with our realtime speech, so the voice path is unchanged.
 const presenceMode = env.NOGITA_PRESENCE === 'off' ? undefined : env.NOGITA_PRESENCE === 'screenshare' ? 'screenshare' as const : 'camera' as const;
@@ -227,6 +227,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     commentRetryGuard: commentRetryGuard(env),
     writeIntent: writeIntent(env),
     listenFirst: listenFirst(env),
+    roomAware: roomAware(env),
     meetingRecap: meetingRecap(env),
     followUp: followUpOn(env),
     designReview: designReview(env),
@@ -263,7 +264,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     onLeaveRequested: sessionId => { void leaveMeeting(sessionId, { goodbye: false }); },
     screenAudience: sessionId => {
       const participants = participantsBySession.get(sessionId);
-      return participants ? { unverified: [...participants.values()].filter(verified => !verified).length } : undefined;
+      return participants ? { unverified: [...participants.values()].filter(person => !person.verified).length } : undefined;
     } });
 // Restore and start missions before Slack consumers open, so no acknowledged thread reply can race an empty runner.
 let resumedMissions = 0;
@@ -395,6 +396,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       onTranscript: async (sessionId, participantUuid, text, participant, recognition) => {
         const request = transcriptRequest(sessionId, participantUuid, text, participant, recognition?.inputTurnId);
         turnLog.record(sessionId, { type: 'heard', speaker: turnLog.person(request.utterance.actor.displayName),
+          member: turnLog.member(sessionId, request.utterance.actor.id),
           inputTurnId: recognition?.inputTurnId,
           addressed: directlyAddressesNogita(normalizeWakeWord(text)), verified: request.utterance.actor.verified,
           words: text.trim().split(/\s+/).length, ...(recognition?.confidence !== undefined ? { confidence: recognition.confidence } : {}), text });
@@ -481,11 +483,16 @@ async function forgetAttendeeSession(sessionId: string, botId?: string): Promise
 
 /** Who is in the call, for the shared-screen check. Nogita's own bot is not an audience member. */
 function noteParticipant(sessionId: string, participantUuid: string, eventType: 'join' | 'leave', attendeeUserUuid?: string, displayName?: string): void {
-  const participants = participantsBySession.get(sessionId) ?? new Map<string, boolean>();
+  const participants = participantsBySession.get(sessionId) ?? new Map<string, { verified: boolean; actorId: string }>();
   participantsBySession.set(sessionId, participants);
-  if (eventType === 'leave') { participants.delete(participantUuid); return; }
-  if (displayName?.trim().toLowerCase() === 'nogita') return;
-  participants.set(participantUuid, Boolean(attendeeUserUuid && dependencies.identities.fromAttendee(attendeeUserUuid)));
+  const actorId = participants.get(participantUuid)?.actorId ?? roomActorId(participantUuid, attendeeUserUuid, dependencies.identities);
+  const herself = displayName?.trim().toLowerCase() === 'nogita';
+  if (eventType === 'leave') participants.delete(participantUuid);
+  else if (!herself) {
+    participants.set(participantUuid, { verified: Boolean(attendeeUserUuid && dependencies.identities.fromAttendee(attendeeUserUuid)), actorId });
+  }
+  if (!herself) turnLog.record(sessionId, { type: 'participant', phase: eventType, member: turnLog.member(sessionId, actorId), room: participants.size });
+  nogita.noteRoom(sessionId, [...participants.values()].map(person => person.actorId));
 }
 
 function restoreAttendeeSession(sessionId: string, botId: string): void {

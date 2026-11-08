@@ -372,6 +372,7 @@ analyzes. Each task is either **verify** or **build**, and this is kept separate
 | Add recap, retro and design review cases to the live-model eval, so a weak recap is caught before it costs a meeting | Build | Claude | P9-1 |
 | Count recap and decision corrections on the scorecard | Build | Claude | P9-2 |
 | Recap channel boundary: tell participants, and keep earlier recaps out of new meetings | Build | Claude | P9-22 |
+| The first speaker in a group is not "alone with her" until the call says so, behind `NOGITA_ROOM_AWARE`, which stays off until P8-12 checks what Attendee reports | Build | Claude | P9-23 |
 | Report v2 stops and false pauses per meeting; list the trial and phase 8 flags in `config/render-flags.env` | Build | Claude | P9-3 |
 | Turn on the v2 trial and phase 8 flags on Render. The code default stays legacy | Verify | Roee | P9-4 |
 | Smoke check in Meet: chat messages visible, recap, "approve", follow-up, Slack recap when a meeting ends by itself | Verify | Roee | P8-12 |

@@ -128,7 +128,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   const newEngine = () => new NogitaEngine({ board: world.ports.board, code: world.ports.code, chat: world.ports.chat, brain: new DemoBrain(),
     policy, agent: traced, people: world.people, tenant: TEAM },
   { progressDelayMs: 60_000, agentProgressDelayMs: 60_000, agentCacheWarmup: false, now, receipts,
-    ...(item.outputs ? { listenFirst: true, meetingRecap: true, designReview: true } : {}),
+    ...(item.outputs ? { listenFirst: true, roomAware: true, meetingRecap: true, designReview: true } : {}),
     ...(item.outputs?.retro ? { retro: true, recapChannel: 'meeting-recaps' } : {}),
     research: options.research, ...(options.batchTasks ? { batchTasks: true } : {}), ...(options.strictSpeechGuard ? { strictSpeechGuard: true } : {}), ...(options.commentRetryGuard ? { commentRetryGuard: true } : {}), ...(options.taskFromTopic ? { taskFromTopic: true } : {}), ...(options.noisyTaskRequests ? { noisyTaskRequests: true } : {}), ...(options.writeIntent ? { writeIntent: true, offerApproval: true } : {}), ...(runner ? { missions: runner, missionStatus: true, pendingApprovals: true, whatsLeftDirect: true, shortSpokenResults: true } : {}),
     schedule: (work, delayMs) => { const timer = setTimeout(() => { void work(); }, delayMs); timer.unref(); return timer; } });
@@ -158,6 +158,9 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
   };
   if (item.interruptedWrite) await runner?.resumeAll();
   await engine.startSession(sessionId, meeting);
+  // Everyone who speaks in this case is in the call from the start, as Attendee's participant events report them.
+  const everyone = item.turns.map((_, index) => speakerAt(index).id);
+  engine.noteRoom(sessionId, everyone);
   try {
     for (const [index, text] of item.turns.entries()) {
       await deliver(text, `${item.id}-${index}`, index);
@@ -168,6 +171,7 @@ export async function runCase(model: ChatModel, item: EvalCase, options: { resea
         engine = newEngine();
         await runner?.resumeAll();
         await engine.startSession(sessionId, meeting);
+        engine.noteRoom(sessionId, everyone);
       }
       if (item.chatAfter === index) {
         // The meeting is over; the same person goes on in a chat thread.

@@ -102,6 +102,12 @@ export function parseAttendeeParticipantEvent(payload: unknown): AttendeePartici
     ...(displayName ? { displayName } : {}), eventType };
 }
 
+/** The actor id this participant gets when they speak (parseAttendeeTranscript), so the call and the voices can be compared. */
+export function roomActorId(participantUuid: string, attendeeUserUuid: string | undefined, identities: IdentityDirectory): string {
+  const identity = attendeeUserUuid ? identities.fromAttendee(attendeeUserUuid) : undefined;
+  return identity?.id ?? `unmapped:attendee:${attendeeUserUuid || participantUuid}`;
+}
+
 export function parseAttendeeEnvelope(payload: unknown): AttendeeEnvelope | null {
   if (!payload || typeof payload !== 'object') return null;
   const root = payload as Record<string, unknown>;
