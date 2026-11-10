@@ -87,10 +87,9 @@ export function recapOutput(meeting: MeetingCase, recap: MeetingRecap | undefine
   });
   const approved = approval === undefined ? undefined : parseApproval(approval);
   const opened = approved === 'all' ? recap.proposedTasks.map((_, i) => i + 1) : approved ?? [];
-  // A write the recap could not tie to an expected action is still a write: -1 never matches an approved item.
-  // Each unmatched write counts on its own; matched ones once per expected action.
-  const targets = [...new Set(opened)].filter(n => n <= recap.proposedTasks.length).map(n => taskToAction[n - 1] ?? -1);
-  const writes = [...new Set(targets.filter(n => n > 0)), ...targets.filter(n => n < 0)];
+  // Every opened task is one write, so the unapproved-write count is never merged away: two tasks for the same expected
+  // action are two writes, and a task tied to no expected action is -1, which never matches an approved item.
+  const writes = [...new Set(opened)].filter(n => n <= recap.proposedTasks.length).map(n => taskToAction[n - 1] ?? -1);
   return { recap, output: { actions: [...actions.values()].sort((a, b) => a.matches - b.matches), writes }, unmatched: [...new Set(unmatched)] };
 }
 

@@ -58,6 +58,8 @@ Hebrew and Hebrew with English terms exist only at transcript level. Hebrew audi
 ### 5. Live checks (block the rest of P9-15)
 - [ ] **P8-12**, the smoke test in Meet: tells us whether the silent chat failure is real, and so whether the two gaps above need a fix. While there, check one thing the simulation can't: if you ask "Nogita, summarize" and the chat shows nothing, she still says "the recap is in the chat".
 - [ ] **P8-13**, screen reading in a real meeting: unblocks screen fixtures and the change gate (P9-14).
+  - **Not before P9-12:** P8-13 does not start until P9-12 has written answers from Attendee in `docs/SCREEN_SPIKE.md` on recording, whether the shared screen is included, retention, deletion and pricing.
+  - **Proposals only, not a gate:** the 90% readability of table and column names and the $0.50 per hour on vision (in the board text and `docs/SCREEN_SPIKE.md`) are proposals. Roee has not approved either threshold; the P8-13 result is reported against them as a diagnostic.
 - [ ] **P9-4 → P8-5 → P9-9:** meeting types in real meetings. This closes the matrix's last blocked row.
 
 ## What closes P9-15
