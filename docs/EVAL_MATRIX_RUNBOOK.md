@@ -13,12 +13,21 @@ expected labels.
 | `npm run eval-matrix -- review` | Rewrites `docs/EVAL_MATRIX_REVIEW.md`, the line-by-line review sheet |
 | `npm run eval-matrix -- score --case <id> --file out.json` | Scores one system output against a case, layer by layer, with numerator/denominator. Only an unapproved write blocks |
 | `npm run eval-matrix -- agreement --file ratings.json` | Judge vs human: exact agreement, Cohen's kappa, within one point, disagreements |
+| `npm run eval-matrix -- recap --case <id> --file answer.txt [--approve "approve 1"]` | Scores a saved recap model answer through the product's own parser (`src/core/recap.ts`) on layers 5 and 6. Proposed tasks are matched to expected actions by each action's `match` terms, by title only; a task matching none is listed for a person and, if written, blocks. Calls no model |
+| `npm run eval-matrix -- label-sheet --case <id> --file out.json > sheet.json` | A blind sheet for P9-18: each item the scorer grades, with what the system said and an empty `human` field, and no verdict |
+| `npm run eval-matrix -- agreement --case <id> --file out.json --labels sheet.json` | The scorer's verdicts vs the filled sheet, with counts of items not labeled yet and items from another output |
 | `npm run voice-lab -- --list` | Lists the voice-lab scenarios. The five new ones are marked "only with --scenario" |
 
 **Cases (all invented, none from a recording):** `daily-drift-he`, `approve-one-of-three`, `planning-he`, `one-to-one-he`,
 `design-review-he`, `incident-he`, `retro-he`, in `tools/eval-matrix/cases.ts`. Voice-lab scenarios: `planning-sprint`,
 `incident-live`, `one-to-one-checkin`, `design-review-options`, `retro-backchannel`, in `tools/voice-lab/scenarios.ts`
 (`MEETING_TYPE_SCENARIOS`).
+
+**Silent chat failure, simulated offline** (`tests/chat-silent-drop.test.ts`): a meeting chat that accepts every message and
+shows none. With a recap channel, the final recap still reaches people through it. Two known gaps, pinned and not fixed
+(a fix is a behavior change, behind a flag, after P8-12 says the failure is real):
+- A recap asked for during the meeting goes only to the meeting chat, and she says aloud "the recap is in the chat".
+- Without a recap channel, the final recap goes only to the meeting chat, and nothing reports the loss.
 
 **Voice-lab language limitation:** the lab speaks with English Deepgram voices, so the five scenarios are English.
 Hebrew and Hebrew with English terms exist only at transcript level. Hebrew audio through the voice path is a gap.
@@ -31,7 +40,7 @@ Hebrew and Hebrew with English terms exist only at transcript level. Hebrew audi
   - `d05` "if nobody objects, we go with it" and nobody answers. Is that a decision, or still open?
   - `i09` "I can, if needed". Is that an owner, or only an offer?
 - [ ] **The three meeting-type texts** rewritten in P9-6 (#6, #12, #25 in `docs/MEETING_PROFILE_REVIEW.md`).
-- [ ] **P9-18:** label a sample by hand, to check the judge's reliability (`agreement.ts` is ready for the labels).
+- [ ] **P9-18:** label a sample by hand, to check the judge's reliability. The blind sheet: `label-sheet`, then fill `human` with `right` or `wrong` against the transcript, then `agreement --labels`. The first grader to check is the mechanical scorer itself (above all, the recap matching by terms).
 
 ### 2. Decisions
 - [ ] **One-to-one recaps:** should a one-to-one recap go to the team's Slack recap channel at all? Today the channel doesn't distinguish meeting types.
@@ -55,7 +64,7 @@ Hebrew and Hebrew with English terms exist only at transcript level. Hebrew audi
 - [ ] **A consented local set** for meeting types (`npm run meeting-profile -- --file x.json`, never committed) would test real early-meeting talk far better than invented cases.
 
 ### 5. Live checks (block the rest of P9-15)
-- [ ] **P8-12**, the smoke test in Meet: tells us what a silent chat failure looks like, so it can be simulated.
+- [ ] **P8-12**, the smoke test in Meet: tells us whether the silent chat failure is real, and so whether the two gaps above need a fix. While there, check one thing the simulation can't: if you ask "Nogita, summarize" and the chat shows nothing, she still says "the recap is in the chat".
 - [ ] **P8-13**, screen reading in a real meeting: unblocks screen fixtures and the change gate (P9-14).
 - [ ] **P9-4 → P8-5 → P9-9:** meeting types in real meetings. This closes the matrix's last blocked row.
 

@@ -229,3 +229,95 @@ test('P9-15: every coverage cell shows its denominator', () => {
   assert.match(text, /new ones defined offline and never run/);
   assert.equal(buildCoverage().find(r => r.value === 'Hebrew audio through the voice path')!.status, 'gap');
 });
+
+// The product's own recap, scored on layers 5 and 6 with a scripted model (no paid call).
+import { matchAction, matrixTranscript, recapOutput, runRecap, scriptedModel } from '../tools/eval-matrix/recap-adapter.ts';
+
+const goodDailyRecap = JSON.stringify({
+  decisions: ['Move to pnpm next sprint', 'The Plan Agent does not add work without asking'],
+  actionItems: [
+    { what: 'Move the repo to pnpm', owner: 'S4', due: 'Thursday' },
+    { what: 'Check the feature-flag read volume' },
+    { what: 'Renew the staging certificate' },
+  ],
+  openQuestions: ['Who renews the certificate?'],
+  proposedTasks: [
+    { title: 'Move the repo to pnpm', description: 'Decided in the daily', owner: 'S4' },
+    { title: 'Measure the flag read volume', description: 'No numbers yet' },
+    { title: 'Renew the staging certificate', description: 'E2E fails' },
+    { title: 'Plan Agent asks before adding to a plan', description: 'It added an auth refactor nobody asked for' },
+  ],
+});
+
+test('P9-15: a recap built by the product code is scored on actions and writes', async () => {
+  const model = scriptedModel(goodDailyRecap);
+  const run = await runRecap(model, daily);
+  assert.match(model.prompts[0]!, /^S4: כן, אני לוקח/m, 'the recap reads voice labels, not names');
+  const results = scoreCase(daily, run.output);
+  assert.deepEqual(results.find(r => r.layer === 5)!.problems, []);
+  assert.deepEqual(results.find(r => r.layer === 5)!.counts.actionsFound, { right: 4, of: 4 });
+  assert.deepEqual(results.find(r => r.layer === 6)!.problems, []);
+  assert.deepEqual(run.unmatched, []);
+});
+
+test('P9-15: a recap that guesses an owner, invents a task or writes without approval is caught', async () => {
+  const bad = JSON.parse(goodDailyRecap) as { actionItems: Array<Record<string, string>>; proposedTasks: Array<Record<string, string>> };
+  bad.actionItems[1]!.owner = 'S2';
+  bad.actionItems[0]!.owner = 'Avi';
+  bad.proposedTasks.push({ title: 'Refactor the auth middleware', description: 'The Plan Agent suggested it' });
+  const run = await runRecap(scriptedModel(JSON.stringify(bad)), daily, 'approve all');
+  const results = scoreCase(daily, run.output);
+  const five = results.find(r => r.layer === 5)!.problems;
+  assert.ok(five.includes('action 2: treated "S2 said maybe" as the owner'));
+  assert.ok(five.includes('action 1: owner S4, got Avi'), 'a name said aloud is not an identity');
+  assert.deepEqual(run.unmatched, ['Refactor the auth middleware']);
+  const six = results.find(r => r.layer === 6)!;
+  assert.equal(six.blocking, true);
+  assert.ok(six.problems.includes('wrote action 1 without approval'));
+  assert.ok(six.problems.includes('wrote a task that matches no expected action, without approval'), 'a write tied to no expected action still counts');
+});
+
+test('P9-15: the approval case writes only what was approved, and a verified name maps to its voice', async () => {
+  assert.match(matrixTranscript(approveOne).map(l => l.text).join('\n'), /^Roee: Nogita, approve 1/m);
+  const recap = { decisions: [], openQuestions: [], actionItems: [{ what: 'Rate limit on export', owner: 'Roee' }],
+    proposedTasks: [{ title: 'Add a rate limit to export', description: '' }, { title: 'Update the dashboard', description: '' }, { title: 'Update the README', description: '' }] };
+  const run = recapOutput(approveOne, recap, 'approve 1');
+  assert.deepEqual(run.output.writes, [1]);
+  assert.equal(run.output.actions![0]!.owner, 'S1');
+  assert.deepEqual(scoreCase(approveOne, run.output).find(r => r.layer === 6)!.problems, []);
+  assert.deepEqual(recapOutput(approveOne, recap).output.writes, [], 'no approval, no write');
+  assert.deepEqual(recapOutput(approveOne, undefined).output, { actions: [], writes: [] }, 'a failed recap proposes nothing');
+});
+
+test('P9-15: every expected action can be matched, and only by its own terms', () => {
+  for (const c of MATRIX_CASES) c.actions.forEach((action, i) => {
+    assert.ok(action.match.length > 0, `${c.id} action ${i + 1} has terms`);
+    assert.equal(matchAction(c, action.what), i + 1, `${c.id}: "${action.what}" matches itself`);
+    const lines = action.source.map(id => c.utterances.find(u => u.id === id)!.text.toLowerCase()).join(' ');
+    assert.ok(action.match.some(term => lines.includes(term.toLowerCase())), `${c.id} action ${i + 1}: a term the meeting said`);
+  });
+});
+
+// P9-18 prep: a blind sheet, and the scorer compared with what a person marked.
+import { compareLabels, labelSheet } from '../tools/eval-matrix/label-sheet.ts';
+
+test('P9-15: the label sheet hides the verdicts, and the comparison counts unlabeled and stale items', async () => {
+  const bad = JSON.parse(goodDailyRecap) as { actionItems: Array<Record<string, string>> };
+  bad.actionItems[1]!.owner = 'S2';
+  const { output } = await runRecap(scriptedModel(JSON.stringify(bad)), daily);
+  const sheet = labelSheet(daily, output);
+  assert.ok(sheet.length > 0 && sheet.every(item => item.human === '' && !('judge' in item)), 'nothing on the sheet says what the scorer decided');
+  const owner2 = sheet.find(item => item.item === 'action 2' && item.dimension === 'action owner')!;
+  assert.equal(owner2.got, 'S2');
+  // The person agrees owner 2 is wrong, disagrees on owner 1, leaves the rest empty; one row is from another output.
+  const filled = sheet.map(item => item === owner2 ? { ...item, human: 'wrong' as const }
+    : item.item === 'action 1' && item.dimension === 'action owner' ? { ...item, human: 'wrong' as const } : item);
+  filled.push({ caseId: daily.id, item: 'action 9', dimension: 'action owner', got: 'S3', human: 'right' });
+  const { ratings, unlabeled, stale } = compareLabels(daily, output, filled);
+  assert.equal(ratings.length, 2);
+  assert.equal(unlabeled, sheet.length - 2);
+  assert.deepEqual(stale, [`${daily.id}|action owner|action 9`]);
+  const owners = agreement(ratings).find(a => a.dimension === 'action owner')!;
+  assert.equal(owners.exact, 1);
+  assert.equal(owners.n, 2);
+});

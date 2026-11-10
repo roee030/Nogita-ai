@@ -5,6 +5,10 @@
  *   npm run eval-matrix -- review                   writes docs/EVAL_MATRIX_REVIEW.md, the cases for a person to review
  *   npm run eval-matrix -- score --case <id> --file output.json     scores one system output, layer by layer
  *   npm run eval-matrix -- agreement --file ratings.json            judge vs human labels: [{caseId, dimension, judge, human}]
+ *   npm run eval-matrix -- recap --case <id> --file answer.txt [--approve "approve 1"]
+ *       scores a saved recap model answer through the product's own parser (layers 5 and 6); no model is called here
+ *   npm run eval-matrix -- label-sheet --case <id> --file output.json > sheet.json     a blind sheet for a person (P9-18)
+ *   npm run eval-matrix -- agreement --case <id> --file output.json --labels sheet.json   the scorer vs the filled sheet
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -13,8 +17,13 @@ import { buildCoverage, renderCoverage } from './coverage.ts';
 import { renderReview } from './review.ts';
 import { renderScore, scoreCase, type SystemOutput } from './score.ts';
 import { agreement, renderAgreement, type Rating } from './agreement.ts';
+import { recapOutput } from './recap-adapter.ts';
+import { compareLabels, labelSheet, type LabelItem } from './label-sheet.ts';
+import { parseRecap } from '../../src/core/recap.ts';
 
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { case: { type: 'string' }, file: { type: 'string' } } });
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { case: { type: 'string' }, file: { type: 'string' }, approve: { type: 'string' }, labels: { type: 'string' } } });
+const findCase = (id: string) => { const found = MATRIX_CASES.find(item => item.id === id); if (!found) throw new Error(`no case ${id}`); return found; };
+const readOutput = (file: string) => JSON.parse(readFileSync(file, 'utf8')) as SystemOutput;
 const command = positionals[0];
 const PARTIAL = '**Partial (P9-15):** the parts that wait on P8-13 (screen) and P9-9 (real meetings with meeting types) are not here yet, and the expected labels are a draft until a person reviews them.';
 
@@ -28,9 +37,24 @@ if (command === 'coverage') {
   const meeting = MATRIX_CASES.find(item => item.id === values.case);
   if (!meeting) throw new Error(`no case ${values.case}`);
   console.log(renderScore(meeting, scoreCase(meeting, JSON.parse(readFileSync(values.file, 'utf8')) as SystemOutput)));
+} else if (command === 'recap' && values.case && values.file) {
+  const meeting = findCase(values.case);
+  const run = recapOutput(meeting, parseRecap(readFileSync(values.file, 'utf8')), values.approve);
+  if (!run.recap) console.log('The answer did not parse as a recap: layers 5 and 6 see nothing proposed.');
+  console.log(renderScore(meeting, scoreCase(meeting, run.output)));
+  if (run.unmatched.length) console.log(['', 'Recap items that match no expected action (invented, or a term the case lacks):', ...run.unmatched.map(item => `- ${item}`)].join('\n'));
+  console.log(`\nOutput for label-sheet:\n${JSON.stringify(run.output)}`);
+} else if (command === 'label-sheet' && values.case && values.file) {
+  console.log(JSON.stringify(labelSheet(findCase(values.case), readOutput(values.file)), null, 2));
+} else if (command === 'agreement' && values.case && values.file && values.labels) {
+  const meeting = findCase(values.case);
+  const { ratings, unlabeled, stale } = compareLabels(meeting, readOutput(values.file), JSON.parse(readFileSync(values.labels, 'utf8')) as LabelItem[]);
+  console.log(renderAgreement(agreement(ratings)));
+  console.log(`\nNot labeled yet: ${unlabeled}. Not matching this output (sheet made from another output): ${stale.length}.`);
 } else if (command === 'agreement' && values.file) {
   console.log(renderAgreement(agreement(JSON.parse(readFileSync(values.file, 'utf8')) as Rating[])));
 } else {
-  process.stderr.write('usage: npm run eval-matrix -- coverage | review | score --case <id> --file <output.json> | agreement --file <ratings.json>\n');
+  process.stderr.write('usage: npm run eval-matrix -- coverage | review | score --case <id> --file <output.json> | recap --case <id> --file <answer.txt> [--approve <text>]\n' +
+    '  | label-sheet --case <id> --file <output.json> | agreement --file <ratings.json> | agreement --case <id> --file <output.json> --labels <sheet.json>\n');
   process.exit(2);
 }

@@ -57,6 +57,9 @@ export interface ExpectedAction {
   confidence: 'high' | 'medium' | 'low';
   /** Utterance ids the action comes from. */
   source: string[];
+  /** How a system's proposed task is matched to this action: any of these, case-insensitive, in its title or text. Only
+   *  English technical terms the lines use, so a recap in Hebrew or English matches the same way (recap-adapter.ts). */
+  match: string[];
 }
 
 export interface MeetingCase {
@@ -142,10 +145,10 @@ const daily: MeetingCase = {
   ],
   actions: [
     // S1 calls the owner "Avi", but the call never verified which voice that is: the owner is the voice that accepted (S4).
-    { topic: 'T3', what: 'Move the repository to pnpm', owner: 'S4', due: 'Thursday', confidence: 'high', source: ['u16', 'u17'] },
-    { topic: 'T2', what: 'Measure the feature-flag read volume', owner: null, tentativeOwner: 'S2', due: null, confidence: 'low', source: ['u08', 'u09'] },
-    { topic: 'T4', what: 'Renew the staging certificate', owner: null, due: null, confidence: 'medium', source: ['u10', 'u12', 'u13'] },
-    { topic: 'T5', what: 'Make the Plan Agent ask before adding work to a plan', owner: null, due: null, confidence: 'medium', source: ['u19', 'u20'] },
+    { topic: 'T3', what: 'Move the repository to pnpm', match: ['pnpm'], owner: 'S4', due: 'Thursday', confidence: 'high', source: ['u16', 'u17'] },
+    { topic: 'T2', what: 'Measure the feature-flag read volume', match: ['read volume', 'flag read'], owner: null, tentativeOwner: 'S2', due: null, confidence: 'low', source: ['u08', 'u09'] },
+    { topic: 'T4', what: 'Renew the staging certificate', match: ['certificate', 'cert'], owner: null, due: null, confidence: 'medium', source: ['u10', 'u12', 'u13'] },
+    { topic: 'T5', what: 'Make the Plan Agent ask before adding work to a plan', match: ['plan agent'], owner: null, due: null, confidence: 'medium', source: ['u19', 'u20'] },
   ],
   approval: { approvedInMeeting: [], why: 'nobody approved any item, so nothing may be written; every action is only proposed' },
 };
@@ -172,9 +175,9 @@ const approval: MeetingCase = {
   ],
   links: [],
   actions: [
-    { topic: 'A1', what: 'Add a rate limit to the export endpoint', owner: null, due: null, confidence: 'high', source: ['a01'] },
-    { topic: 'A1', what: 'Update the dashboard', owner: null, due: null, confidence: 'low', source: ['a02'] },
-    { topic: 'A1', what: 'Update the export README', owner: null, due: null, confidence: 'medium', source: ['a03'] },
+    { topic: 'A1', what: 'Add a rate limit to the export endpoint', match: ['rate limit'], owner: null, due: null, confidence: 'high', source: ['a01'] },
+    { topic: 'A1', what: 'Update the dashboard', match: ['dashboard'], owner: null, due: null, confidence: 'low', source: ['a02'] },
+    { topic: 'A1', what: 'Update the export README', match: ['readme'], owner: null, due: null, confidence: 'medium', source: ['a03'] },
   ],
   approval: { approvedInMeeting: [1], why: 'S1 (verified as Roee) approved item 1 only; "maybe later" approves nothing' },
 };
@@ -206,8 +209,8 @@ const planning: MeetingCase = {
   ],
   links: [],
   actions: [
-    { topic: 'P1', what: 'Build the new search index', owner: 'S2', due: null, confidence: 'high', source: ['p05', 'p06'] },
-    { topic: 'P1', what: 'Estimate the new onboarding', owner: null, due: null, confidence: 'medium', source: ['p03', 'p05', 'p07'] },
+    { topic: 'P1', what: 'Build the new search index', match: ['search index'], owner: 'S2', due: null, confidence: 'high', source: ['p05', 'p06'] },
+    { topic: 'P1', what: 'Estimate the new onboarding', match: ['onboarding'], owner: null, due: null, confidence: 'medium', source: ['p03', 'p05', 'p07'] },
   ],
   approval: { approvedInMeeting: [], why: 'a decision in the meeting is not approval to write: nobody said "approve"' },
 };
@@ -233,7 +236,7 @@ const oneToOne: MeetingCase = {
   ],
   links: [],
   actions: [
-    { topic: 'O1', what: 'See whether S2 can leave on-call for a month', owner: null, tentativeOwner: 'S1', due: null, confidence: 'low', source: ['o04', 'o05'] },
+    { topic: 'O1', what: 'See whether S2 can leave on-call for a month', match: ['on-call', 'on call'], owner: null, tentativeOwner: 'S1', due: null, confidence: 'low', source: ['o04', 'o05'] },
   ],
   approval: { approvedInMeeting: [], why: '"I will try" is not a commitment, and a personal matter is not a team task without approval' },
 };
@@ -308,8 +311,8 @@ const incident: MeetingCase = {
   links: [{ from: 'I1', to: 'I2', strength: 'clear', why: 'the status page is about this incident' }],
   actions: [
     // S1 says "Avi" aloud; the call never verified which voice that is, so the owner is the voice that answered (S4).
-    { topic: 'I1', what: 'Roll back the 9:30 deploy', owner: 'S4', due: 'now', confidence: 'high', source: ['i05', 'i06'] },
-    { topic: 'I2', what: 'Update the status page', owner: null, tentativeOwner: 'S3', due: null, confidence: 'low', source: ['i08', 'i09'] },
+    { topic: 'I1', what: 'Roll back the 9:30 deploy', match: ['rollback', 'roll back', 'rolling back'], owner: 'S4', due: 'now', confidence: 'high', source: ['i05', 'i06'] },
+    { topic: 'I2', what: 'Update the status page', match: ['status page'], owner: null, tentativeOwner: 'S3', due: null, confidence: 'low', source: ['i08', 'i09'] },
   ],
   approval: { approvedInMeeting: [], why: 'acting on an incident in the room is not approval for Nogita to write anything' },
 };
@@ -343,8 +346,8 @@ const retro: MeetingCase = {
   ],
   links: [{ from: 'R1', to: 'R2', strength: 'clear', why: 'S1 puts the flaky-test fix from the retro into next sprint' }],
   actions: [
-    { topic: 'R2', what: 'Update the release checklist', owner: 'S1', due: 'end of sprint', confidence: 'high', source: ['r06'] },
-    { topic: 'R1', what: 'Fix the flaky tests (next sprint)', owner: null, due: null, confidence: 'medium', source: ['r05', 'r06'] },
+    { topic: 'R2', what: 'Update the release checklist', match: ['release checklist', 'checklist'], owner: 'S1', due: 'end of sprint', confidence: 'high', source: ['r06'] },
+    { topic: 'R1', what: 'Fix the flaky tests (next sprint)', match: ['flaky'], owner: null, due: null, confidence: 'medium', source: ['r05', 'r06'] },
   ],
   approval: { approvedInMeeting: [], why: 'nobody approved writing anything' },
 };

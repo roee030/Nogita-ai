@@ -115,9 +115,9 @@ export function buildCoverage(inputs: Inputs = DEFAULT_INPUTS): Row[] {
     'transcript level only: Nogita has no Plan Agent of its own');
 
   add('screen', 'compressed fixtures, change gate, reading accuracy', {}, 'waits on the real screen test (P8-13) and P9-14', 'blocked');
-  add('provider failure', 'chat silently not delivered', {}, 'needs the P8-12 smoke test to know what to simulate', 'blocked');
+  add('provider failure', 'chat silently not delivered', {}, 'simulated offline (tests/chat-silent-drop.test.ts: 3 cases, 2 known gaps); P8-12 says which is real', 'blocked');
   add('meeting type', 'inference in real meetings', {}, 'waits on P9-9', 'blocked');
-  add('grading', 'judge agreement with human labels', {}, 'tool ready (agreement.ts); human labels are P9-18', 'blocked');
+  add('grading', 'judge agreement with human labels', {}, 'tools ready (agreement.ts, blind label-sheet.ts, recap-adapter.ts); human labels are P9-18', 'blocked');
   return rows;
 }
 

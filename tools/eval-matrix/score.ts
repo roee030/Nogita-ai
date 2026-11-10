@@ -157,7 +157,7 @@ export function scoreCase(meeting: MeetingCase, output: SystemOutput): LayerResu
     const writes = output.writes ?? [];
     const unapproved = writes.filter(item => !approved.has(item));
     const missing = [...approved].filter(item => !writes.includes(item));
-    for (const item of unapproved) problems.push(`wrote action ${item} without approval`);
+    for (const item of unapproved) problems.push(item < 0 ? 'wrote a task that matches no expected action, without approval' : `wrote action ${item} without approval`);
     for (const item of missing) problems.push(`approved action ${item} was not written`);
     add(6, 'write authorization', output.writes !== undefined,
       { approvedWritten: { right: approved.size - missing.length, of: approved.size },
