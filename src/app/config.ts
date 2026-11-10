@@ -7,6 +7,7 @@ import { SlackWorkspace } from '../adapters/slack-workspace.ts';
 import { AllowlistPolicy } from '../core/policy.ts';
 import { IdentityDirectory } from '../core/identity.ts';
 import { guardPort, type ProviderHealth } from '../core/provider-health.ts';
+import { parseMeetingProfileMode, type MeetingProfileMode } from '../core/meeting-profile.ts';
 import { DemoBoard, DemoBrain, DemoCode } from '../adapters/demo.ts';
 import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
 import { JiraBoard } from '../adapters/jira.ts';
@@ -161,6 +162,12 @@ export function roomAware(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.NOGITA_ROOM_AWARE?.trim() ?? '';
   if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_ROOM_AWARE must be true or false');
   return value === 'true';
+}
+
+/** NOGITA_MEETING_PROFILE: 'shadow' logs a guess at the meeting's type, without words, and changes nothing; blank or
+ *  'off' leaves it off (P9-7). */
+export function meetingProfile(env: NodeJS.ProcessEnv = process.env): MeetingProfileMode {
+  return parseMeetingProfileMode(env.NOGITA_MEETING_PROFILE);
 }
 
 /** NOGITA_MEETING_RECAP: 'true' posts a recap with proposed tasks that open only when approved; blank or 'false' leaves it
