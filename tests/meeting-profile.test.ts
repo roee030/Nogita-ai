@@ -68,3 +68,80 @@ test('P9-6: incident means active impact now, and a backlog of bugs that are not
   assert.equal(LABELED.find(item => item.id === 'planning-capacity')!.title, undefined);
   assert.equal(LABELED.find(item => item.id === 'planning-bug-backlog')!.profile, 'planning');
 });
+
+// P9-7: shadow mode.
+import { readFileSync } from 'node:fs';
+import { MeetingProfileShadow, parseMeetingProfileMode, type ProfileShadowEvent } from '../src/core/meeting-profile.ts';
+import { meetingProfile } from '../src/app/config.ts';
+
+function shadow(text: string | (() => never)) {
+  const events: Array<{ sessionId: string; event: ProfileShadowEvent }> = [];
+  const model = typeof text === 'string' ? new Answers(text) : { agentModel: 'failing', requests: [] as ChatModelRequest[],
+    async streamChat(): Promise<ChatModelResponse> { return text(); } };
+  return { model, events, shadow: new MeetingProfileShadow(model as ChatModel, (sessionId, event) => events.push({ sessionId, event })) };
+}
+const say = (s: MeetingProfileShadow, session: string, count: number, from = 0) => {
+  for (let i = from; i < from + count; i++) s.hear(session, i % 2 ? 'actor-dana' : 'actor-roee', `secret words ${i}`);
+};
+
+test('P9-7: the flag is off unless set to shadow, and anything else is refused', () => {
+  assert.equal(meetingProfile({}), 'off');
+  assert.equal(meetingProfile({ NOGITA_MEETING_PROFILE: ' ' }), 'off');
+  assert.equal(meetingProfile({ NOGITA_MEETING_PROFILE: 'off' }), 'off');
+  assert.equal(meetingProfile({ NOGITA_MEETING_PROFILE: 'shadow' }), 'shadow');
+  assert.throws(() => parseMeetingProfileMode('on'), /off or shadow/);
+  assert.throws(() => parseMeetingProfileMode('true'), /off or shadow/);
+});
+
+test('P9-7: one guess at 12 lines, logged without words or names, kept for that meeting only', async () => {
+  const { model, events, shadow: s } = shadow('{"profile":"standup","confidence":0.9}');
+  say(s, 'meeting-1', 11);
+  await s.settle();
+  assert.equal(model.requests.length, 0);
+  say(s, 'meeting-1', 30, 11);
+  await s.settle();
+  assert.equal(model.requests.length, 1, 'a confident guess is not repeated');
+  assert.deepEqual(events, [{ sessionId: 'meeting-1', event: { type: 'meeting_profile', attempt: 1, lines: 12, profile: 'standup', confidence: 0.9 } }]);
+  assert.doesNotMatch(JSON.stringify(events), /secret|actor-/);
+  const sent = String(model.requests[0]!.messages[0]!.content);
+  assert.match(sent, /Speaker A: secret words 0\nSpeaker B: secret words 1/);
+  assert.doesNotMatch(sent, /actor-/);
+  assert.deepEqual(model.requests[0]!.tools, []);
+  assert.equal(s.profileFor('meeting-1')?.profile, 'standup');
+  assert.equal(s.profileFor('meeting-2'), undefined);
+  s.end('meeting-1');
+  assert.equal(s.profileFor('meeting-1'), undefined);
+});
+
+test('P9-7: an uncertain first guess gets one more try at 40 lines, never a third', async () => {
+  const { model, events, shadow: s } = shadow('{"profile":"retro","confidence":0.5}');
+  say(s, 'm', 100);
+  await s.settle();
+  assert.equal(model.requests.length, 2);
+  assert.deepEqual(events.map(e => [e.event.attempt, e.event.lines, e.event.profile, e.event.named]), [[1, 12, 'uncertain', 'retro'], [2, 40, 'uncertain', 'retro']]);
+});
+
+test('P9-7: a failing model is logged as uncertain and throws nothing into the meeting', async () => {
+  const { events, shadow: s } = shadow(() => { throw new Error('boom'); });
+  assert.doesNotThrow(() => say(s, 'm', 12));
+  await s.settle();
+  assert.deepEqual(events.map(e => e.event), [{ type: 'meeting_profile', attempt: 1, lines: 12, profile: 'uncertain', confidence: 0, error: 'model_error' }]);
+});
+
+test('P9-7: a guess that lands after the meeting ended is dropped', async () => {
+  const { events, shadow: s } = shadow('{"profile":"standup","confidence":0.9}');
+  say(s, 'm', 12);
+  s.end('m');
+  await s.settle();
+  assert.deepEqual(events, []);
+});
+
+test('P9-7: the engine cannot read the type, so turns and writes are the same with the flag and without it', () => {
+  // Shadow mode lives outside the engine: the server only feeds it heard lines and writes its guesses to the turn log.
+  const engine = readFileSync(new URL('../src/core/engine.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(engine, /meeting-profile/);
+  const server = readFileSync(new URL('../src/app/server.ts', import.meta.url), 'utf8');
+  const uses = server.split('\n').filter(line => /profileShadow/.test(line)).map(line => line.trim());
+  assert.deepEqual(uses.filter(line => !line.startsWith('const profileShadow')), [
+    'profileShadow?.hear(sessionId, request.utterance.actor.id, text);', 'profileShadow?.end(sessionId);']);
+});

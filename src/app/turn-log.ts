@@ -10,6 +10,7 @@ import { createHmac } from 'node:crypto';
 import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentResult, AgentStepStop } from '../core/agent.ts';
+import type { ProfileShadowEvent } from '../core/meeting-profile.ts';
 
 export type TurnLogMode = 'off' | 'redacted' | 'full';
 
@@ -22,6 +23,8 @@ export type TurnLogEvent =
   | { type: 'question'; id: number; status: string; speaker: string; detail?: string; request?: string; inputTurnIds?: string[] }
   | { type: 'tool'; id?: number; tools: string[] }
   | AgentTraceEvent
+  /** NOGITA_MEETING_PROFILE=shadow (P9-7): a guess at the meeting's type, with no words or names. */
+  | ProfileShadowEvent
   | { type: 'model_first_text'; id?: number; step: number; ms: number }
   | { type: 'eot'; speaker: string; phase: 'eager' | 'confirmed' | 'resumed'; sinceLastVoiceMs?: number; inputTurnId?: string }
   | { type: 'speech'; id: number; playbackId?: number; phase: 'start' | 'end'; outcome?: string; heardMs?: number }

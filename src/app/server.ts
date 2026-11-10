@@ -6,7 +6,7 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, roomAware, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, roomAware, meetingProfile, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { roomActorId, parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -28,6 +28,8 @@ import { notifyBeforeCleanup } from './attendee-lifecycle.ts';
 import { PresenceHub, presencePageUrl as presenceUrl } from './presence.ts';
 import { ScreenCaptureHub, parseScreenResolution, screenWebsocketSettings } from './screen-capture.ts';
 import { buildTurnTrace, TurnLog, parseTurnLogMode } from './turn-log.ts';
+import { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL } from '../adapters/anthropic.ts';
+import { MeetingProfileShadow } from '../core/meeting-profile.ts';
 import { FileMissionStore } from './mission-store.ts';
 import { MissionRunner, OPEN_MISSION, type Mission } from '../core/missions.ts';
 import { buildToolbox } from '../core/agent-tools.ts';
@@ -206,6 +208,11 @@ const publicBaseUrl = (() => {
 const presencePage = readFileSync(new URL('./presence-page.html', import.meta.url), 'utf8');
 const meetingMemory = env.NOGITA_MEETING_MEMORY === 'decisions'
   ? new FileMeetingMemory(stateDirectory, Number(env.NOGITA_MEETING_MEMORY_DAYS || 90)) : undefined;
+// NOGITA_MEETING_PROFILE=shadow (P9-7): a guess at the meeting's type goes to the turn log, without words, and nothing
+// reads it. Its own Haiku client with thinking off, as measured in P9-6; at most two calls per meeting.
+const profileShadow = meetingProfile(env) === 'shadow' && env.ANTHROPIC_API_KEY?.trim()
+  ? new MeetingProfileShadow(new AnthropicBrain(env.ANTHROPIC_API_KEY.trim(), DEFAULT_ANTHROPIC_MODEL, fetch, {}, {}, { model: DEFAULT_ANTHROPIC_MODEL, thinking: 'off' }),
+    (sessionId, event) => turnLog.record(sessionId, event)) : undefined;
 const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: meetingMemory, ...(audit ? { audit } : {}),
   ...(limiter ? { limits: limiter } : {}) },
   { handRaiseFallback: env.NOGITA_HAND_RAISE_FALLBACK === 'chat' ? 'chat' : 'none',
@@ -400,6 +407,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
           inputTurnId: recognition?.inputTurnId,
           addressed: directlyAddressesNogita(normalizeWakeWord(text)), verified: request.utterance.actor.verified,
           words: text.trim().split(/\s+/).length, ...(recognition?.confidence !== undefined ? { confidence: recognition.confidence } : {}), text });
+        profileShadow?.hear(sessionId, request.utterance.actor.id, text);
         if (fluxStt) await attendeeCommands.acceptCompletedTurn(request);
         else await attendeeCommands.acceptFinal(request);
       },
@@ -471,6 +479,7 @@ function transcriptRequest(sessionId: string, participantUuid: string, text: str
 
 async function forgetAttendeeSession(sessionId: string, botId?: string): Promise<void> {
   turnLog.record(sessionId, { type: 'session', phase: 'end' });
+  profileShadow?.end(sessionId);
   participantsBySession.delete(sessionId);
   presence.close(sessionId);
   attendeeCommands.endSession(sessionId);
