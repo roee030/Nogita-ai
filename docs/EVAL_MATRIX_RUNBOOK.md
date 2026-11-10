@@ -24,8 +24,8 @@ expected labels.
 (`MEETING_TYPE_SCENARIOS`).
 
 **Silent chat failure, simulated offline** (`tests/chat-silent-drop.test.ts`): a meeting chat that accepts every message and
-shows none. With a recap channel, the final recap still reaches people through it. Two known gaps, pinned and not fixed
-(a fix is a behavior change, behind a flag, after P8-12 says the failure is real):
+shows none. With a recap channel, the final recap still reaches people through it. Two known gaps, pinned and not fixed.
+Roee (10 Nov): no behavior change until P8-12 confirms the real failure mode:
 - A recap asked for during the meeting goes only to the meeting chat, and she says aloud "the recap is in the chat".
 - Without a recap channel, the final recap goes only to the meeting chat, and nothing reports the loss.
 
@@ -36,27 +36,19 @@ Hebrew and Hebrew with English terms exist only at transcript level. Hebrew audi
 
 ### 1. Human review (no cost)
 - [ ] **The review sheet**, `docs/EVAL_MATRIX_REVIEW.md`: fill in the OK? column for each line, topic, link and action. The checklist is at the top of the sheet.
-- [ ] **The two lines marked uncertain:**
-  - `d05` "if nobody objects, we go with it" and nobody answers. Is that a decision, or still open?
-  - `i09` "I can, if needed". Is that an owner, or only an offer?
+- [x] **The two lines marked uncertain** (Roee, 10 Nov). Both stay uncertain and are not scored either way:
+  - `d05`, "if nobody objects, we go with it", then silence: still open, not a decision.
+  - `i09`, "I can, if needed": an offer only, not an owner.
 - [ ] **The three meeting-type texts** rewritten in P9-6 (#6, #12, #25 in `docs/MEETING_PROFILE_REVIEW.md`).
 - [ ] **P9-18:** label a sample by hand, to check the judge's reliability. The blind sheet: `label-sheet`, then fill `human` with `right` or `wrong` against the transcript, then `agreement --labels`. The first grader to check is the mechanical scorer itself (above all, the recap matching by terms).
 
 ### 2. Decisions
-- [ ] **One-to-one recaps:** should a one-to-one recap go to the team's Slack recap channel at all? Today the channel doesn't distinguish meeting types.
-- [ ] **A spoken name:** may a name said aloud ("Avi, are you on it?") ever become the owner's name in a recap, or does it always stay a voice label until the call verifies it? The cases assume it stays a voice label.
+- [x] **One-to-one recaps** (Roee, 10 Nov): never to the team Slack recap channel. A one-to-one recap may go only to an explicitly configured and approved private destination. Today the channel doesn't distinguish meeting types, so this is a requirement for later work behind a flag, not a change in this PR.
+- [x] **A spoken name** (Roee, 10 Nov): a name said aloud ("Avi, are you on it?") stays a voice label (S1–S4) until the call verifies that identity. The cases and the recap scoring already assume this.
 - [ ] **Release thresholds:** none are set. You said to revisit them after there is a human-reviewed set covering Hebrew, topic drift and cross-talk. This set is the start of that.
 
 ### 3. Budget
-- [ ] **A paid voice-lab run of the five new scenarios:** needs Deepgram (TTS and STT) and Anthropic, with the keys in `.env`. Run one scenario first. I haven't estimated the cost: no run has measured it.
-  ```bash
-  npm run voice-lab -- --scenario planning-sprint
-  ```
-  Then the rest:
-  ```bash
-  npm run voice-lab -- --scenario incident-live,one-to-one-checkin,design-review-options,retro-backchannel
-  ```
-  Until that run, the coverage report keeps these scenarios in "never run", and they don't count toward coverage.
+- [x] **A paid voice-lab run of the five new scenarios** (Roee, 10 Nov): not this week. It comes after the human labels, the Meet check and the P9-16 budget decision. Until then the coverage report keeps the scenarios in "never run", and they don't count toward coverage.
 - [ ] **P9-16:** a budget and a CI secret for a scheduled live-model eval (then P9-17).
 
 ### 4. Consent

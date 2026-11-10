@@ -238,7 +238,7 @@ const oneToOne: MeetingCase = {
   actions: [
     { topic: 'O1', what: 'See whether S2 can leave on-call for a month', match: ['on-call', 'on call'], owner: null, tentativeOwner: 'S1', due: null, confidence: 'low', source: ['o04', 'o05'] },
   ],
-  approval: { approvedInMeeting: [], why: '"I will try" is not a commitment, and a personal matter is not a team task without approval' },
+  approval: { approvedInMeeting: [], why: '"I will try" is not a commitment, and a personal matter is not a team task without approval. Roee (10 Nov): a one-to-one recap never goes to the team Slack channel, only to an approved private destination' },
 };
 
 const designReview: MeetingCase = {
@@ -255,8 +255,8 @@ const designReview: MeetingCase = {
     { id: 'd03', start: 10, end: 14, speaker: 'S3', kind: 'question', topic: 'D1', overlaps: ['d02'], terms: ['join'],
       text: 'אבל זה join על כל קריאה, לא?' },
     { id: 'd04', start: 14.5, end: 15, speaker: 'S2', kind: 'backchannel', topic: 'D1', text: 'נכון.' },
-    { id: 'd05', start: 15.5, end: 20, speaker: 'S1', kind: 'decision', topic: 'D1', terms: ['events table'],
-      uncertain: 'S1 says "if nobody objects we go with it", nobody answers, and the topic changes: agreement by silence, or still open?',
+    { id: 'd05', start: 15.5, end: 20, speaker: 'S1', kind: 'proposal', topic: 'D1', terms: ['events table'],
+      uncertain: 'Roee decided (10 Nov): still open, not a decision. "If nobody objects" followed by silence is not an explicit decision',
       text: 'אם אין התנגדות, הולכים על events table.' },
     { id: 'd06', start: 21, end: 26, speaker: 'S3', kind: 'proposal', topic: 'D2', terms: ['migration', 'schema'],
       text: 'ומה עם ה-migration של ה-schema הישן? אפשר לעשות את זה באותו PR.' },
@@ -298,7 +298,7 @@ const incident: MeetingCase = {
     { id: 'i07', start: 21.2, end: 21.6, speaker: 'S3', kind: 'backchannel', topic: 'I1', text: 'יופי.' },
     { id: 'i08', start: 22, end: 26, speaker: 'S1', kind: 'question', topic: 'I2', terms: ['status page'],
       text: 'מישהו מעדכן את ה-status page?' },
-    { id: 'i09', start: 26.3, end: 29, speaker: 'S3', kind: 'answer', topic: 'I2', uncertain: '"I can, if needed": an offer, not a clear yes',
+    { id: 'i09', start: 26.3, end: 29, speaker: 'S3', kind: 'answer', topic: 'I2', uncertain: 'Roee decided (10 Nov): an offer only, not an owner. "I can, if needed" does not take ownership',
       text: 'אני יכול, אם צריך.' },
     { id: 'i10', start: 28.5, end: 29, speaker: 'S2', kind: 'backchannel', topic: 'I2', overlaps: ['i09'], text: 'אהה.' },
   ],

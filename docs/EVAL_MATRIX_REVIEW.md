@@ -159,7 +159,7 @@ Write corrections in the PR or next to the row. Nothing here is approved until y
 |---|---|---|---|---|---|---|---|---|
 | 1 | O1 | See whether S2 can leave on-call for a month | *not established* (S1 said maybe) | *not established* | low | o04, o05 | no | |
 
-**Writes:** none. "I will try" is not a commitment, and a personal matter is not a team task without approval.
+**Writes:** none. "I will try" is not a commitment, and a personal matter is not a team task without approval. Roee (10 Nov): a one-to-one recap never goes to the team Slack channel, only to an approved private destination.
 
 ## design-review-he: Design review in Hebrew: proposals, a silent "if nobody objects", and a decision not to do something
 
@@ -173,7 +173,7 @@ Write corrections in the PR or next to the row. Nothing here is approved until y
 | d02 | 6.5–11 | S2 | נראה לי שנלך על events table, ככה יש לנו היסטוריה. | proposal | D1 |  |  |  | |
 | d03 | 10–14 | S3 | אבל זה join על כל קריאה, לא? | open question | D1 | d02 |  |  | |
 | d04 | 14.5–15 | S2 | נכון. | acknowledgement | D1 |  |  |  | |
-| d05 | 15.5–20 | S1 | אם אין התנגדות, הולכים על events table. | decision | D1 |  |  | S1 says "if nobody objects we go with it", nobody answers, and the topic changes: agreement by silence, or still open? | |
+| d05 | 15.5–20 | S1 | אם אין התנגדות, הולכים על events table. | proposal | D1 |  |  | Roee decided (10 Nov): still open, not a decision. "If nobody objects" followed by silence is not an explicit decision | |
 | d06 | 21–26 | S3 | ומה עם ה-migration של ה-schema הישן? אפשר לעשות את זה באותו PR. | proposal | D2 |  |  |  | |
 | d07 | 26.5–31 | S1 | לא, סגרנו: לא עושים migration עכשיו. זה אחרי ה-release. | decision | D2 |  |  |  | |
 | d08 | 31.3–31.7 | S3 | אוקיי. | acknowledgement | D2 |  |  |  | |
@@ -211,7 +211,7 @@ Write corrections in the PR or next to the row. Nothing here is approved until y
 | i06 | 19.2–21 | S4 | כן, אני על זה. | answer / acceptance | I1 |  | #1 |  | |
 | i07 | 21.2–21.6 | S3 | יופי. | acknowledgement | I1 |  |  |  | |
 | i08 | 22–26 | S1 | מישהו מעדכן את ה-status page? | open question | I2 |  | #2 |  | |
-| i09 | 26.3–29 | S3 | אני יכול, אם צריך. | answer / acceptance | I2 |  | #2 | "I can, if needed": an offer, not a clear yes | |
+| i09 | 26.3–29 | S3 | אני יכול, אם צריך. | answer / acceptance | I2 |  | #2 | Roee decided (10 Nov): an offer only, not an owner. "I can, if needed" does not take ownership | |
 | i10 | 28.5–29 | S2 | אהה. | acknowledgement | I2 | i09 |  |  | |
 
 **What the recap must say per topic**

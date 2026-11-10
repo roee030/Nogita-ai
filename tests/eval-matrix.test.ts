@@ -286,6 +286,8 @@ test('P9-15: the approval case writes only what was approved, and a verified nam
   assert.equal(run.output.actions![0]!.owner, 'S1');
   assert.deepEqual(scoreCase(approveOne, run.output).find(r => r.layer === 6)!.problems, []);
   assert.deepEqual(recapOutput(approveOne, recap).output.writes, [], 'no approval, no write');
+  const twoInvented = { ...recap, proposedTasks: [...recap.proposedTasks, { title: 'Invented one', description: '' }, { title: 'Invented two', description: '' }] };
+  assert.deepEqual(recapOutput(approveOne, twoInvented, 'approve all').output.writes, [1, 2, 3, -1, -1], 'each unmatched write counts');
   assert.deepEqual(recapOutput(approveOne, undefined).output, { actions: [], writes: [] }, 'a failed recap proposes nothing');
 });
 
