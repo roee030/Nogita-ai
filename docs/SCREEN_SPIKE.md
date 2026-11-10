@@ -12,6 +12,23 @@ Attendee sends the shared screen over a websocket (`websocket_settings.per_parti
 - No model sees them on the server.
 - Only frames where the screen changed are kept. That is judged by the JPEG's size (at least 3% different), plus one frame every 30 seconds to catch a change that keeps the size. A hash can't work, because each frame is re-encoded.
 
+## What Attendee's public docs say (10 November 2026, before asking Attendee)
+
+This is preparation for P9-12, not its answer: P9-12 stays open until Attendee confirms the points marked unverified.
+
+| Question | Public docs | Source |
+|---|---|---|
+| Are `per_participant_video` frames stored? | Not stated. The docs describe delivery only (base64 JPEG, `realtime_video.per_participant`, 1 FPS at 720p/1080p). **Unverified.** | [realtime_video.md](https://github.com/attendee-labs/attendee/blob/main/docs/realtime_video.md) |
+| Does the bot record video? | **Yes, by default:** `recording_settings` defaults to `mp4`, `speaker_view`, 1080p. Whether a shared screen appears in it is not stated. **Unverified.** | [create bot](https://docs.attendee.dev/api-reference/tag/bots/post/api/v1/bots) |
+| Can recording be turned off? | `recording_settings.format` accepts `mp4`, `mp3` and `none`. That `none` stops all recording is implied by the name, not stated. Whether transcription still works without a recording is not stated either. **Unverified.** | create bot; `bots/serializers.py` |
+| How long is data kept? | No retention period and no retention setting. The recording link is a short-lived S3 URL, which is the link's lifetime, not retention. **Unverified.** | [openapi.yml](https://github.com/attendee-labs/attendee/blob/main/docs/openapi.yml) |
+| What does `delete_data` delete? | `POST /api/v1/bots/{id}/delete_data`: "all data associated with this bot, including recordings, transcripts, and participant information. Metadata is not deleted." Chat messages and video frames are not named. | openapi.yml |
+| Does video change the price? | One price: 5 hours free, then $0.50 per bot hour (down to $0.35). Video is not priced separately. **Unverified.** | [pricing](https://attendee.dev/pricing) |
+
+**Finding for the code:** Nogita does not send `recording_settings` (`src/adapters/attendee.ts`), so every bot today makes Attendee's default 1080p MP4 recording, with screen capture or without it. If Attendee confirms that the recording includes a shared screen, a code task is needed: send `format: 'mp3'` or `'none'` behind a flag that is off by default, after checking that transcripts and the scorecard (`tools/scorecard/run.ts`) still work.
+
+**Still to ask Attendee:** the points marked unverified, plus whether `delete_data` covers chat and anything kept from the video websocket.
+
 ## Simulation, 6 November 2026
 
 Two simulated IDE screens (a SQL schema, and a TypeScript file with a file tree): Consolas 14 px on 1920x1080, scaled and saved at Attendee's settings, read once by each model.
