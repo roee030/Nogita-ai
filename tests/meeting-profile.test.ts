@@ -42,12 +42,29 @@ test('the model gets the title and early lines as untrusted words, no tools, and
   assert.doesNotMatch(content, /line 40\n/);
 });
 
-test('the report separates correct when named, uncertain, and calls its targets proposals', () => {
+test('the report shows each diagnostic with its count and denominator, and none is a release gate', () => {
   const report = score([{ id: 'a', expected: 'retro', got: 'retro', confidence: 0.9 }, { id: 'b', expected: 'retro', got: 'planning', confidence: 0.8 },
-    { id: 'c', expected: 'standup', got: 'uncertain', confidence: 0 }]);
-  assert.deepEqual([report.total, report.asserted, report.assertedCorrect, report.uncertain], [3, 2, 1, 1]);
+    { id: 'c', expected: 'standup', got: 'uncertain', confidence: 0.5, named: 'standup' }, { id: 'd', expected: 'uncertain', got: 'uncertain', confidence: 0.2, named: 'general' }]);
+  assert.deepEqual([report.total, report.asserted, report.assertedCorrect, report.uncertain, report.confidentlyWrong, report.demoted, report.demotedRight],
+    [4, 2, 1, 2, 1, 2, 1]);
   assert.deepEqual(report.wrong.map(item => item.id), ['b', 'c']);
   const text = renderReport(report);
-  assert.match(text, /1\/2 \(50%; proposed target at least 85%, not a gate until approved\)/);
+  assert.match(text, /Correct when a type was named: 1\/2 \(50%; diagnostic, target at least 85%, not a release gate\)/);
+  assert.match(text, /Uncertain: 2\/4 \(50%; diagnostic, target at most 25%, not a release gate\)/);
+  assert.match(text, /Confidently wrong: 1\/4 \(25%; diagnostic, target at most 5%, not a release gate\)/);
+  assert.match(text, /Turned uncertain by the 0.7 threshold: 2\/4, of which 1 would have been right \(provisional, uncalibrated\)/);
   assert.match(text, /b: labeled retro, got planning/);
+});
+
+test('below the threshold the answer is uncertain but keeps what the model named', () => {
+  assert.deepEqual(parseInference('{"profile":"incident","confidence":0.4}'), { profile: 'uncertain', confidence: 0.4, named: 'incident' });
+});
+
+test('P9-6: incident means active impact now, and a backlog of bugs that are not active is planning', async () => {
+  const model = new Answers('{"profile":"planning","confidence":0.8}');
+  await inferProfile(model, { lines: ['a', 'b'] });
+  assert.match(model.requests[0]!.stableSystem, /incident: an active or urgent problem/);
+  assert.match(model.requests[0]!.stableSystem, /backlog of bugs that are not active is planning/);
+  assert.equal(LABELED.find(item => item.id === 'planning-capacity')!.title, undefined);
+  assert.equal(LABELED.find(item => item.id === 'planning-bug-backlog')!.profile, 'planning');
 });
