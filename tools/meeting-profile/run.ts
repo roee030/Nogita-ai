@@ -5,7 +5,8 @@
  *   npm run meeting-profile -- --repeat 3       each one three times
  *   npm run meeting-profile -- --file x.json    a local consented set, [{id, profile, lines, title?}]; never commit it
  *
- * Changes nothing in the product. It prints results for review, and its targets are proposals (P9-6).
+ * Changes nothing in the product. It prints results for review, and its metrics are diagnostics, not release
+ * gates (P9-6).
  */
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -26,8 +27,8 @@ const model = new AnthropicBrain(key, process.env.ANTHROPIC_MODEL || DEFAULT_ANT
 const results: Scored[] = [];
 for (let run = 0; run < Math.max(1, Number(values.repeat) || 1); run++) {
   for (const meeting of meetings) {
-    const { profile, confidence } = await inferProfile(model, meeting);
-    results.push({ id: meeting.id, expected: meeting.profile, got: profile, confidence });
+    const { profile, confidence, named } = await inferProfile(model, meeting);
+    results.push({ id: meeting.id, expected: meeting.profile, got: profile, confidence, named });
   }
 }
 console.log(`${meetings.length} meetings x ${values.repeat} on ${model.agentModel}\n`);
