@@ -27,6 +27,11 @@ export interface Utterance {
   overlaps?: string[];
   /** English technical terms inside a Hebrew line, which transcription must keep. */
   terms?: string[];
+  /**
+   * Set when a careful person could label this line's kind either way. The reason is shown to the reviewer, and the
+   * scorer counts the line apart instead of scoring it right or wrong.
+   */
+  uncertain?: string;
 }
 
 export interface TopicLink { from: string; to: string; strength: 'clear' | 'uncertain'; why: string }
@@ -233,4 +238,115 @@ const oneToOne: MeetingCase = {
   approval: { approvedInMeeting: [], why: '"I will try" is not a commitment, and a personal matter is not a team task without approval' },
 };
 
-export const MATRIX_CASES: readonly MeetingCase[] = [daily, approval, planning, oneToOne];
+const designReview: MeetingCase = {
+  id: 'design-review-he',
+  title: 'Design review in Hebrew: proposals, a silent "if nobody objects", and a decision not to do something',
+  covers: ['design review behaviour', 'proposal vs decision', 'a line that is honestly ambiguous', 'a negative decision', 'cross-talk'],
+  language: 'he-en',
+  speakers: { S1: {}, S2: {}, S3: {} },
+  utterances: [
+    { id: 'd01', start: 0, end: 6, speaker: 'S1', kind: 'question', topic: 'D1', terms: ['status', 'events table'],
+      text: 'השאלה היא איפה שומרים את ה-status של משימה: בשורה עצמה או ב-events table.' },
+    { id: 'd02', start: 6.5, end: 11, speaker: 'S2', kind: 'proposal', topic: 'D1', terms: ['events table'],
+      text: 'נראה לי שנלך על events table, ככה יש לנו היסטוריה.' },
+    { id: 'd03', start: 10, end: 14, speaker: 'S3', kind: 'question', topic: 'D1', overlaps: ['d02'], terms: ['join'],
+      text: 'אבל זה join על כל קריאה, לא?' },
+    { id: 'd04', start: 14.5, end: 15, speaker: 'S2', kind: 'backchannel', topic: 'D1', text: 'נכון.' },
+    { id: 'd05', start: 15.5, end: 20, speaker: 'S1', kind: 'decision', topic: 'D1', terms: ['events table'],
+      uncertain: 'S1 says "if nobody objects we go with it", nobody answers, and the topic changes: agreement by silence, or still open?',
+      text: 'אם אין התנגדות, הולכים על events table.' },
+    { id: 'd06', start: 21, end: 26, speaker: 'S3', kind: 'proposal', topic: 'D2', terms: ['migration', 'schema'],
+      text: 'ומה עם ה-migration של ה-schema הישן? אפשר לעשות את זה באותו PR.' },
+    { id: 'd07', start: 26.5, end: 31, speaker: 'S1', kind: 'decision', topic: 'D2', terms: ['migration'],
+      text: 'לא, סגרנו: לא עושים migration עכשיו. זה אחרי ה-release.' },
+    { id: 'd08', start: 31.3, end: 31.7, speaker: 'S3', kind: 'backchannel', topic: 'D2', text: 'אוקיי.' },
+  ],
+  topics: [
+    { id: 'D1', title: 'Where task status lives', status: null, decision: null, blocker: null,
+      proposedNext: 'S2 proposed an events table; S1 said "if nobody objects, we go with it"',
+      openQuestion: 'Was the events table agreed (nobody objected), and what about the join on every read?' },
+    { id: 'D2', title: 'Migrating the old schema', status: null, decision: 'No migration now; it comes after the release',
+      blocker: null, proposedNext: null, openQuestion: null },
+  ],
+  links: [{ from: 'D1', to: 'D2', strength: 'uncertain', why: 'the migration came up next to the status change; nobody said they depend on each other' }],
+  actions: [],
+  approval: { approvedInMeeting: [], why: 'a design discussion with no action asked for: nothing to write' },
+};
+
+const incident: MeetingCase = {
+  id: 'incident-he',
+  title: 'A live incident in Hebrew: four voices talking over each other, one owner, one maybe',
+  covers: ['incident behaviour', 'four speakers', 'heavy cross-talk', 'short acknowledgements', 'an owner who takes it at once',
+    'a tentative owner ("I can, if needed")', 'a name said aloud is not a verified identity'],
+  language: 'he-en',
+  speakers: { S1: {}, S2: {}, S3: {}, S4: {} },
+  utterances: [
+    { id: 'i01', start: 0, end: 6, speaker: 'S1', kind: 'blocker', topic: 'I1', terms: ['production', 'errors', '500'],
+      text: 'יש לנו errors ב-production מעשר, הרבה 500.' },
+    { id: 'i02', start: 5, end: 8, speaker: 'S2', kind: 'status', topic: 'I1', overlaps: ['i01'], terms: ['logs'],
+      text: 'אני רואה את זה ב-logs.' },
+    { id: 'i03', start: 7.5, end: 10, speaker: 'S3', kind: 'question', topic: 'I1', overlaps: ['i02'], terms: ['deploy'],
+      text: 'היה deploy הבוקר?' },
+    { id: 'i04', start: 10.5, end: 14, speaker: 'S2', kind: 'answer', topic: 'I1', terms: ['deploy'],
+      text: 'כן, deploy אחד בתשע וחצי.' },
+    { id: 'i05', start: 14.5, end: 19, speaker: 'S1', kind: 'decision', topic: 'I1', terms: ['rollback'],
+      text: 'עושים rollback עכשיו. אבי, אתה על זה?' },
+    { id: 'i06', start: 19.2, end: 21, speaker: 'S4', kind: 'answer', topic: 'I1', text: 'כן, אני על זה.' },
+    { id: 'i07', start: 21.2, end: 21.6, speaker: 'S3', kind: 'backchannel', topic: 'I1', text: 'יופי.' },
+    { id: 'i08', start: 22, end: 26, speaker: 'S1', kind: 'question', topic: 'I2', terms: ['status page'],
+      text: 'מישהו מעדכן את ה-status page?' },
+    { id: 'i09', start: 26.3, end: 29, speaker: 'S3', kind: 'answer', topic: 'I2', uncertain: '"I can, if needed": an offer, not a clear yes',
+      text: 'אני יכול, אם צריך.' },
+    { id: 'i10', start: 28.5, end: 29, speaker: 'S2', kind: 'backchannel', topic: 'I2', overlaps: ['i09'], text: 'אהה.' },
+  ],
+  topics: [
+    { id: 'I1', title: 'Errors in production since ten', status: 'S2 sees it in the logs; one deploy at 9:30',
+      decision: 'Roll back now; S4 is on it', blocker: 'Production returns many 500s since ten', proposedNext: null, openQuestion: null },
+    { id: 'I2', title: 'Status page', status: null, decision: null, blocker: null, proposedNext: null,
+      openQuestion: 'Who updates the status page? S3 offered "if needed"' },
+  ],
+  links: [{ from: 'I1', to: 'I2', strength: 'clear', why: 'the status page is about this incident' }],
+  actions: [
+    // S1 says "Avi" aloud; the call never verified which voice that is, so the owner is the voice that answered (S4).
+    { topic: 'I1', what: 'Roll back the 9:30 deploy', owner: 'S4', due: 'now', confidence: 'high', source: ['i05', 'i06'] },
+    { topic: 'I2', what: 'Update the status page', owner: null, tentativeOwner: 'S3', due: null, confidence: 'low', source: ['i08', 'i09'] },
+  ],
+  approval: { approvedInMeeting: [], why: 'acting on an incident in the room is not approval for Nogita to write anything' },
+};
+
+const retro: MeetingCase = {
+  id: 'retro-he',
+  title: 'A retro in Hebrew that drifts into next sprint: a clear owner, an unowned fix, an open question',
+  covers: ['retro behaviour', 'topic drift into planning', 'a clear link between topics', 'an owner with a date', 'an action nobody owns'],
+  language: 'he-en',
+  speakers: { S1: {}, S2: {}, S3: {} },
+  utterances: [
+    { id: 'r01', start: 0, end: 4, speaker: 'S1', kind: 'question', topic: 'R1', text: 'מה עבד טוב בספרינט הזה ומה לא?' },
+    { id: 'r02', start: 4.5, end: 9, speaker: 'S2', kind: 'status', topic: 'R1', terms: ['code reviews'],
+      text: 'ה-code reviews היו איטיים מדי, חיכינו יומיים לכל PR.', },
+    { id: 'r03', start: 9.2, end: 9.6, speaker: 'S3', kind: 'backchannel', topic: 'R1', text: 'נכון.' },
+    { id: 'r04', start: 10, end: 15, speaker: 'S3', kind: 'status', topic: 'R1', terms: ['flaky tests'],
+      text: 'וה-flaky tests שוב הפילו לנו את ה-release.' },
+    { id: 'r05', start: 15.5, end: 19, speaker: 'S2', kind: 'proposal', topic: 'R1', terms: ['flaky tests'],
+      text: 'מישהו צריך לתקן את ה-flaky tests.' },
+    { id: 'r06', start: 19.5, end: 25, speaker: 'S1', kind: 'decision', topic: 'R2', terms: ['release checklist'],
+      text: 'אני לוקח את ה-release checklist, עד סוף הספרינט. ונכניס את התיקון של ה-tests לספרינט הבא.' },
+    { id: 'r07', start: 25.5, end: 30, speaker: 'S3', kind: 'question', topic: 'R2', terms: ['demo day'],
+      text: 'ומה עם ה-demo day, משאירים אותו?' },
+  ],
+  topics: [
+    { id: 'R1', title: 'What went well and badly', status: 'Reviews took two days per PR; flaky tests broke the release',
+      decision: null, blocker: null, proposedNext: 'Someone should fix the flaky tests', openQuestion: null },
+    { id: 'R2', title: 'Next sprint', status: null,
+      decision: 'S1 takes the release checklist by the end of the sprint; the test fix goes into next sprint', blocker: null,
+      proposedNext: null, openQuestion: 'Do we keep demo day?' },
+  ],
+  links: [{ from: 'R1', to: 'R2', strength: 'clear', why: 'S1 puts the flaky-test fix from the retro into next sprint' }],
+  actions: [
+    { topic: 'R2', what: 'Update the release checklist', owner: 'S1', due: 'end of sprint', confidence: 'high', source: ['r06'] },
+    { topic: 'R1', what: 'Fix the flaky tests (next sprint)', owner: null, due: null, confidence: 'medium', source: ['r05', 'r06'] },
+  ],
+  approval: { approvedInMeeting: [], why: 'nobody approved writing anything' },
+};
+
+export const MATRIX_CASES: readonly MeetingCase[] = [daily, approval, planning, oneToOne, designReview, incident, retro];

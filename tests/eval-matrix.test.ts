@@ -13,8 +13,9 @@ const approveOne = MATRIX_CASES.find(c => c.id === 'approve-one-of-three')!;
 /** What a perfect system would produce for a case. */
 function perfect(meeting: MeetingCase): SystemOutput {
   const by = <T>(pick: (u: MeetingCase['utterances'][number]) => T) => Object.fromEntries(meeting.utterances.map(u => [u.id, pick(u)]));
-  return { transcript: by(u => u.text), speakers: by(u => u.speaker), overlaps: meeting.utterances.filter(u => u.overlaps).map(u => u.id),
-    topics: by(u => u.topic), kinds: by(u => u.kind),
+  return { transcript: by(u => u.text), times: by(u => [u.start, u.end] as [number, number]), speakers: by(u => u.speaker),
+    overlaps: meeting.utterances.filter(u => u.overlaps).map(u => u.id), topics: by(u => u.topic), kinds: by(u => u.kind),
+    links: meeting.links.map(l => ({ from: l.from, to: l.to, strength: l.strength })),
     actions: meeting.actions.map((a, i) => ({ matches: i + 1, owner: a.owner, due: a.due })), writes: [...meeting.approval.approvedInMeeting] };
 }
 
@@ -81,10 +82,13 @@ test('P9-15: layers fail separately: a lost term, a wrong voice, an invented own
   const layer = (n: number) => results.find(r => r.layer === n)!;
   assert.deepEqual(layer(1).problems, ['u05: lost the term "Redis"', 'u05: lost the term "TTL"']);
   assert.deepEqual(layer(2).problems, ['u06: said by S4, attributed to S3']);
-  assert.equal(layer(2).counts.notWrongVoice!.right, layer(2).counts.notWrongVoice!.of - 1, '"unknown" is not a wrong voice');
+  assert.equal(layer(2).counts.notAWrongVoice!.right, layer(2).counts.notAWrongVoice!.of - 1, '"unknown" is not a wrong voice');
+  assert.equal(layer(2).counts.rightVoice!.right, layer(2).counts.rightVoice!.of - 2, '"unknown" is not the right voice either');
   assert.deepEqual(layer(3).problems, []);
+  assert.deepEqual(layer(4).problems, ['u09: proposal, got decision', 'u09: a proposal read as a decision']);
   assert.equal(layer(4).counts.notAFalseDecision!.right, layer(4).counts.notAFalseDecision!.of - 1);
-  assert.equal(layer(5).counts.leftUnknownOpen!.right, layer(5).counts.leftUnknownOpen!.of - 1);
+  assert.deepEqual(layer(5).problems, ['action 2: treated "S2 said maybe" as the owner', 'action 2: due not established, got tomorrow']);
+  assert.equal(layer(5).counts.unknownsLeftUnknown!.right, layer(5).counts.unknownsLeftUnknown!.of - 1);
   assert.equal(layer(6).blocking, true);
   assert.match(renderScore(daily, results), /wrote action 2 without approval[\s\S]*/);
   assert.match(renderScore(daily, results), /write authorization: .* \*\*BLOCKS\*\*/);
@@ -128,4 +132,100 @@ test('P9-15: the coverage report names its blocked rows and the committed docs a
   assert.ok(coverage.includes(renderCoverage(rows)), 'run npm run eval-matrix -- coverage');
   const review = readFileSync(new URL('../docs/EVAL_MATRIX_REVIEW.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.ok(review.includes(renderReview(MATRIX_CASES)), 'run npm run eval-matrix -- review');
+});
+
+// Week of 10 Nov: audit fixes, more cases, voice-lab meeting types, review sheet.
+import { MEETING_TYPE_SCENARIOS, SCENARIOS as LAB_SCENARIOS, type Turn } from '../tools/voice-lab/scenarios.ts';
+import { scoreTurn } from '../tools/voice-lab/score.ts';
+import type { TurnRecord } from '../tools/voice-lab/conversation.ts';
+import { totals } from '../tools/eval-matrix/coverage.ts';
+
+const byId = (id: string) => MATRIX_CASES.find(c => c.id === id)!;
+
+test('P9-15: timestamps, links and an invented link are scored', () => {
+  const retro = byId('retro-he');
+  const output = perfect(retro);
+  output.times!.r02 = [6, 9];
+  output.links = [{ from: 'R1', to: 'R2', strength: 'uncertain' }, { from: 'R2', to: 'R9', strength: 'clear' }];
+  const results = scoreCase(retro, output);
+  assert.deepEqual(results.find(r => r.layer === 1)!.problems, ['r02: time 4.5–9, got 6–9']);
+  assert.deepEqual(results.find(r => r.layer === 3)!.problems, ['link R1–R2: clear, got uncertain', 'link R2–R9 invented']);
+  assert.deepEqual(results.find(r => r.layer === 3)!.counts.noInventedLink, { right: 1, of: 2 });
+});
+
+test('P9-15: a line labeled uncertain is not scored either way, and a guessed name is a problem', () => {
+  const design = byId('design-review-he');
+  const output = perfect(design);
+  output.kinds!.d05 = 'proposal';
+  output.speakers!.d02 = 'Dana';
+  const results = scoreCase(design, output);
+  assert.deepEqual(results.find(r => r.layer === 4)!.problems, []);
+  assert.deepEqual(results.find(r => r.layer === 4)!.counts.uncertainNotScored, { right: 1, of: 1 });
+  assert.ok(results.find(r => r.layer === 2)!.problems.includes('d02: named "Dana", which the call never verified'));
+  // The verified name in the approval case is fine.
+  const ok = scoreCase(approveOne, { speakers: { a01: 'S2', a02: 'S2', a03: 'S2', a04: 'Roee' } }).find(r => r.layer === 2)!;
+  assert.deepEqual(ok.counts.noUnverifiedName, { right: 4, of: 4 });
+});
+
+test('P9-15: every uncertain line says why, and the recap leaves an uncertain decision open', () => {
+  const uncertain = MATRIX_CASES.flatMap(c => c.utterances.filter(u => u.uncertain).map(u => ({ c, u })));
+  assert.ok(uncertain.length >= 2);
+  for (const { c, u } of uncertain) {
+    assert.ok(u.uncertain!.length > 20, `${u.id} explains its uncertainty`);
+    if (u.kind === 'decision') assert.equal(c.topics.find(t => t.id === u.topic)!.decision, null, `${u.id}: an uncertain decision is not recapped as decided`);
+  }
+});
+
+test('P9-15: the new cases cover the incident, design review and retro, in Hebrew with English terms', () => {
+  for (const id of ['design-review-he', 'incident-he', 'retro-he']) {
+    const c = byId(id);
+    assert.ok(c.utterances.every(u => /[֐-׿]/.test(u.text)), `${id} is Hebrew`);
+    assert.ok(c.utterances.some(u => u.terms?.length), `${id} has English terms`);
+  }
+  const incident = byId('incident-he');
+  assert.equal(Object.keys(incident.speakers).length, 4);
+  assert.ok(incident.utterances.filter(u => u.overlaps).length >= 3);
+  assert.equal(incident.actions[0]!.owner, 'S4', 'the voice that answered, not the name said aloud');
+  assert.equal(incident.actions[1]!.owner, null);
+  assert.ok(byId('retro-he').links.some(l => l.strength === 'clear'));
+});
+
+function goodRecord(turn: Turn): TurnRecord {
+  const spoken = turn.expect.respond === 'speak' ? [`Here is what I found: ${(turn.expect.mentions ?? []).map(group => group[0]).join(', ') || 'nothing new'}.`] : [];
+  const writes = turn.expect.write === 'task' ? [`task: ${(turn.expect.writeIncludes ?? ['x']).join(' ')}`] : [];
+  return { index: 0, turn, script: String(turn.say), heard: String(turn.say), spoken, chat: [], writes, tools: (turn.expect.tools ?? []).map(tool => `${tool}: status = To Do`),
+    spokeAfterUtterance: 0, interruptedByNoise: false, handRaisedBefore: false, events: [],
+    timing: { speechStart: 0, speechEnd: 0, ...(spoken.length ? { firstAudio: 900 } : {}) } };
+}
+
+test('P9-15: the meeting-type voice scenarios are defined, scoreable offline, and kept out of a default run', () => {
+  const names = MEETING_TYPE_SCENARIOS.map(s => s.name);
+  assert.deepEqual(names, ['planning-sprint', 'incident-live', 'one-to-one-checkin', 'design-review-options', 'retro-backchannel']);
+  const all = [...LAB_SCENARIOS, ...MEETING_TYPE_SCENARIOS].map(s => s.name);
+  assert.equal(new Set(all).size, all.length, 'names are unique across both lists');
+  assert.ok(MEETING_TYPE_SCENARIOS.every(s => !LAB_SCENARIOS.includes(s)), 'a plain voice-lab run does not include them');
+  for (const scenario of MEETING_TYPE_SCENARIOS) {
+    const ids = new Set(scenario.participants.map(p => p.id));
+    assert.ok(scenario.participants.every(p => p.voice !== 'aura-2-thalia-en' && p.voice.endsWith('-en')), 'English lab voices, never hers');
+    assert.ok(scenario.turns.some(t => t.expect.respond === 'silent' && t.expect.write === 'none'), `${scenario.name}: a line that must open nothing`);
+    for (const turn of scenario.turns) {
+      assert.ok(ids.has(turn.speaker));
+      // A record that does what the turn expects passes; speaking or writing where it must not, fails.
+      assert.equal(scoreTurn(goodRecord(turn)).passed, true, `${scenario.name}: ${String(turn.say)}`);
+      if (turn.expect.respond === 'silent') {
+        assert.equal(scoreTurn({ ...goodRecord(turn), spoken: ['Okay.'], timing: { speechStart: 0, speechEnd: 0, firstAudio: 500 } }).passed, false);
+      }
+      if (turn.expect.write === 'none') assert.equal(scoreTurn({ ...goodRecord(turn), writes: ['task: something'] }).passed, false);
+    }
+  }
+  const source = readFileSync(new URL('../tools/voice-lab/scenarios.ts', import.meta.url), 'utf8');
+  assert.match(source, /Language limitation: the lab speaks with English Deepgram voices/);
+});
+
+test('P9-15: every coverage cell shows its denominator', () => {
+  const t = totals();
+  const text = renderCoverage(buildCoverage(), t);
+  assert.ok(text.includes(`| 0/${t.voiceLab} | 1/${t.voiceLabUnrun} |`));
+  assert.match(text, /new ones defined offline and never run/);
+  assert.equal(buildCoverage().find(r => r.value === 'Hebrew audio through the voice path')!.status, 'gap');
 });
