@@ -156,6 +156,14 @@ export function listenFirst(env: NodeJS.ProcessEnv = process.env): boolean {
   return value === 'true';
 }
 
+/** NOGITA_SPEAK_WHEN_ASKED: 'true' lets an explicit "explain" or "not in the chat" get the full answer aloud while
+ *  NOGITA_LISTEN_FIRST is on. Off by default; does nothing without listen-first. */
+export function speakWhenAsked(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_SPEAK_WHEN_ASKED?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_SPEAK_WHEN_ASKED must be true or false');
+  return value === 'true';
+}
+
 /** NOGITA_ROOM_AWARE: 'true' makes "alone with her" depend on who is in the call, not only on who was heard, so the first
  *  speaker in a group is not answered without her name; blank or 'false' leaves it off. */
 export function roomAware(env: NodeJS.ProcessEnv = process.env): boolean {

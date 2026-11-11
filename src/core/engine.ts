@@ -43,6 +43,8 @@ interface Session {
   heard?: Map<string, number>;
   /** Everyone heard in this meeting; unlike `heard`, nobody ever drops out of it. */
   voices?: Set<string>;
+  /** NOGITA_SPEAK_WHEN_ASKED: people who asked for answers aloud and not in the chat, for the rest of this meeting. */
+  speakAloud?: Set<string>;
   /** Who is in the call now, by actor id (NOGITA_ROOM_AWARE), whether they spoke or not. Unset: not reported yet. */
   room?: Set<string>;
   /** Restored after a restart: who joined before it is lost, so the room stays unknown for this meeting. */
@@ -208,6 +210,9 @@ export interface NogitaEngineOptions {
   /** NOGITA_LISTEN_FIRST: she speaks only when the turn names her (or answers a question she just asked), in one short
    *  sentence with the rest in chat; no one-to-one implicit address, no raised hand, no "did you ask me?". Off unless set. */
   listenFirst?: boolean;
+  /** NOGITA_SPEAK_WHEN_ASKED: with listen-first, an explicit "explain it" or "don't send it in the chat" gets the full
+   *  answer aloud, and "not in the chat" holds for that person until the meeting ends. When she speaks is unchanged. */
+  speakWhenAsked?: boolean;
   /** NOGITA_ROOM_AWARE: "alone with her" needs the call itself to say so; hearing one voice is not enough. */
   roomAware?: boolean;
   /** NOGITA_MEETING_RECAP: "Nogita, summarize" and the end of the meeting post a recap with numbered proposed tasks;
@@ -350,6 +355,15 @@ const DETAIL_SPOKEN_WORDS = 120;
 const LISTEN_FIRST_SPOKEN_WORDS = 25;
 /** NOGITA_DESIGN_REVIEW: "let me check the code", then the one-sentence recommendation; the options are in the chat. */
 const DESIGN_SPOKEN_WORDS = 40;
+/** NOGITA_SPEAK_WHEN_ASKED: "don't send it in the chat", "say it out loud", "אל תשלחי בצ'אט": aloud from now on. */
+export function refusesChat(request: string): boolean {
+  return /\b(?:don'?t|do not|not|no|stop)\b[^.?!]{0,30}\bchat\b|\b(?:out loud|aloud|say it here)\b/i.test(request) ||
+    /(?:אל|לא|בלי)\s+(?:ת?שלחי\s+)?(?:ב|ל)?(?:צ'?אט|צ׳אט|צאט)|בקול/.test(request);
+}
+/** NOGITA_SPEAK_WHEN_ASKED: an explicit request to explain, this turn only. */
+export function asksToExplain(request: string): boolean {
+  return wantsDetail(request) || /\b(?:explain|summari[sz]e it|tell (?:me|us) what)\b/i.test(request) || /תסביר|הסביר|תפרט/.test(request);
+}
 function wantsDetail(request: string): boolean {
   return /\b(?:in (?:two|three|four|five|a few) sentences|walk (?:me|us) through|step by step|in detail|explain (?:how|why)|tell me more|go into detail|elaborate)\b/i.test(request);
 }
@@ -512,6 +526,7 @@ export class NogitaEngine {
   private readonly commentRetryGuard: boolean;
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
+  private readonly speakWhenAsked: boolean;
   private readonly roomAware: boolean;
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
@@ -581,6 +596,7 @@ export class NogitaEngine {
     this.commentRetryGuard = options.commentRetryGuard === true;
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
+    this.speakWhenAsked = options.speakWhenAsked === true;
     this.roomAware = options.roomAware === true;
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
@@ -1165,7 +1181,9 @@ export class NogitaEngine {
     const leadInSteps = new Set<number>();
     let spokenWords = 0;
     const design = this.designReview && authorized && isDesignQuestion(request);
-    const maxWords = design ? DESIGN_SPOKEN_WORDS : this.listenFirst ? LISTEN_FIRST_SPOKEN_WORDS : wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
+    const aloud = this.listenFirst && this.speakWhenAsked && this.asksAloud(s, utterance.actor.id, request);
+    const maxWords = design ? DESIGN_SPOKEN_WORDS : aloud ? DETAIL_SPOKEN_WORDS : this.listenFirst ? LISTEN_FIRST_SPOKEN_WORDS
+      : wantsDetail(request) ? DETAIL_SPOKEN_WORDS : MAX_SPOKEN_WORDS;
     let truncatedSpeech = false;
     let stillWorking: unknown;
     let stillWorkingUsed = false;
@@ -1409,6 +1427,12 @@ export class NogitaEngine {
     const minutes = s.minutes ??= [];
     minutes.push(line.slice(0, 1_000));
     if (minutes.length > 600) minutes.shift();
+  }
+
+  /** NOGITA_SPEAK_WHEN_ASKED: whether this turn's answer is said in full. "Not in the chat" is remembered for the person. */
+  private asksAloud(s: Session, actorId: string, request: string): boolean {
+    if (refusesChat(request)) (s.speakAloud ??= new Set()).add(actorId);
+    return s.speakAloud?.has(actorId) === true || asksToExplain(request);
   }
 
   /** Posts the recap to the meeting chat; during the meeting she says one line about it. */
