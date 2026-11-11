@@ -6,7 +6,7 @@ import { DemoMeeting } from '../adapters/demo.ts';
 import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
-import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, speakWhenAsked, roomAware, meetingProfile, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, speakWhenAsked, continueRequest, roomAware, meetingProfile, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { roomActorId, parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -235,6 +235,7 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     writeIntent: writeIntent(env),
     listenFirst: listenFirst(env),
     speakWhenAsked: speakWhenAsked(env),
+    continueRequest: continueRequest(env),
     roomAware: roomAware(env),
     meetingRecap: meetingRecap(env),
     followUp: followUpOn(env),
@@ -431,6 +432,8 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       },
       onInterim: (sessionId, participantUuid, text) => {
         if (directlyAddressesNogita(text)) presence.addressed(sessionId, participantUuid);
+        // NOGITA_CONTINUE_REQUEST: the person she is answering goes on talking; stop now, not at the end of their turn.
+        if (nogita.yieldsTo(sessionId, participantUuid, text)) realtimeAudio?.interruptSpeech(sessionId, 'voice');
       },
       onInputLevel: (sessionId, rms) => presence.inputLevel(sessionId, rms),
       onOutputAudio: (sessionId, pcm) => presence.outputAudio(sessionId, pcm),

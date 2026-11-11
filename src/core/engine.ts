@@ -110,6 +110,10 @@ interface Question {
   interruptions: number;
   /** When a participant last cut this answer off. */
   interruptedAt?: number;
+  /** The asker's live audio stream (Attendee participant), to stop her when that same person goes on talking. */
+  speakerKey?: string;
+  /** NOGITA_CONTINUE_REQUEST: the event whose write keys this question uses; a continued request keeps the first one. */
+  writeEventId?: string;
 }
 export interface QuestionEvent {
   id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
@@ -213,6 +217,10 @@ export interface NogitaEngineOptions {
   /** NOGITA_SPEAK_WHEN_ASKED: with listen-first, an explicit "explain it" or "don't send it in the chat" gets the full
    *  answer aloud, and "not in the chat" holds for that person until the meeting ends. When she speaks is unchanged. */
   speakWhenAsked?: boolean;
+  /** NOGITA_CONTINUE_REQUEST: the person she is answering goes on talking: she stops at once, adds their words to that
+   *  open request (a correction replaces it), says "Okay, let me answer the full question." and answers it all once,
+   *  without repeating a write the first part already made. Off unless set. */
+  continueRequest?: boolean;
   /** NOGITA_ROOM_AWARE: "alone with her" needs the call itself to say so; hearing one voice is not enough. */
   roomAware?: boolean;
   /** NOGITA_MEETING_RECAP: "Nogita, summarize" and the end of the meeting post a recap with numbered proposed tasks;
@@ -396,6 +404,20 @@ function firstWords(text: string, max: number): string {
 function isBackchannel(text: string): boolean {
   return /^(?:yeah|yes|yep|yup|ok(?:ay)?|right|sure|mm+(?:-?hmm)?|hmm+|uh[- ]?huh|got it|i see|cool|nice|great|exactly|true|go on)[.!,]?(?:\s+(?:yeah|ok(?:ay)?|right|sure))?[.!]?$/i.test(text.trim());
 }
+/** NOGITA_CONTINUE_REQUEST: Hebrew listening noises ("כן", "אוקיי", "בסדר") are not request text either. */
+function isListeningNoise(text: string): boolean {
+  const t = text.trim().replace(/[.!?,]+$/g, '').trim();
+  return isBackchannel(text) || /^(?:כן|אוקיי|אוקי|בסדר|נכון|יופי|סבבה|אהה|אה|ממ+)(?:\s+(?:כן|אוקיי|בסדר))?$/.test(t);
+}
+/** NOGITA_CONTINUE_REQUEST: "עצרי" stops her, "בטלי" drops the question, like "stop" and "never mind". */
+export function hebrewVoiceCommand(text: string): 'stop' | 'cancel' | undefined {
+  const t = text.trim().replace(/[.!?,]+/g, ' ').replace(/(?:^|\s)(?:נוגיטה|בבקשה|רגע)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^(?:עצרי|תעצרי|עצור|תעצור|די|מספיק|שקט)$/.test(t)) return 'stop';
+  if (/^(?:בטלי|תבטלי|בטל|תבטל|עזבי|לא משנה|תשכחי מזה)(?:\s+(?:את זה|זה))?$/.test(t)) return 'cancel';
+  return undefined;
+}
+export const CONTINUE_ACK = 'Okay, let me answer the full question.';
+
 /** Courtesy closes the exchange; it is not a follow-up for the model to think about. */
 function isCourtesyClose(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -527,6 +549,7 @@ export class NogitaEngine {
   private readonly writeIntent?: WriteIntentJudge;
   private readonly listenFirst: boolean;
   private readonly speakWhenAsked: boolean;
+  private readonly continueRequest: boolean;
   private readonly roomAware: boolean;
   private readonly meetingRecap: boolean;
   private readonly followUp: boolean;
@@ -597,6 +620,7 @@ export class NogitaEngine {
     if (options.writeIntent && dependencies.agent) this.writeIntent = new ModelWriteIntentJudge(dependencies.agent);
     this.listenFirst = options.listenFirst === true;
     this.speakWhenAsked = options.speakWhenAsked === true;
+    this.continueRequest = options.continueRequest === true;
     this.roomAware = options.roomAware === true;
     this.meetingRecap = options.meetingRecap === true;
     this.followUp = options.followUp === true;
@@ -1003,7 +1027,8 @@ export class NogitaEngine {
     return { id: s.nextQuestionId++, actorId: utterance.actor.id, speaker: utterance.actor.displayName, request,
       inputTurnIds: utterance.inputTurnIds,
       key: questionKey(request), askedAt: this.now(), startedAt, status, needsLabel: false, labelled: false,
-      agentNamesTopic: false, abort: new AbortController(), gate, commit, firstSpeechRecorded: false, queuedSpeech: false, interruptions: 0 };
+      agentNamesTopic: false, abort: new AbortController(), gate, commit, firstSpeechRecorded: false, queuedSpeech: false, interruptions: 0,
+      writeEventId: utterance.eventId };
   }
 
   /** The question joins the open ones: overlapping questions name their topic when answered. */
@@ -1021,6 +1046,46 @@ export class NogitaEngine {
     this.reportQuestion(sessionId, q, 'working');
     this.beginQuestionProgress(sessionId, s, q);
     q.commit();
+  }
+
+  /**
+   * NOGITA_CONTINUE_REQUEST, for the live audio: true when these words (still being recognized) come from the person
+   * whose answer is playing and are more than a "yeah" or "okay", so the caller stops her now instead of when the
+   * turn is over. Words from anyone else never stop her through this.
+   */
+  yieldsTo(sessionId: string, speakerKey: string, words: string): boolean {
+    const s = this.sessions.get(sessionId);
+    const owner = s?.floor?.playingOwner;
+    if (!this.continueRequest || !s || owner === undefined) return false;
+    const q = s.questions.find(question => question.id === owner);
+    if (!q || q.speakerKey !== speakerKey || !NogitaEngine.isOpen(q)) return false;
+    const text = words.trim();
+    if (isStopCommand(text) || isCancelCommand(text) || hebrewVoiceCommand(text)) return true;
+    return text.split(/\s+/).length >= 2 && !isListeningNoise(text);
+  }
+
+  /** The continued request is answered once: a short "okay" first, so the asker knows she heard the rest. */
+  private acknowledgeContinued(s: Session, q: Question, continued: Question): void {
+    q.writeEventId = continued.writeEventId;
+    q.queuedSpeech = true;
+    void s.floor?.say(q.id, CONTINUE_ACK, { leadIn: true });
+  }
+
+  /**
+   * Answers the continued request after the first run has stopped, so a write it was making has finished and been
+   * recorded. Write keys come from the first request's event, so the same write is found done instead of made twice;
+   * the agent is also told what is already done, and the usual approval checks apply to everything else.
+   */
+  private async continueAfter(sessionId: string, s: Session, utterance: Utterance, request: string, q: Question,
+    continued: Question): Promise<ProcessResult | undefined> {
+    await Promise.resolve(continued.run).catch(() => undefined);
+    if (q.abort.signal.aborted || this.sessions.get(sessionId) !== s) return 'ignored';
+    const prefix = `${sessionId}:${q.writeEventId}:`;
+    const done = [...this.completed].filter(([key]) => key.startsWith(prefix))
+      .map(([, receipt]) => `${receipt.label}${receipt.url ? ` (${receipt.url})` : ''}`);
+    const text = done.length
+      ? `${request}\n(Already done for this request; do not do it again: ${done.join('; ')}.)` : request;
+    return this.runAgentTurn(sessionId, s, { ...utterance, eventId: q.writeEventId ?? utterance.eventId }, text, undefined, q);
   }
 
   /**
@@ -1793,14 +1858,21 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     // The asker went on after a pause ("Nogita, can you check... um, which file starts the server?"): what she heard
     // first was only the start of the question, so that answer is dropped and the whole question answered.
     let wholeRequest: string | undefined;
+    // NOGITA_CONTINUE_REQUEST: the open request these words continue; its writes are not made again.
+    let continued: Question | undefined;
+    const hebrewCommand = this.continueRequest ? hebrewVoiceCommand(current) : undefined;
     if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current) &&
-        !isBackchannel(current) && !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id)) && !this.isRoomNoise(s, current)) {
+        !isBackchannel(current) && !(this.continueRequest && (hebrewCommand || isListeningNoise(current))) &&
+        !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id)) && !this.isRoomNoise(s, current)) {
       // A correction ("no, I meant the mobile app") replaces the speaker's open question even well after it was asked,
       // and stops what she is saying about the old one.
       const correction = looksLikeCorrection(current);
+      // Continue-request: while her answer is still open (being looked up, spoken or waiting to resume), however long it
+      // has taken, the same person's next words belong to it.
       const started = s.questions.filter(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id &&
-        this.now() - q.askedAt < (correction ? 60_000 : 8_000)).at(-1);
+        this.now() - q.askedAt < (correction || this.continueRequest ? 60_000 : 8_000)).at(-1);
       if (started) {
+        if (this.continueRequest) continued = started;
         started.abort.abort();
         this.clearQuestionProgress(started);
         s.floor.drop(started.id);
@@ -1829,7 +1901,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
       const voiceText = directlyAddressed ? removeAddress(current) : current;
       const compoundStop = splitLeadingStop(voiceText);
       const command = this.handleVoiceCommand(sessionId, s, utterance.actor.id,
-        compoundStop?.stop ?? voiceText, directlyAddressed);
+        hebrewCommand === 'stop' ? 'stop' : hebrewCommand === 'cancel' ? 'never mind' : compoundStop?.stop ?? voiceText, directlyAddressed);
       if (context.speakerKey && !context.turnEnded) s.floor.noteTalking(context.speakerKey, true);
       if (command && compoundStop?.remainder) {
         current = compoundStop.remainder;
@@ -1915,7 +1987,9 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
       const research = continuation ? undefined : this.backgroundResearch(agentRequest, utterance.actor);
       if (research) {
         const q = this.newQuestion(s, utterance, agentRequest, 'working', processingStartedAt);
+        q.speakerKey = context.speakerKey;
         this.openQuestion(sessionId, s, q);
+        if (continued) this.acknowledgeContinued(s, q, continued);
         released = true;
         release();
         return await this.answerInTwoSpeeds(sessionId, s, q, research);
@@ -1926,13 +2000,20 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
           early.actorId === utterance.actor.id && early.key === key && !continuation) {
         q = early;
         q.inputTurnIds = utterance.inputTurnIds;
+        q.speakerKey = context.speakerKey;
         adopted = true;
         s.raisedReason = undefined;
         this.openQuestion(sessionId, s, q);
       } else {
         q = this.newQuestion(s, utterance, agentRequest, 'working', processingStartedAt);
+        q.speakerKey = context.speakerKey;
         this.openQuestion(sessionId, s, q);
-        q.run = this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined, q);
+        if (continued) {
+          this.acknowledgeContinued(s, q, continued);
+          q.run = this.continueAfter(sessionId, s, utterance, agentRequest, q, continued);
+        } else {
+          q.run = this.runAgentTurn(sessionId, s, utterance, agentRequest, continuation ? pending : undefined, q);
+        }
       }
       released = true;
       release();
