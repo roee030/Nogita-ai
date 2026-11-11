@@ -232,3 +232,23 @@ test('an interruption never repeats a write: the task made before it is found do
   assert.equal(f.board.tasks.length, 1);
   assert.match(model.asked.at(-1)!, /Already done for this request; do not do it again: DEMO-1/);
 });
+
+test('the speaker\'s delivery choice holds for the combined answer: "say it aloud, don\'t send it in the chat"', async () => {
+  const full = 'Four pull requests merged in the last three days, all on main. The first fixed the recap channel boundary. ' +
+    'The second made the first speaker wait for the call to report who is there. The third added the meeting type in shadow mode.';
+  const model = new Model(said => /tests/.test(said) ? [{ text: full }] : [{ text: LONG, delayMs: 300 }]);
+  const meeting = new VoiceMeeting('m');
+  const engine = new NogitaEngine({ board: new DemoBoard(), code: new DemoCode(), brain: new DemoBrain(),
+    policy: new AllowlistPolicy(new Set(['roee'])), agent: model },
+  { schedule: () => 0, cancel: () => undefined, floor: { resumeAfterMs: 60, talkingMs: 20, staleLeadInMs: 2_000 },
+    listenFirst: true, speakWhenAsked: true, continueRequest: true });
+  await engine.startSession('s', meeting);
+  const first = engine.onUtterance('s', { text: "Nogita, explain what we merged, say it out loud, don't send it in the chat.", eventId: '1', actor: roee },
+    { speakerKey: 'roee', turnEnded: true });
+  await sleep(30);
+  await engine.onUtterance('s', { text: 'and are the tests on main green?', eventId: '2', actor: roee }, { speakerKey: 'roee', turnEnded: true });
+  await first;
+  await until(() => meeting.heard.join(' ').includes('shadow mode'));
+  assert.equal(meeting.heard[0], CONTINUE_ACK);
+  assert.doesNotMatch(meeting.heard.join(' '), /in the chat/);
+});
