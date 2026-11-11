@@ -83,7 +83,8 @@ const PLANNING: readonly RegExp[] = [
   /\bhand(?:ing)? (?:it|this|that)(?: off)? to a mission\b/i,
   /\b(?:delegate[_ ]mission|create_tasks?|update_tasks?|missions?_status|decide_mission)\b/i,
 ];
-const ABOUT_SPEAKER = String.raw`(?:'s asking\b|\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b)`;
+// Meet of 11 November (P9-25): "Roee's question is cut off. Please explain in one sentence what" was said aloud.
+const ABOUT_SPEAKER = String.raw`(?:'s asking\b|'s (?:last |latest )?(?:question|request|message|sentence|words)\b|\s+(?:wants|is asking|asked|just asked|needs|would like|is looking for|is after)\b)`;
 
 export function isPlanningAloud(sentence: string, speaker?: string): boolean {
   const text = sentence.trim();

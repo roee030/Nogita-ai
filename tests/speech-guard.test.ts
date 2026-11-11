@@ -82,12 +82,16 @@ const MEET_PLANNING = [
   "Roee wants a combined summary of today's merged PRs.",
   'The earlier lookup covered them, but the spoken answer should be short.',
   "I'll answer with the count and the latest and point to the chat for the full list.",
+  // P9-25, Meet of 11 November.
+  "Roee's question is cut off.",
+  "Roee's last question was cut off: please explain in one sentence what.",
 ];
 
 test('planning aloud from the Meet is dropped; answers, and other people\'s wishes, stay', () => {
   for (const sentence of MEET_PLANNING) assert.equal(isPlanningAloud(sentence, 'Roee Angel'), true, sentence);
   for (const sentence of ['Dana wants it by Friday.', 'Yes, 36 PRs were merged to main today.', 'Roee, the latest is PR 75.',
-    'The spoken part of the demo went well.'.replace('spoken part', 'demo'), 'I can answer that.'])
+    'The spoken part of the demo went well.'.replace('spoken part', 'demo'), 'I can answer that.',
+    "Dana's question is a good one.", 'Your question got cut off. Explain what, exactly?'])
     assert.equal(isPlanningAloud(sentence, 'Roee Angel'), false, sentence);
   assert.equal(stripPlanningAloud(`${MEET_PLANNING.slice(1).join(' ')} Yes, 36 PRs were merged to main today.`, 'Roee Angel'),
     'Yes, 36 PRs were merged to main today.');
@@ -188,4 +192,13 @@ test('strict guard: sorting the request out loud is dropped, and ordinary answer
   assert.equal(stripPlanningAloud("Roee's asking for one task covering today's merged PRs.", 'Roee Angel'), '');
   assert.equal(stripPlanningAloud("Dana's asking for one task.", 'Roee Angel'), "Dana's asking for one task.");
   assert.equal(stripPlanningAloud('Got it. The request is to open a task for Yossi, so I will create it now. Done, KAN 7.'), 'Got it. Done, KAN 7.');
+});
+
+test('P9-25: the Meet of 11 November, "Roee\'s question is cut off", is not said aloud with the strict guard', async () => {
+  const steps = [{ text: "Roee's question is cut off. Explain what, in one sentence?" }];
+  const request = 'Please explain me nogita. Please explain in one sentence what?';
+  const strict = await speakWith(true, steps, request);
+  assert.doesNotMatch(strict, /Roee's question/);
+  assert.match(strict, /Explain what, in one sentence\?/);
+  assert.match(await speakWith(false, steps, request), /Roee's question/, 'off: as on 11 November');
 });
