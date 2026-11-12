@@ -158,6 +158,12 @@ export function listenFirst(env: NodeJS.ProcessEnv = process.env): boolean {
 
 /** NOGITA_SPEAK_WHEN_ASKED: 'true' lets an explicit "explain" or "not in the chat" get the full answer aloud while
  *  NOGITA_LISTEN_FIRST is on. Off by default; does nothing without listen-first. */
+/** NOGITA_CONTINUE_REQUEST: the person she is answering goes on talking: stop, add their words, answer it all once. */
+export function continueRequest(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.NOGITA_CONTINUE_REQUEST?.trim() ?? '';
+  if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_CONTINUE_REQUEST must be true or false');
+  return value === 'true';
+}
 export function speakWhenAsked(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.NOGITA_SPEAK_WHEN_ASKED?.trim() ?? '';
   if (!['', 'true', 'false'].includes(value)) throw new Error('NOGITA_SPEAK_WHEN_ASKED must be true or false');

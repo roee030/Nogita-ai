@@ -146,6 +146,8 @@ export class SpeechFloor {
   get interrupted(): number | undefined { return this.interruptedOwner; }
   /** The owner speaking now, or holding the floor between pieces of one answer. */
   get current(): number | undefined { return this.holder; }
+  /** The owner whose piece is playing now (a lead-in too). */
+  get playingOwner(): number | undefined { return this.playing?.owner; }
   get busy(): boolean { return this.speaking || this.queue.length > 0; }
   owners(): number[] { return [...new Set(this.queue.map(item => item.owner))]; }
 
