@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileActionReceipts } from '../src/app/action-receipts.ts';
-import { buildToolbox } from '../src/core/agent-tools.ts';
+import { buildToolbox, writeFingerprint } from '../src/core/agent-tools.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoCode } from '../src/adapters/demo.ts';
 import type { ActionReceipt, BoardPort, ChatPort, CreateTask, PullRequestPort, UpdateTask } from '../src/core/contracts.ts';
@@ -142,6 +142,48 @@ for (const row of ROWS) {
         assert.equal(rec2.writes.length, 2, `${restart ? 'after a restart' : 'in memory'}, new only: ${rec2.writes.join(' | ')}`);
       } finally { disk.done(); }
     }
+  });
+}
+
+// The deploy of P10-2: receipts on disk written by the code before it, with the old keys, must still stop a repeat.
+const LEGACY: Array<{ name: string; key: string; kind: ActionReceipt['kind']; options?: { commentRetryGuard?: boolean };
+  repeat: Call; other: Call; newKey: string; otherContinued?: boolean }> = [
+  { name: 'a comment', key: 's:e1:update:KAN-1:::Blocked on the API.', kind: 'task',
+    repeat: ROWS[3]!.first, other: ROWS[3]!.other, newKey: `s:e1:update:KAN-1:::${writeFingerprint('Blocked on the API.')}` },
+  { name: 'a comment with NOGITA_COMMENT_RETRY_GUARD', key: 's:e1:update:KAN-1:::comment#1', kind: 'task',
+    options: { commentRetryGuard: true }, repeat: ROWS[4]!.first, other: { tool: 'update_task', input: { key: 'KAN-2', comment: 'Dana owns the fix.' } },
+    newKey: 's:e1:update:KAN-1:::comment#1' },
+  { name: 'a chat message', key: 's:e1:post:eng:The release is out.', kind: 'message',
+    repeat: ROWS[6]!.first, other: ROWS[6]!.other, newKey: `s:e1:post:eng:${writeFingerprint('The release is out.')}` },
+  { name: 'a task', key: 's:e1:task:1', kind: 'task', repeat: ROWS[0]!.first, other: ROWS[0]!.other, newKey: 's:e1:task:1',
+    otherContinued: true },
+  { name: 'a draft PR', key: 's:e1:pr:1', kind: 'draft_pr', repeat: ROWS[7]!.first, other: ROWS[7]!.other, newKey: 's:e1:pr:1',
+    otherContinued: true },
+];
+
+for (const legacy of LEGACY) {
+  test(`after the upgrade, ${legacy.name} with a pre-P10-2 receipt is not sent again; a new one is, in the new format`, async () => {
+    const disk = store();
+    try {
+      // Written by the old code, then the process restarts on the new code.
+      disk.receipts().set(legacy.key, { provider: 'rec', kind: legacy.kind, label: 'old', url: 'https://example.invalid/old' });
+      const rec = new Recorder();
+      await call(run(rec, disk.receipts(), false, legacy.options), legacy.repeat);
+      await call(run(rec, disk.receipts(), false, legacy.options), legacy.repeat);
+      assert.deepEqual(rec.writes, [], 'the in-flight event retried across the deploy writes nothing');
+      // The receipt is found under the new key from now on; the old entry stays until it expires (a rollback finds it).
+      const after = disk.receipts();
+      assert.equal(after.get(legacy.newKey)?.url, 'https://example.invalid/old');
+      assert.ok(after.has(legacy.key));
+      // A different write of the same event is still made, once, and saved without its words. (A task or draft is
+      // index-based: outside a continued request the event's first one is always the same write.)
+      const later = Boolean(legacy.otherContinued);
+      await call(run(rec, disk.receipts(), later, legacy.options), legacy.other);
+      await call(run(rec, disk.receipts(), later, legacy.options), legacy.other);
+      assert.equal(rec.writes.length, 1, rec.writes.join(' | '));
+      const words = String(legacy.other.input.comment ?? legacy.other.input.text ?? legacy.other.input.title);
+      assert.ok(!disk.files().filter(file => !file.includes(legacy.key)).join('\n').includes(words), `"${words}" is on disk`);
+    } finally { disk.done(); }
   });
 }
 

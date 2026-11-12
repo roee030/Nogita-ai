@@ -390,6 +390,18 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     : refusal;
   let taskIndex = 0;
   /**
+   * The receipt of a write already made under `key`, or under the key the same write had before P10-2 (`legacy`, which
+   * held the words themselves). A legacy hit is saved again under the new key, so later lookups use the new format;
+   * the legacy entry is left to expire with the store's retention, so a rollback still finds it.
+   */
+  const alreadyDone = (key: string, legacy?: string): ActionReceipt | undefined => {
+    const found = context.completed.get(key);
+    if (found || !legacy || legacy === key) return found;
+    const old = context.completed.get(legacy);
+    if (old) context.completed.set(key, old);
+    return old;
+  };
+  /**
    * The idempotency key of the n-th task, draft or numbered comment of this event (`prefix` + n). In a continued request
    * (P9-26) words already written under that prefix reuse that write's key, and new words take the next index nobody
    * used, so "task A, and also B" after A was made finds A done and still makes B. The receipt's fingerprint says which
@@ -709,7 +721,9 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const requestId = comment && context.commentRetryGuard
         ? writeKey(`${change}comment#`, comment, () => commentsOn.set(key, (commentsOn.get(key) ?? 0) + 1).get(key)!)
         : `${context.sessionId}:${context.eventId}:${change}${comment ? writeFingerprint(comment) : ''}`;
-      let receipt = context.completed.get(requestId);
+      // Receipts written before P10-2 have the comment's words in the key; a retry across the deploy still finds them.
+      const legacyId = comment && !context.commentRetryGuard ? `${context.sessionId}:${context.eventId}:${change}${comment}` : undefined;
+      let receipt = alreadyDone(requestId, legacyId);
       const fresh = !receipt;
       if (!receipt) {
         receipt = await board.updateTask!({ key, status, assigneeId, comment, requestId });
@@ -828,7 +842,8 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       if (!channel || !text) return { content: 'channel and text are required', isError: true };
       writes++;
       const requestId = `${context.sessionId}:${context.eventId}:post:${channel}:${writeFingerprint(text)}`;
-      let receipt = context.completed.get(requestId);
+      // Receipts written before P10-2 have the message's words in the key; a retry across the deploy still finds them.
+      let receipt = alreadyDone(requestId, `${context.sessionId}:${context.eventId}:post:${channel}:${text}`);
       if (!receipt) {
         receipt = await chat.postMessage(channel, text);
         context.completed.set(requestId, receipt);
