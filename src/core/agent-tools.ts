@@ -38,8 +38,6 @@ export interface ToolboxContext {
   onReceipt: (receipt: ActionReceipt) => Promise<void>;
   /** Idempotency memory shared across retries of the same event. */
   completed: Map<string, ActionReceipt>;
-  /** The normalized title each task or draft write key was made with, so a continued request can tell one from another. */
-  writtenTitles?: Map<string, string>;
   /**
    * NOGITA_CONTINUE_REQUEST: this run answers a request the same speaker went on with, under the first request's event.
    * A task or draft with the title of one already made for it is that write, found done; any other is a new write with
@@ -105,9 +103,21 @@ export interface WriteAudit {
   error?: string;
 }
 
-/** A title as words only: "Release notes." and "release notes" are the same write. */
-function titleKey(title: string): string {
-  return title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+/**
+ * The words of a write as a short fingerprint: "Release notes." and "release notes" are the same write. A 53-bit hash
+ * (cyrb53) of the words only, so a receipt kept on disk tells writes apart without holding their text.
+ */
+export function writeFingerprint(text: string): string {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < words.length; i++) {
+    const code = words.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 type WritePorts = { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort };
@@ -380,14 +390,17 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     : refusal;
   let taskIndex = 0;
   /**
-   * The idempotency key of the n-th task or draft of this event. In a continued request (P9-26) a title already written
-   * for the event reuses that write's key, and a new title takes the next index nobody used, so "task A, and also B"
-   * after A was made finds A done and still makes B.
+   * The idempotency key of the n-th task, draft or numbered comment of this event (`prefix` + n). In a continued request
+   * (P9-26) words already written under that prefix reuse that write's key, and new words take the next index nobody
+   * used, so "task A, and also B" after A was made finds A done and still makes B. The receipt's fingerprint says which
+   * words a key was written with, from memory or from the receipts on disk.
    */
-  const writeKey = (kind: 'task' | 'pr', title: string, next: () => number): string => {
-    const prefix = `${context.sessionId}:${context.eventId}:${kind}:`;
+  const writeKey = (tail: string, words: string, next: () => number): string => {
+    const prefix = `${context.sessionId}:${context.eventId}:${tail}`;
     if (!context.continuation) return `${prefix}${next()}`;
-    const same = [...context.completed.keys()].find(key => key.startsWith(prefix) && context.writtenTitles?.get(key) === titleKey(title));
+    const fingerprint = writeFingerprint(words);
+    const same = [...context.completed.keys()].find(key => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) &&
+      context.completed.get(key)?.fingerprint === fingerprint);
     if (same) return same;
     let key: string;
     do key = `${prefix}${next()}`; while (context.completed.has(key));
@@ -649,13 +662,12 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       }
       const fullDescription = withMeetingQuotes(description, lines);
       // Index-based so a retried event maps its n-th task to the same Jira issue even if wording changes.
-      const requestId = writeKey('task', title, () => ++taskIndex);
+      const requestId = writeKey('task:', title, () => ++taskIndex);
       let receipt = context.completed.get(requestId);
       const fresh = !receipt;
       if (!receipt) {
         receipt = await board.createTask({ title, description: fullDescription, assigneeId, requestId, ...(target ? { board: target } : {}) });
-        context.completed.set(requestId, receipt);
-        context.writtenTitles?.set(requestId, titleKey(title));
+        context.completed.set(requestId, { ...receipt, fingerprint: writeFingerprint(title) });
         context.recordAction?.('create_task');
         report.receipts.push(receipt);
         report.wroteSomething = true;
@@ -692,13 +704,16 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
         assigneeName = resolved.displayName;
       }
       // The eval's comment-retry-after-restart: the same request after a restart posted a second comment in other words.
-      const commentKey = comment && context.commentRetryGuard ? `comment#${commentsOn.set(key, (commentsOn.get(key) ?? 0) + 1).get(key)}` : comment ?? '';
-      const requestId = `${context.sessionId}:${context.eventId}:update:${key}:${status ?? ''}:${assigneeId ?? ''}:${commentKey}`;
+      // A comment's words are in the key only as a fingerprint: the receipts on disk hold no request text.
+      const change = `update:${key}:${status ?? ''}:${assigneeId ?? ''}:`;
+      const requestId = comment && context.commentRetryGuard
+        ? writeKey(`${change}comment#`, comment, () => commentsOn.set(key, (commentsOn.get(key) ?? 0) + 1).get(key)!)
+        : `${context.sessionId}:${context.eventId}:${change}${comment ? writeFingerprint(comment) : ''}`;
       let receipt = context.completed.get(requestId);
       const fresh = !receipt;
       if (!receipt) {
         receipt = await board.updateTask!({ key, status, assigneeId, comment, requestId });
-        context.completed.set(requestId, receipt);
+        context.completed.set(requestId, comment ? { ...receipt, fingerprint: writeFingerprint(comment) } : receipt);
         context.recordAction?.('update_task');
         report.receipts.push(receipt);
         report.wroteSomething = true;
@@ -812,7 +827,7 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const text = str(input.text, 3000);
       if (!channel || !text) return { content: 'channel and text are required', isError: true };
       writes++;
-      const requestId = `${context.sessionId}:${context.eventId}:post:${channel}:${text}`;
+      const requestId = `${context.sessionId}:${context.eventId}:post:${channel}:${writeFingerprint(text)}`;
       let receipt = context.completed.get(requestId);
       if (!receipt) {
         receipt = await chat.postMessage(channel, text);
@@ -839,12 +854,11 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const description = str(input.description, 6000);
       if (!title || !description) return { content: 'title and description are required', isError: true };
       writes++;
-      const requestId = writeKey('pr', title, () => ++prIndex);
+      const requestId = writeKey('pr:', title, () => ++prIndex);
       let receipt = context.completed.get(requestId);
       if (!receipt) {
         receipt = await drafts.openDraft({ title, description, requestId });
-        context.completed.set(requestId, receipt);
-        context.writtenTitles?.set(requestId, titleKey(title));
+        context.completed.set(requestId, { ...receipt, fingerprint: writeFingerprint(title) });
         context.recordAction?.('draft_pr');
         report.receipts.push(receipt);
         report.wroteSomething = true;

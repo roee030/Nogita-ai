@@ -524,7 +524,6 @@ export class NogitaEngine {
   private readonly sessions = new Map<string, Session>();
   private readonly startingSessions = new Set<string>();
   private readonly completed: Map<string, ActionReceipt>;
-  private readonly writtenTitles = new Map<string, string>();
   private readonly progressDelayMs: number;
   private readonly agentProgressDelayMs: number;
   private readonly handRaiseFallback: 'none' | 'chat';
@@ -795,9 +794,6 @@ export class NogitaEngine {
       session.eventIds.clear();
       for (const key of this.completed.keys()) {
         if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
-      }
-      for (const key of this.writtenTitles.keys()) {
-        if (key.startsWith(`${sessionId}:`)) this.writtenTitles.delete(key);
       }
     })();
     session.endingPromise = ending;
@@ -1227,7 +1223,7 @@ export class NogitaEngine {
       actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId, transcript: () => transcript,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
-      writtenTitles: this.writtenTitles, ...(q?.continuation ? { continuation: true } : {}),
+      ...(q?.continuation ? { continuation: true } : {}),
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,
