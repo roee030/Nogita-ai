@@ -25,6 +25,11 @@ export interface ActionReceipt {
   kind: 'task' | 'code_lookup' | 'draft_pr' | 'message';
   url: string;
   label: string;
+  /**
+   * A short fingerprint of the words of the write (title, comment or message), kept with the receipt so a continued
+   * request can tell "the same action again" from a new one, also after a restart. Never the words themselves.
+   */
+  fingerprint?: string;
 }
 /** Signals that speech failed after the user-visible meeting-chat mirror was already delivered. */
 export class SpeechFallbackSentError extends Error {
