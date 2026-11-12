@@ -12,7 +12,7 @@ import { once, EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
-import { AttendeeRealtimeAudioHub, createAttendeeAudioSocketUrl } from '../src/app/attendee-realtime-audio.ts';
+import { AttendeeRealtimeAudioHub, createAttendeeAudioSocketUrl, type SttMode } from '../src/app/attendee-realtime-audio.ts';
 import { continueOnInterim } from '../src/app/continue-barge-in.ts';
 
 const roee = { id: 'roee', displayName: 'Roee', verified: true };
@@ -328,7 +328,14 @@ test('the speaker\'s delivery choice holds for the combined answer: "say it alou
  * The live path, as the server wires it: the audio hub's interim hook goes through continueOnInterim to the engine, and a
  * yes stops the hub's own playback. The speaker's audio is silent (echo cancellation), so the level gate never opens.
  */
-async function interimDuringAnswer(on: boolean, participant: string, hypothesis: string): Promise<string[]> {
+type LiveOptions = { stt?: SttMode; stopOnInterim?: boolean };
+/** One live hypothesis as each recognizer sends it: a Flux TurnInfo update or a Nova-3 interim result. */
+const hypothesisMessage = (stt: SttMode, transcript: string) => stt === 'flux-english'
+  ? { type: 'TurnInfo', event: 'Update', transcript }
+  : { type: 'Results', is_final: false, speech_final: false, channel: { alternatives: [{ transcript }] } };
+
+async function interimDuringAnswer(on: boolean, participant: string, hypothesis: string,
+  { stt = 'flux-english', stopOnInterim = false }: LiveOptions = {}): Promise<string[]> {
   class Fake extends EventEmitter {
     readyState: number = WebSocket.CONNECTING;
     send(): void {}
@@ -338,19 +345,19 @@ async function interimDuringAnswer(on: boolean, participant: string, hypothesis:
   const f = fixture(model, on);
   f.meeting.speakMs = 2_000;
   await f.engine.startSession('m', f.meeting);
-  const stt = new Map<string, Fake>();
+  const listeners = new Map<string, Fake>();
   let tts!: Fake;
   const interrupts: string[] = [];
   let hub!: AttendeeRealtimeAudioHub;
   const onInterim = continueOnInterim(f.engine, () => hub);
   hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio', signingSecret: 's',
-    deepgramApiKey: 'k', sttMode: 'flux-english', turnTakingV2: true, onTranscript: () => {}, onInterim,
+    deepgramApiKey: 'k', sttMode: stt, turnTakingV2: true, stopOnInterim, onTranscript: () => {}, onInterim,
     onInterrupt: (_s, event) => interrupts.push(event.cause),
     createWebSocket: url => {
       const socket = new Fake();
       if (url.includes('/speak')) tts = socket;
       queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
-      if (url.includes('/listen')) queueMicrotask(() => stt.set(stt.has('roee') ? 'dana' : 'roee', socket));
+      if (url.includes('/listen')) queueMicrotask(() => listeners.set(listeners.has('roee') ? 'dana' : 'roee', socket));
       return socket as unknown as WebSocket;
     } });
   hub.register('m');
@@ -367,7 +374,7 @@ async function interimDuringAnswer(on: boolean, participant: string, hypothesis:
   try {
     for (const uuid of ['roee', 'dana']) {
       client.send(JSON.stringify({ bot_id: 'bot_m', trigger: 'realtime_audio.per_participant', data: { participant_uuid: uuid, sample_rate: 16000, chunk: silence } }));
-      await until(() => stt.has(uuid));
+      await until(() => listeners.has(uuid));
     }
     // Roee asked; the engine's answer is playing, and the hub is playing its audio.
     void f.engine.onUtterance('m', { text: 'Nogita, what merged this week?', eventId: '1', actor: roee }, { speakerKey: 'roee', turnEnded: true });
@@ -376,7 +383,7 @@ async function interimDuringAnswer(on: boolean, participant: string, hypothesis:
     await new Promise<void>(resolve => setImmediate(resolve));
     tts.emit('message', Buffer.alloc(32_000, 1), true);
     await sleep(20);
-    stt.get(participant)!.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', transcript: hypothesis })), false);
+    listeners.get(participant)!.emit('message', Buffer.from(JSON.stringify(hypothesisMessage(stt, hypothesis))), false);
     await sleep(20);
     return interrupts;
   } finally {
@@ -392,4 +399,26 @@ test('live audio: the asker\'s first live words stop her playback; "okay", anoth
   assert.deepEqual(await interimDuringAnswer(true, 'roee', 'okay'), [], 'a backchannel');
   assert.deepEqual(await interimDuringAnswer(true, 'dana', 'and also which tests failed'), [], 'another speaker');
   assert.deepEqual(await interimDuringAnswer(false, 'roee', 'and also which tests failed'), [], 'flag off');
+});
+
+// P10-1: the same path with Nova-3 (the multilingual default) and with NOGITA_STOP_ON_INTERIM on as well.
+test('live audio, Nova-3: the asker\'s interim result stops her; "okay", "בסדר", another speaker and the flag off do not', async () => {
+  const nova = { stt: 'nova3-multilingual' } as const;
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'and also which tests failed', nova), ['voice']);
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'וגם אילו טסטים נכשלו', nova), ['voice'], 'Hebrew continuation');
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'okay', nova), [], 'a backchannel');
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'בסדר', nova), [], 'a Hebrew backchannel');
+  assert.deepEqual(await interimDuringAnswer(true, 'dana', 'and also which tests failed', nova), [], 'another speaker');
+  assert.deepEqual(await interimDuringAnswer(false, 'roee', 'and also which tests failed', nova), [], 'flag off');
+});
+
+test('live audio with NOGITA_STOP_ON_INTERIM too: "stop" is one interruption, and a continuation still stops her once', async () => {
+  for (const stt of ['flux-english', 'nova3-multilingual'] as const) {
+    const both = { stt, stopOnInterim: true };
+    assert.equal((await interimDuringAnswer(true, 'roee', 'okay stop', both)).length, 1, `${stt}: "stop" once`);
+    assert.equal((await interimDuringAnswer(true, 'dana', 'okay stop', both)).length, 1, `${stt}: anyone's stop, as before`);
+    assert.deepEqual(await interimDuringAnswer(true, 'roee', 'and also which tests failed', both), ['voice'], `${stt}: continuation`);
+    assert.deepEqual(await interimDuringAnswer(true, 'dana', 'and also which tests failed', both), [], `${stt}: another speaker`);
+    assert.deepEqual(await interimDuringAnswer(false, 'roee', 'okay stop', both), ['command'], `${stt}: flag off, stop-on-interim alone`);
+  }
 });
