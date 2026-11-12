@@ -21,6 +21,10 @@ import { asksTheRoom, directlyAddressesNogita, looksLikeCrosstalk, isExplicitCre
 
 interface Session {
   meeting: MeetingPort;
+  /** NOGITA_CONTINUE_REQUEST (P10-3), by speaker: when their live words were first heard during the answer playing for them. */
+  liveSince?: Map<string, { questionId: number; at: number }>;
+  /** ...and the stops waiting for that speaker's finished turn to say what they were. */
+  yields?: Map<string, { questionId: number; at: number }>;
   history: ConversationTurn[]; // ephemeral: purged when session ends
   /** Action items heard so far and who took them; purged with the history. */
   items: ActionItemTracker;
@@ -117,6 +121,15 @@ interface Question {
   /** NOGITA_CONTINUE_REQUEST: this run answers the combined request; its writes are told apart by title. */
   continuation?: boolean;
 }
+/**
+ * NOGITA_CONTINUE_REQUEST (P10-3): she stopped because the asker went on (`yield`, with the time from his first live
+ * words in this answer to the stop), then what his finished turn turned out to be (`outcome`, `ms` after the stop).
+ * "none" is a false interruption: nothing was added, corrected, stopped or cancelled. No words; `speakerKey` is the
+ * participant id the caller hashes before it logs.
+ */
+export type ContinueEvent =
+  | { phase: 'yield'; id: number; speakerKey: string; silenceMs: number }
+  | { phase: 'outcome'; id: number; speakerKey: string; outcome: 'continued' | 'corrected' | 'stopped' | 'cancelled' | 'none'; ms: number };
 export interface QuestionEvent {
   id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
   inputTurnIds?: string[];
@@ -140,6 +153,8 @@ export interface NogitaEngineOptions {
   now?: () => number;
   /** Every change in a voice question's status (the voice lab logs them). */
   onQuestion?: (sessionId: string, event: QuestionEvent) => void;
+  /** NOGITA_CONTINUE_REQUEST: each stop for the asker going on, and what came of it (P10-3, text-free). */
+  onContinue?: (sessionId: string, event: ContinueEvent) => void;
   /** What she is doing right now, for the presence screen: a tool a question runs, or an answer waiting for a pause. */
   /** Puts a card on the meeting's presence screen (undefined clears it); enables the show_on_screen tool. */
   onScreen?: (sessionId: string, card: ScreenCard | undefined) => void;
@@ -538,6 +553,7 @@ export class NogitaEngine {
   private readonly onActivity?: NogitaEngineOptions['onActivity'];
   private readonly onScreen?: NogitaEngineOptions['onScreen'];
   private readonly onSpeech?: NogitaEngineOptions['onSpeech'];
+  private readonly onContinue?: NogitaEngineOptions['onContinue'];
   private readonly screenAudience?: NogitaEngineOptions['screenAudience'];
   private readonly missions?: MissionRunner;
   private readonly onLeaveRequested?: NogitaEngineOptions['onLeaveRequested'];
@@ -610,6 +626,7 @@ export class NogitaEngine {
     this.onActivity = options.onActivity;
     this.onScreen = options.onScreen;
     this.onSpeech = options.onSpeech;
+    this.onContinue = options.onContinue;
     this.screenAudience = options.screenAudience;
     this.missions = options.missions;
     this.onLeaveRequested = options.onLeaveRequested;
@@ -758,6 +775,7 @@ export class NogitaEngine {
     if (!session) return;
     if (session.endingPromise) return session.endingPromise;
     session.ending = true;
+    for (const speakerKey of [...session.yields?.keys() ?? []]) this.resolveYield(sessionId, session, speakerKey, 'none');
     if (session.cacheTimer) clearTimeout(session.cacheTimer);
     for (const question of session.questions) question.abort.abort();
     session.floor?.close();
@@ -1075,9 +1093,29 @@ export class NogitaEngine {
     if (!this.continueRequest || !s || owner === undefined) return false;
     const q = s.questions.find(question => question.id === owner);
     if (!q || q.speakerKey !== speakerKey || !NogitaEngine.isOpen(q)) return false;
+    const live = s.liveSince ??= new Map();
+    if (live.get(speakerKey)?.questionId !== q.id) live.set(speakerKey, { questionId: q.id, at: this.now() });
     const text = words.trim();
     if (isStopCommand(text) || isCancelCommand(text) || hebrewVoiceCommand(text)) return true;
     return text.split(/\s+/).length >= 2 && !isListeningNoise(text);
+  }
+
+  /** The caller stopped her for `yieldsTo`: logged with how long since this speaker's first live words in the answer. */
+  yielded(sessionId: string, speakerKey: string): void {
+    const s = this.sessions.get(sessionId);
+    const live = s?.liveSince?.get(speakerKey);
+    if (!this.continueRequest || !s || !live || s.yields?.has(speakerKey)) return;
+    (s.yields ??= new Map()).set(speakerKey, { questionId: live.questionId, at: this.now() });
+    this.onContinue?.(sessionId, { phase: 'yield', id: live.questionId, speakerKey, silenceMs: Math.max(0, this.now() - live.at) });
+  }
+
+  /** What the stopped speaker's finished turn was; anything else than going on, correcting, stop or cancel is "none". */
+  private resolveYield(sessionId: string, s: Session, speakerKey: string | undefined, outcome: Extract<ContinueEvent, { phase: 'outcome' }>['outcome']): void {
+    const pending = speakerKey ? s.yields?.get(speakerKey) : undefined;
+    if (!pending || !speakerKey) return;
+    s.yields!.delete(speakerKey);
+    s.liveSince?.delete(speakerKey);
+    this.onContinue?.(sessionId, { phase: 'outcome', id: pending.questionId, speakerKey, outcome, ms: Math.max(0, this.now() - pending.at) });
   }
 
   /** The continued request is answered once: a short "okay" first, so the asker knows she heard the rest. */
@@ -1878,6 +1916,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
     let wholeRequest: string | undefined;
     // NOGITA_CONTINUE_REQUEST: the open request these words continue; its writes are not made again.
     let continued: Question | undefined;
+    let corrected = false;
     const hebrewCommand = this.continueRequest ? hebrewVoiceCommand(current) : undefined;
     if (s.floor && this.dependencies.agent && !directlyAddressesNogita(current) && !isCancelCommand(current) && !isStopCommand(current) &&
         !isBackchannel(current) && !(this.continueRequest && (hebrewCommand || isListeningNoise(current))) &&
@@ -1890,7 +1929,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
       const started = s.questions.filter(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id &&
         this.now() - q.askedAt < (correction || this.continueRequest ? 60_000 : 8_000)).at(-1);
       if (started) {
-        if (this.continueRequest) continued = started;
+        if (this.continueRequest) { continued = started; corrected = correction; }
         started.abort.abort();
         this.clearQuestionProgress(started);
         s.floor.drop(started.id);
@@ -1920,6 +1959,10 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
       const compoundStop = splitLeadingStop(voiceText);
       const command = this.handleVoiceCommand(sessionId, s, utterance.actor.id,
         hebrewCommand === 'stop' ? 'stop' : hebrewCommand === 'cancel' ? 'never mind' : compoundStop?.stop ?? voiceText, directlyAddressed);
+      const said = compoundStop?.stop ?? voiceText;
+      this.resolveYield(sessionId, s, context.speakerKey, continued ? (corrected ? 'corrected' : 'continued')
+        : hebrewCommand === 'stop' || isStopCommand(said) ? 'stopped'
+          : hebrewCommand === 'cancel' || isCancelCommand(said) ? 'cancelled' : 'none');
       if (context.speakerKey && !context.turnEnded) s.floor.noteTalking(context.speakerKey, true);
       if (command && compoundStop?.remainder) {
         current = compoundStop.remainder;

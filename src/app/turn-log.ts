@@ -32,6 +32,13 @@ export type TurnLogEvent =
   | { type: 'audio_pause'; id?: number; playbackId?: number; latencyMs: number; playedMs: number }
   | { type: 'audio_resume'; id?: number; playbackId?: number; cause: 'backchannel' | 'quiet' | 'timeout'; pausedMs: number }
   | { type: 'interrupt'; cause: string; latencyMs?: number; playedMs: number; id?: number; playbackId?: number }
+  /**
+   * NOGITA_CONTINUE_REQUEST (P10-3): she stopped because the asker went on (`yield`: ms from their first live words in
+   * the answer to the stop), then what their finished turn was (`outcome`; "none" = a false interruption). No words;
+   * `speaker` is the meeting-scoped member hash.
+   */
+  | { type: 'continue'; phase: 'yield'; id: number; speaker: string; silenceMs: number }
+  | { type: 'continue'; phase: 'outcome'; id: number; speaker: string; outcome: string; ms: number }
   | { type: 'ui'; state: string; status: string; open: number }
   | { type: 'stale_question'; id: number }
   | { type: 'mission'; id: string; status: string; activity?: string }
