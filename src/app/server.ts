@@ -7,6 +7,7 @@ import { RecallMeeting } from '../adapters/recall.ts';
 import { AttendeeMeeting } from '../adapters/attendee.ts';
 import { SlackThreadMeeting, verifySlackSignature } from '../adapters/slack.ts';
 import { createDependencies, guardProviders, loadDotEnv, missionStatus, pendingApprovals, providerBreakers, shortSpokenResults, taskFromTopic, noisyTaskRequests, offerApproval, batchTasks, strictSpeechGuard, commentRetryGuard, writeIntent, listenFirst, speakWhenAsked, continueRequest, roomAware, meetingProfile, meetingRecap, followUpOn, designReview, retro, whatsLeftDirect, researchFeatures, roomNoiseGuard, swallowedQuestion, twoSpeed } from './config.ts';
+import { continueOnInterim } from './continue-barge-in.ts';
 import { parseSlackRequest, type SlackEnvelope } from './slack-event.ts';
 import { bindSlackMissionHandoff, dispatchSlackMissionReply, isMissionDecision, registerSlackEventHandlers } from './slack-socket-events.ts';
 import { roomActorId, parseAttendeeBotLog, parseAttendeeEnvelope, parseAttendeeLifecycleEvent, parseAttendeeParticipantEvent, parseAttendeeTranscript, verifyAttendeeWebhookSignature } from './attendee-webhook.ts';
@@ -390,6 +391,7 @@ async function leaveMeeting(sessionId: string, { goodbye }: { goodbye: boolean }
 }
 
 let realtimeAudio: AttendeeRealtimeAudioHub | undefined;
+const yieldOnInterim = continueOnInterim(nogita, () => realtimeAudio);
 if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API_KEY && env.ATTENDEE_WEBHOOK_SECRET) {
   try { realtimeAudio = new AttendeeRealtimeAudioHub({
       baseUrl: env.ATTENDEE_AUDIO_WEBSOCKET_URL,
@@ -433,7 +435,7 @@ if (realtimeAudioEnabled && env.ATTENDEE_AUDIO_WEBSOCKET_URL && env.DEEPGRAM_API
       onInterim: (sessionId, participantUuid, text) => {
         if (directlyAddressesNogita(text)) presence.addressed(sessionId, participantUuid);
         // NOGITA_CONTINUE_REQUEST: the person she is answering goes on talking; stop now, not at the end of their turn.
-        if (nogita.yieldsTo(sessionId, participantUuid, text)) realtimeAudio?.interruptSpeech(sessionId, 'voice');
+        yieldOnInterim(sessionId, participantUuid, text);
       },
       onInputLevel: (sessionId, rms) => presence.inputLevel(sessionId, rms),
       onOutputAudio: (sessionId, pcm) => presence.outputAudio(sessionId, pcm),

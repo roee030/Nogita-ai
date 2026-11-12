@@ -8,6 +8,12 @@ import { SpeechInterruptedError } from '../src/core/contracts.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
 import { continueRequest } from '../src/app/config.ts';
+import { once, EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { WebSocket } from 'ws';
+import { AttendeeRealtimeAudioHub, createAttendeeAudioSocketUrl } from '../src/app/attendee-realtime-audio.ts';
+import { continueOnInterim } from '../src/app/continue-barge-in.ts';
 
 const roee = { id: 'roee', displayName: 'Roee', verified: true };
 const dana = { id: 'dana', displayName: 'Dana', verified: true };
@@ -233,6 +239,29 @@ test('an interruption never repeats a write: the task made before it is found do
   assert.match(model.asked.at(-1)!, /Already done for this request; do not do it again: DEMO-1/);
 });
 
+test('a continuation that adds task B creates B once and never creates task A again', async () => {
+  // The continued run follows the "already done" note and asks only for B: index-based keys used to hand it A's receipt.
+  for (const repeatsA of [false, true]) {
+    const a = { name: 'create_task', input: { title: 'Release notes', description: 'Write the release notes.' } };
+    const aAgain = { name: 'create_task', input: { title: 'release notes.', description: 'Write the release notes.' } };
+    const b = { name: 'create_task', input: { title: 'Changelog', description: 'Update the changelog.' } };
+    const model = new Model(said => /changelog/.test(said)
+      ? [{ tools: repeatsA ? [aAgain, b] : [b] }, { text: 'Both are on the board.' }]
+      : [{ tools: [a] }, { text: 'Created DEMO-1, the release notes task. It is on the board now for anyone to pick up.' }]);
+    const f = fixture(model, true);
+    f.meeting.speakMs = 400;
+    await f.engine.startSession('s', f.meeting);
+    const first = say(f, 'Nogita, create a task for the release notes.', '1');
+    await until(() => f.meeting.playing);
+    f.meeting.interruptSpeech();
+    f.meeting.speakMs = 10;
+    await say(f, 'and another task for the changelog', '2');
+    await first;
+    await until(() => f.meeting.heard.includes('Both are on the board.'));
+    assert.deepEqual(f.board.tasks.map(task => task.title), ['Release notes', 'Changelog'], repeatsA ? 'A repeated' : 'B only');
+  }
+});
+
 test('the speaker\'s delivery choice holds for the combined answer: "say it aloud, don\'t send it in the chat"', async () => {
   const full = 'Four pull requests merged in the last three days, all on main. The first fixed the recap channel boundary. ' +
     'The second made the first speaker wait for the call to report who is there. The third added the meeting type in shadow mode.';
@@ -251,4 +280,74 @@ test('the speaker\'s delivery choice holds for the combined answer: "say it alou
   await until(() => meeting.heard.join(' ').includes('shadow mode'));
   assert.equal(meeting.heard[0], CONTINUE_ACK);
   assert.doesNotMatch(meeting.heard.join(' '), /in the chat/);
+});
+
+/**
+ * The live path, as the server wires it: the audio hub's interim hook goes through continueOnInterim to the engine, and a
+ * yes stops the hub's own playback. The speaker's audio is silent (echo cancellation), so the level gate never opens.
+ */
+async function interimDuringAnswer(on: boolean, participant: string, hypothesis: string): Promise<string[]> {
+  class Fake extends EventEmitter {
+    readyState: number = WebSocket.CONNECTING;
+    send(): void {}
+    close(): void { this.readyState = WebSocket.CLOSED; this.emit('close'); }
+  }
+  const model = new Model(() => [{ text: LONG }]);
+  const f = fixture(model, on);
+  f.meeting.speakMs = 2_000;
+  await f.engine.startSession('m', f.meeting);
+  const stt = new Map<string, Fake>();
+  let tts!: Fake;
+  const interrupts: string[] = [];
+  let hub!: AttendeeRealtimeAudioHub;
+  const onInterim = continueOnInterim(f.engine, () => hub);
+  hub = new AttendeeRealtimeAudioHub({ baseUrl: 'wss://nogita.example/webhooks/attendee/audio', signingSecret: 's',
+    deepgramApiKey: 'k', sttMode: 'flux-english', turnTakingV2: true, onTranscript: () => {}, onInterim,
+    onInterrupt: (_s, event) => interrupts.push(event.cause),
+    createWebSocket: url => {
+      const socket = new Fake();
+      if (url.includes('/speak')) tts = socket;
+      queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit('open'); });
+      if (url.includes('/listen')) queueMicrotask(() => stt.set(stt.has('roee') ? 'dana' : 'roee', socket));
+      return socket as unknown as WebSocket;
+    } });
+  hub.register('m');
+  hub.bindBot('m', 'bot_m');
+  const server = createServer();
+  server.on('upgrade', (request, socket, head) => { hub.handleUpgrade(request, socket, head); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = new URL(createAttendeeAudioSocketUrl('wss://nogita.example/webhooks/attendee/audio', 's', 'm'));
+  url.protocol = 'ws:';
+  url.host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const client = new WebSocket(url);
+  await once(client, 'open');
+  const silence = Buffer.from(new Int16Array(1_600).buffer).toString('base64');
+  try {
+    for (const uuid of ['roee', 'dana']) {
+      client.send(JSON.stringify({ bot_id: 'bot_m', trigger: 'realtime_audio.per_participant', data: { participant_uuid: uuid, sample_rate: 16000, chunk: silence } }));
+      await until(() => stt.has(uuid));
+    }
+    // Roee asked; the engine's answer is playing, and the hub is playing its audio.
+    void f.engine.onUtterance('m', { text: 'Nogita, what merged this week?', eventId: '1', actor: roee }, { speakerKey: 'roee', turnEnded: true });
+    await until(() => f.meeting.playing);
+    void hub.speak('m', LONG).catch(() => undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    tts.emit('message', Buffer.alloc(32_000, 1), true);
+    await sleep(20);
+    stt.get(participant)!.emit('message', Buffer.from(JSON.stringify({ type: 'TurnInfo', event: 'Update', transcript: hypothesis })), false);
+    await sleep(20);
+    return interrupts;
+  } finally {
+    f.meeting.interruptSpeech();
+    await f.engine.endSession('m').catch(() => undefined);
+    client.terminate(); hub.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
+test('live audio: the asker\'s first live words stop her playback; "okay", another speaker and the flag off do not', async () => {
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'and also which tests failed'), ['voice']);
+  assert.deepEqual(await interimDuringAnswer(true, 'roee', 'okay'), [], 'a backchannel');
+  assert.deepEqual(await interimDuringAnswer(true, 'dana', 'and also which tests failed'), [], 'another speaker');
+  assert.deepEqual(await interimDuringAnswer(false, 'roee', 'and also which tests failed'), [], 'flag off');
 });

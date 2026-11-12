@@ -114,6 +114,8 @@ interface Question {
   speakerKey?: string;
   /** NOGITA_CONTINUE_REQUEST: the event whose write keys this question uses; a continued request keeps the first one. */
   writeEventId?: string;
+  /** NOGITA_CONTINUE_REQUEST: this run answers the combined request; its writes are told apart by title. */
+  continuation?: boolean;
 }
 export interface QuestionEvent {
   id: number; status: QuestionStatus; speaker: string; request: string; topic?: string; detail?: string;
@@ -512,6 +514,7 @@ export class NogitaEngine {
   private readonly sessions = new Map<string, Session>();
   private readonly startingSessions = new Set<string>();
   private readonly completed: Map<string, ActionReceipt>;
+  private readonly writtenTitles = new Map<string, string>();
   private readonly progressDelayMs: number;
   private readonly agentProgressDelayMs: number;
   private readonly handRaiseFallback: 'none' | 'chat';
@@ -782,6 +785,9 @@ export class NogitaEngine {
       session.eventIds.clear();
       for (const key of this.completed.keys()) {
         if (key.startsWith(`${sessionId}:`)) this.completed.delete(key);
+      }
+      for (const key of this.writtenTitles.keys()) {
+        if (key.startsWith(`${sessionId}:`)) this.writtenTitles.delete(key);
       }
     })();
     session.endingPromise = ending;
@@ -1067,6 +1073,7 @@ export class NogitaEngine {
   /** The continued request is answered once: a short "okay" first, so the asker knows she heard the rest. */
   private acknowledgeContinued(s: Session, q: Question, continued: Question): void {
     q.writeEventId = continued.writeEventId;
+    q.continuation = true;
     q.queuedSpeech = true;
     void s.floor?.say(q.id, CONTINUE_ACK, { leadIn: true });
   }
@@ -1210,6 +1217,7 @@ export class NogitaEngine {
       actor: utterance.actor, request: writeScope, sessionId, eventId: utterance.eventId, transcript: () => transcript,
       policy: this.dependencies.policy, code: this.dependencies.code, board: this.dependencies.board,
       chat: this.dependencies.chat, drafts: this.dependencies.drafts, people: this.dependencies.people, completed: this.completed,
+      writtenTitles: this.writtenTitles, ...(q?.continuation ? { continuation: true } : {}),
       actionItems: () => s.items.list(), memory: this.dependencies.memory, team: this.team(), now: this.now,
       ciStatus: this.research.ciStatus, missionStatus: this.missionStatus, taskFromTopic: this.taskFromTopic,
       noisyTaskRequests: this.noisyTaskRequests,

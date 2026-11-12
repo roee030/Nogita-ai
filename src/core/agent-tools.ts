@@ -38,6 +38,14 @@ export interface ToolboxContext {
   onReceipt: (receipt: ActionReceipt) => Promise<void>;
   /** Idempotency memory shared across retries of the same event. */
   completed: Map<string, ActionReceipt>;
+  /** The normalized title each task or draft write key was made with, so a continued request can tell one from another. */
+  writtenTitles?: Map<string, string>;
+  /**
+   * NOGITA_CONTINUE_REQUEST: this run answers a request the same speaker went on with, under the first request's event.
+   * A task or draft with the title of one already made for it is that write, found done; any other is a new write with
+   * its own key, never the receipt of an earlier one.
+   */
+  continuation?: boolean;
   recordAction?: (action: ExternalAction) => void;
   /** Puts a card on the meeting's shared screen (undefined clears it). Voice meetings with a presence screen only. */
   show?: (card: ScreenCard | undefined) => void;
@@ -95,6 +103,11 @@ export interface WriteAudit {
   ok: boolean;
   receipt?: ActionReceipt;
   error?: string;
+}
+
+/** A title as words only: "Release notes." and "release notes" are the same write. */
+function titleKey(title: string): string {
+  return title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 type WritePorts = { board: BoardPort; chat?: ChatPort; drafts?: PullRequestPort };
@@ -366,6 +379,20 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
     ? `${refusal} This was Nogita's own check: nothing reached the board, and the board refused nothing. Do not try again in this request, and do not mention a tool or a system.`
     : refusal;
   let taskIndex = 0;
+  /**
+   * The idempotency key of the n-th task or draft of this event. In a continued request (P9-26) a title already written
+   * for the event reuses that write's key, and a new title takes the next index nobody used, so "task A, and also B"
+   * after A was made finds A done and still makes B.
+   */
+  const writeKey = (kind: 'task' | 'pr', title: string, next: () => number): string => {
+    const prefix = `${context.sessionId}:${context.eventId}:${kind}:`;
+    if (!context.continuation) return `${prefix}${next()}`;
+    const same = [...context.completed.keys()].find(key => key.startsWith(prefix) && context.writtenTitles?.get(key) === titleKey(title));
+    if (same) return same;
+    let key: string;
+    do key = `${prefix}${next()}`; while (context.completed.has(key));
+    return key;
+  };
   const commentsOn = new Map<string, number>();
   /** The refusal for a write nobody asked for, or undefined when it was asked: the phrases first, then the judge. */
   const notAsked = async (kind: WriteKind, phrased: boolean, proposed: string, refusal: string): Promise<string | undefined> => {
@@ -622,12 +649,13 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       }
       const fullDescription = withMeetingQuotes(description, lines);
       // Index-based so a retried event maps its n-th task to the same Jira issue even if wording changes.
-      const requestId = `${context.sessionId}:${context.eventId}:task:${++taskIndex}`;
+      const requestId = writeKey('task', title, () => ++taskIndex);
       let receipt = context.completed.get(requestId);
       const fresh = !receipt;
       if (!receipt) {
         receipt = await board.createTask({ title, description: fullDescription, assigneeId, requestId, ...(target ? { board: target } : {}) });
         context.completed.set(requestId, receipt);
+        context.writtenTitles?.set(requestId, titleKey(title));
         context.recordAction?.('create_task');
         report.receipts.push(receipt);
         report.wroteSomething = true;
@@ -811,11 +839,12 @@ export function buildToolbox(context: ToolboxContext): { toolbox: AgentToolbox; 
       const description = str(input.description, 6000);
       if (!title || !description) return { content: 'title and description are required', isError: true };
       writes++;
-      const requestId = `${context.sessionId}:${context.eventId}:pr:${++prIndex}`;
+      const requestId = writeKey('pr', title, () => ++prIndex);
       let receipt = context.completed.get(requestId);
       if (!receipt) {
         receipt = await drafts.openDraft({ title, description, requestId });
         context.completed.set(requestId, receipt);
+        context.writtenTitles?.set(requestId, titleKey(title));
         context.recordAction?.('draft_pr');
         report.receipts.push(receipt);
         report.wroteSomething = true;
