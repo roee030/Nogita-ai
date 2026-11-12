@@ -23,7 +23,7 @@ import { playScenario, synthesizeTurn } from './conversation.ts';
 import { createNoise, type NoiseKind } from './noise.ts';
 import { summarize, writeReport, type ScenarioResult } from './report.ts';
 import { VoiceRig, parseWarmupMode } from './rig.ts';
-import { BACKGROUND_LINES, BACKGROUND_VOICES, SCENARIOS, type Scenario } from './scenarios.ts';
+import { BACKGROUND_LINES, BACKGROUND_VOICES, MEETING_TYPE_SCENARIOS, SCENARIOS, type Scenario } from './scenarios.ts';
 import { judge, scoreTurn, stats } from './score.ts';
 import { deepgramSynthesizer } from './tts.ts';
 
@@ -38,9 +38,13 @@ const { values } = parseArgs({ options: {
   repeat: { type: 'string', default: '1' }, 'wide-incomplete': { type: 'boolean', default: false }, 'listen-first': { type: 'boolean', default: false }, 'hold-pause-for-words': { type: 'boolean', default: false },
 } });
 
+// The meeting-type scenarios (P9-15) run only when named with --scenario, never in a default run.
+const CATALOG = [...SCENARIOS, ...MEETING_TYPE_SCENARIOS];
+
 if (values.list) {
-  for (const scenario of SCENARIOS) {
-    console.log(`${scenario.name.padEnd(16)} ${scenario.title} — ${scenario.turns.length} turns`);
+  for (const scenario of CATALOG) {
+    const named = MEETING_TYPE_SCENARIOS.includes(scenario) ? ' (only with --scenario)' : '';
+    console.log(`${scenario.name.padEnd(16)} ${scenario.title} — ${scenario.turns.length} turns${named}`);
   }
   process.exit(0);
 }
@@ -56,11 +60,11 @@ if (!authorizedIds.length) throw new Error('AUTHORIZED_ACTOR_IDS must name at le
 // Each person needs their own identity (the engine tracks who asked what). The first authorized participant
 // speaks as the configured owner; the others get lab identities that the lab's policy also authorizes.
 const actorIdFor = (participantId: string, index: number) => index === 0 ? authorizedIds[0]! : `lab:${participantId}`;
-const labIds = new Set([...authorizedIds, ...SCENARIOS.flatMap(s => s.participants.map((p, i) => actorIdFor(p.id, i)))]);
+const labIds = new Set([...authorizedIds, ...CATALOG.flatMap(s => s.participants.map((p, i) => actorIdFor(p.id, i)))]);
 dependencies.policy = new AllowlistPolicy(labIds);
 
 const wanted = values.scenario?.split(',').map(s => s.trim()).filter(Boolean);
-let scenarios: Scenario[] = wanted ? SCENARIOS.filter(s => wanted.includes(s.name)) : SCENARIOS;
+let scenarios: Scenario[] = wanted ? CATALOG.filter(s => wanted.includes(s.name)) : SCENARIOS;
 if (wanted && scenarios.length !== wanted.length) throw new Error(`unknown scenario; try --list`);
 if (values.noise || values.snr) {
   scenarios = scenarios.map(s => ({ ...s, noise: {

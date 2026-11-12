@@ -618,6 +618,85 @@ SCENARIOS.push(
   },
 );
 
+/**
+ * P9-15 (partial): one scenario per meeting type that had none in the voice lab. Not in SCENARIOS, so a plain
+ * `npm run voice-lab` does not run (or pay for) them; run one by name with `--scenario planning-sprint` once a paid run is
+ * approved. Defined and checked offline only (tests/eval-matrix.test.ts); none has been run against Deepgram yet.
+ *
+ * Language limitation: the lab speaks with English Deepgram voices, so these are English. Hebrew and Hebrew with
+ * English terms are covered only at transcript level (tools/eval-matrix/cases.ts), never as audio.
+ */
+const yossi: Participant = { id: 'yossi', name: 'Yossi', voice: 'aura-2-andromeda-en', authorized: true, mic: 'push' };
+
+export const MEETING_TYPE_SCENARIOS: Scenario[] = [
+  {
+    name: 'planning-sprint', title: 'Sprint planning with four people: a lookup, a maybe, and one task asked for', noise: { kind: 'office', snrDb: 25 },
+    participants: [roee, dana, avi, yossi],
+    turns: [
+      { speaker: 'roee', say: 'Okay, sprint planning. We have about thirty points this time.', expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'The search index is around eight points.', gapMs: 400, expect: { respond: 'silent' } },
+      { speaker: 'yossi', say: 'Maybe we also take the export work, but let us not open anything for it yet.', gapMs: 400,
+        expect: { respond: 'silent', write: 'none', note: 'A maybe, and an explicit "not yet": no task.' } },
+      { speaker: 'avi', say: 'Nogita, how many tasks are in the to do column right now?',
+        expect: { respond: 'speak', write: 'none', mentions: [['task', 'to do', 'kan']], tools: ['search_tasks'] } },
+      { speaker: 'roee', say: 'Nogita, open a task for the new search index.',
+        expect: { respond: 'speak', write: 'task', writeIncludes: ['search'] } },
+    ],
+  },
+  {
+    name: 'incident-live', title: 'A live incident: people talk over each other, one lookup, one task asked for', noise: { kind: 'office', snrDb: 20 },
+    participants: [roee, dana, avi],
+    turns: [
+      { speaker: 'dana', say: 'Production is returning errors since ten. The error rate is around forty percent.', expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'I am looking at the logs now.', overlapPreviousMs: 1200, expect: { respond: 'silent' } },
+      { speaker: 'roee', say: 'Nogita, what merged to main in the last day?',
+        expect: { respond: 'speak', write: 'none', mentions: [['commit', 'merge', 'pull', 'main', 'change']] } },
+      { speaker: 'dana', say: 'Rolling back the last deploy now.',
+        expect: { respond: 'silent', write: 'none', note: 'People acting on the incident is not a request for her to write anything.' } },
+      { speaker: 'roee', say: 'Nogita, open a task to write the incident report for the error spike.',
+        expect: { respond: 'speak', write: 'task', writeIncludes: ['incident'] } },
+    ],
+  },
+  {
+    name: 'one-to-one-checkin', title: 'A one-to-one about workload: nothing written unless asked', noise: { kind: 'quiet', snrDb: 60 },
+    participants: [roee, dana],
+    turns: [
+      { speaker: 'roee', say: 'How are you doing this week, generally?', expect: { respond: 'silent' } },
+      { speaker: 'dana', say: 'A bit tired. The on-call was hard. Could I drop it for a month?', gapMs: 400,
+        expect: { respond: 'silent', write: 'none', note: 'A personal request is not a task.' } },
+      { speaker: 'roee', say: 'I will try to see what I can do.', gapMs: 400,
+        expect: { respond: 'silent', write: 'none', note: '"I will try" is not a commitment and opens nothing.' } },
+      { speaker: 'dana', say: 'Nogita, what tasks are assigned to me right now?',
+        expect: { respond: 'speak', write: 'none', mentions: [['task', 'assigned', 'kan', 'nothing', 'no ']] } },
+    ],
+  },
+  {
+    name: 'design-review-options', title: 'A design review: options weighed, a code question, a proposal that is not a decision', noise: { kind: 'keyboard', snrDb: 25 },
+    participants: [roee, dana, avi],
+    turns: [
+      { speaker: 'dana', say: 'The question is where the task status lives. On the row is simple, but we lose the history.', expect: { respond: 'silent' } },
+      { speaker: 'avi', say: 'An events table gives us history, and costs a join on every read.', gapMs: 400, expect: { respond: 'silent' } },
+      { speaker: 'roee', say: 'Nogita, where in our code do we keep the status of a task?',
+        expect: { respond: 'speak', write: 'none', mentions: [['status', 'task']] } },
+      { speaker: 'dana', say: 'Maybe we go with the events table. Let us think about it until Thursday.', gapMs: 400,
+        expect: { respond: 'silent', write: 'none', note: 'A proposal, not a decision: nothing recorded as decided, nothing opened.' } },
+    ],
+  },
+  {
+    name: 'retro-backchannel', title: 'A retro with four people: an "mm-hm" over her answer, and a suggestion nobody owns', noise: { kind: 'office', snrDb: 25 },
+    participants: [roee, dana, avi, yossi],
+    turns: [
+      { speaker: 'roee', say: 'So, what went well this sprint and what did not?', expect: { respond: 'silent' } },
+      { speaker: 'yossi', say: 'Nogita, what did we close in the last two weeks?',
+        expect: { respond: 'speak', write: 'none', mentions: [['task', 'done', 'closed', 'kan', 'nothing']] } },
+      { speaker: 'dana', say: 'Mm-hm.', bargeIn: { afterAudioMs: 1200, kind: 'backchannel' },
+        expect: { respond: 'any', note: 'A backchannel over her answer must not stop it.' } },
+      { speaker: 'avi', say: 'Reviews were too slow. Someone should probably look at the flaky tests.', gapMs: 600,
+        expect: { respond: 'silent', write: 'none', note: 'Nobody took it: no owner, no task.' } },
+    ],
+  },
+];
+
 /** Unrelated chatter used to build office and cafe babble. */
 export const BACKGROUND_LINES = [
   'Did anyone see where I left the charger?',

@@ -26,6 +26,7 @@
     "scorecard": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/scorecard/run.ts",
     "board": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/board.ts",
     "eval": "node --disable-warning=ExperimentalWarning --experimental-transform-types tests/eval/run.ts",
+    "eval-matrix": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/eval-matrix/run.ts",
     "research-bench": "node --disable-warning=ExperimentalWarning --experimental-transform-types tools/research-bench/run.ts"
   },
   "devDependencies": {
