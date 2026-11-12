@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
-import { CONTINUE_ACK, NogitaEngine, hebrewVoiceCommand, looksLikeCorrection, looksLikeHebrewCorrection, type QuestionEvent } from '../src/core/engine.ts';
+import { CONTINUE_ACK, NogitaEngine, hebrewVoiceCommand, isCancelCommand, isListeningNoise, isStopCommand, looksLikeCorrection, looksLikeHebrewCorrection, type QuestionEvent } from '../src/core/engine.ts';
 import { SpeechInterruptedError } from '../src/core/contracts.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
@@ -301,6 +301,87 @@ test('a continuation that adds task B creates B once and never creates task A ag
     await first;
     await until(() => f.meeting.heard.includes('Both are on the board.'));
     assert.deepEqual(f.board.tasks.map(task => task.title), ['Release notes', 'Changelog'], repeatsA ? 'A repeated' : 'B only');
+  }
+});
+
+// P10-4: Hebrew and mixed Hebrew-English, synthetic input only.
+test('mixed stop and cancel are whole commands; a mixed sentence that only contains the word is not', () => {
+  for (const text of ['Nogita, עצרי', 'עצרי please', 'רגע, stop', 'okay די', 'נוגיטה stop', 'stop, די', 'wait, מספיק']) {
+    assert.equal(hebrewVoiceCommand(text), 'stop', text);
+  }
+  for (const text of ['never mind, עזבי', 'בטלי please', 'forget it, לא משנה', 'Nogita, תבטלי', 'cancel that, עזבי']) {
+    assert.equal(hebrewVoiceCommand(text), 'cancel', text);
+  }
+  for (const text of ['stop את הדיפלוי', 'תעצרי את ה-build', 'never mind the tests, תבדקי את הלוגים', 'די טוב, and also the tests',
+    'stop', 'never mind', 'okay stop']) {
+    assert.equal(hebrewVoiceCommand(text), undefined, text);
+  }
+});
+
+test('Hebrew and mixed backchannels are listening noise; a backchannel that goes on is not', () => {
+  for (const text of ['כן', 'כן כן', 'אוקיי', 'יאפ', 'okay כן', 'אהה אוקיי', 'yeah בסדר', 'סבבה', 'ok, יופי']) {
+    assert.equal(isListeningNoise(text), true, text);
+  }
+  for (const text of ['כן, וגם הטסטים', 'okay אז מה עם הטסטים', 'יאפ, ומה עם ה-CI?', 'and also הטסטים']) {
+    assert.equal(isListeningNoise(text), false, text);
+  }
+});
+
+test('English stop, cancel and correction checks are unchanged by the Hebrew ones', () => {
+  for (const text of ['stop', 'okay stop', 'wait wait', 'enough']) assert.equal(isStopCommand(text), true, text);
+  for (const text of ['never mind', 'forget it', 'cancel that']) assert.equal(isCancelCommand(text), true, text);
+  for (const text of ['no, I meant the mobile app', 'no, I meant הדיפלוי', 'actually, I\'m asking about staging']) assert.equal(looksLikeCorrection(text), true, text);
+  for (const text of ['stop the deploy', 'what are the open tasks']) assert.equal(isStopCommand(text), false, text);
+});
+
+for (const [name, words, expected] of [
+  ['a Hebrew continuation', 'וגם תבדקי את הטסטים', 'week? וגם תבדקי את הטסטים'],
+  ['a mixed continuation', 'and also הטסטים שנכשלו', 'week? and also הטסטים שנכשלו'],
+  ['a mixed correction', 'no, I meant הדיפלוי', 'then corrected: "no, I meant הדיפלוי"'],
+  ['a Hebrew correction with סליחה', 'סליחה, התכוונתי ל-staging', 'then corrected: "סליחה, התכוונתי ל-staging"'],
+] as const) {
+  test(`${name} joins the open request once: "${words}"`, async () => {
+    const model = new Model(said => said.includes(words) ? [{ text: 'Here is the full answer.' }] : [{ text: LONG, delayMs: 300 }]);
+    const f = fixture(model, true);
+    await f.engine.startSession('s', f.meeting);
+    const first = say(f, 'Nogita, what merged this week?', '1');
+    await sleep(30);
+    await say(f, words, '2');
+    await first;
+    await until(() => f.meeting.heard.length >= 2);
+    assert.deepEqual(f.meeting.heard, [CONTINUE_ACK, 'Here is the full answer.']);
+    assert.ok(model.asked.at(-1)!.includes(expected), model.asked.at(-1));
+  });
+}
+
+test('a mixed stop ends the answer and is never answered; mixed backchannels change nothing', async () => {
+  for (const stop of ['רגע, stop', 'Nogita, עצרי', 'never mind, עזבי']) {
+    const model = new Model(routes);
+    const f = fixture(model, true);
+    f.meeting.speakMs = 400;
+    await f.engine.startSession('s', f.meeting);
+    const first = say(f, 'Nogita, what did we merge in the last three days?', '1');
+    await until(() => f.meeting.playing);
+    assert.equal(f.engine.yieldsTo('s', 'roee', stop), true, stop);
+    f.meeting.interruptSpeech();
+    await say(f, stop, '2');
+    await first;
+    await sleep(100);
+    assert.equal(model.asked.length, 1, `${stop}: nothing answered again`);
+    assert.ok(!f.meeting.heard.includes(CONTINUE_ACK), stop);
+  }
+  for (const backchannel of ['יאפ', 'okay כן', 'ok, יופי']) {
+    const model = new Model(routes);
+    const f = fixture(model, true);
+    f.meeting.speakMs = 60;
+    await f.engine.startSession('s', f.meeting);
+    const first = say(f, 'Nogita, what did we merge in the last three days?', '1');
+    await until(() => f.meeting.playing);
+    assert.equal(f.engine.yieldsTo('s', 'roee', backchannel), false, backchannel);
+    await say(f, backchannel, '2');
+    await first;
+    assert.equal(f.meeting.heard.join(' '), LONG, backchannel);
+    assert.equal(model.asked.length, 1, backchannel);
   }
 });
 
