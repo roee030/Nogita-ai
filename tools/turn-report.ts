@@ -19,6 +19,8 @@ export interface SessionReport {
   finals: Record<string, number>;
   firstAudioMs: number[];
   interruptMs: number[];
+  /** NOGITA_CONTINUE_REQUEST (P10-3): ms from the asker's first live words to each stop, and what each stop turned out to be. */
+  continueStops: { silenceMs: number[]; outcomes: Record<string, number> };
   commandStops: number;
   /** v2: how often output paused, and each pause that ended with her going on rather than stopping. */
   pauses: number;
@@ -53,7 +55,7 @@ export function percentile(values: readonly number[], p: number): number | undef
 
 export function analyse(name: string, lines: readonly Line[]): SessionReport {
   const events = [...lines].sort((a, b) => a.at - b.at);
-  const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], commandStops: 0, pauses: 0, resumes: [],
+  const report: SessionReport = { name, minutes: 0, questions: 0, finals: {}, firstAudioMs: [], interruptMs: [], continueStops: { silenceMs: [], outcomes: {} }, commandStops: 0, pauses: 0, resumes: [],
     missed: [], unnamedActivations: [], staleSpeech: 0, stuckScreens: [], lowConfidence: 0, heard: 0, longAnswers: 0,
     firstTextMs: [], ttsFirstAudioMs: [], staleAudio: 0, eotSinceVoiceMs: [], speculation: { started: 0, adopted: 0, rolledBack: 0, unresolved: 0 },
     traces: { turns: 0, steps: 0, truncated: 0, turnMs: [], stepMs: [], models: {}, tools: {}, stops: {}, errors: {},
@@ -147,6 +149,12 @@ export function analyse(name: string, lines: readonly Line[]): SessionReport {
           if (typeof event.latencyMs === 'number' &&
               !(typeof event.playbackId === 'number' && pausedPlaybacks.has(event.playbackId))) report.interruptMs.push(event.latencyMs);
         } else report.commandStops++;
+        break;
+      case 'continue':
+        if (event.phase === 'yield' && typeof event.silenceMs === 'number') report.continueStops.silenceMs.push(event.silenceMs);
+        if (event.phase === 'outcome' && typeof event.outcome === 'string') {
+          report.continueStops.outcomes[event.outcome] = (report.continueStops.outcomes[event.outcome] ?? 0) + 1;
+        }
         break;
       case 'audio_resume':
         if (typeof event.pausedMs === 'number') report.resumes.push({ cause: String(event.cause), pausedMs: event.pausedMs });
@@ -328,6 +336,17 @@ export function render(reports: readonly SessionReport[]): string {
       const of = (cause: string) => r.resumes.filter(resume => resume.cause === cause);
       const quiet = of('quiet').map(resume => resume.pausedMs);
       lines.push(`| ${r.name} | ${fmt(percentile(r.interruptMs, 95))} (${r.interruptMs.length}) | ${r.pauses} | ${quiet.length} | ${of('backchannel').length} | ${of('timeout').length} | ${fmt(percentile(quiet, 50))} / ${fmt(percentile(quiet, 90))} |`);
+    }
+    lines.push('');
+  }
+  if (reports.some(r => r.continueStops.silenceMs.length)) {
+    lines.push('## Continue-request stops (NOGITA_CONTINUE_REQUEST, P10-3)', '',
+      'Each time she stopped because the person she was answering went on talking. "To silence" runs from their first live words in that answer to the stop, server-side (what listeners hear may lag). "False" means their finished turn added, corrected, stopped and cancelled nothing. There is no pass mark here: any target is a proposal for Roee.', '',
+      '| Meeting | Stops | To silence p50 / p90 | Continued | Corrected | Stopped | Cancelled | False |', '|---|---|---|---|---|---|---|---|');
+    for (const r of reports) {
+      if (!r.continueStops.silenceMs.length) continue;
+      const of = (outcome: string) => r.continueStops.outcomes[outcome] ?? 0;
+      lines.push(`| ${r.name} | ${r.continueStops.silenceMs.length} | ${fmt(percentile(r.continueStops.silenceMs, 50))} / ${fmt(percentile(r.continueStops.silenceMs, 90))} | ${of('continued')} | ${of('corrected')} | ${of('stopped')} | ${of('cancelled')} | ${of('none')} |`);
     }
     lines.push('');
   }

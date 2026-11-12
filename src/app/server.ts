@@ -244,6 +244,9 @@ const nogita = new NogitaEngine({ ...dependencies, usage: sessionUsage, memory: 
     retro: retro(env),
     ...(env.NOGITA_RECAP_CHANNEL?.trim() ? { recapChannel: env.NOGITA_RECAP_CHANNEL.trim() } : {}),
     receipts: actionReceipts,
+    onContinue: (sessionId, event) => turnLog.record(sessionId, event.phase === 'yield'
+      ? { type: 'continue', phase: 'yield', id: event.id, speaker: turnLog.member(sessionId, event.speakerKey), silenceMs: event.silenceMs }
+      : { type: 'continue', phase: 'outcome', id: event.id, speaker: turnLog.member(sessionId, event.speakerKey), outcome: event.outcome, ms: event.ms }),
     onQuestion: (sessionId, event) => {
       presence.question(sessionId, event);
       turnLog.record(sessionId, { type: 'question', id: event.id, status: event.status, speaker: turnLog.person(event.speaker),
