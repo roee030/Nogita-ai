@@ -407,15 +407,28 @@ function isBackchannel(text: string): boolean {
   return /^(?:yeah|yes|yep|yup|ok(?:ay)?|right|sure|mm+(?:-?hmm)?|hmm+|uh[- ]?huh|got it|i see|cool|nice|great|exactly|true|go on)[.!,]?(?:\s+(?:yeah|ok(?:ay)?|right|sure))?[.!]?$/i.test(text.trim());
 }
 /** NOGITA_CONTINUE_REQUEST: Hebrew listening noises ("כן", "אוקיי", "בסדר") are not request text either. */
-function isListeningNoise(text: string): boolean {
-  const t = text.trim().replace(/[.!?,]+$/g, '').trim();
-  return isBackchannel(text) || /^(?:כן|אוקיי|אוקי|בסדר|נכון|יופי|סבבה|אהה|אה|ממ+)(?:\s+(?:כן|אוקיי|בסדר))?$/.test(t);
+/** Words that only show someone is listening, in Hebrew or English: "כן", "יאפ", "okay כן", "ok, יופי". */
+const LISTENING = new Set(['כן', 'אוקיי', 'אוקי', 'בסדר', 'נכון', 'יופי', 'סבבה', 'אהה', 'אה', 'יאפ', 'okay', 'ok', 'yeah', 'yes', 'yep',
+  'yup', 'right', 'sure', 'mhm', 'hmm']);
+export function isListeningNoise(text: string): boolean {
+  if (isBackchannel(text)) return true;
+  // Up to three such words and nothing else (P10-4); "כן, וגם הטסטים" goes on, so it is not noise.
+  const words = text.toLowerCase().replace(/[.!?,]+/g, ' ').split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every(word => LISTENING.has(word) || /^ממ+$/.test(word));
 }
-/** NOGITA_CONTINUE_REQUEST: "עצרי" stops her, "בטלי" drops the question, like "stop" and "never mind". */
+const HEBREW_STOP = String.raw`(?:עצרי|תעצרי|עצור|תעצור|די|מספיק|שקט|stop|enough)`;
+const HEBREW_CANCEL = String.raw`(?:(?:בטלי|תבטלי|בטל|תבטל|עזבי|לא משנה|תשכחי מזה)(?:\s+(?:את זה|זה))?|never ?mind|forget (?:it|that)|cancel (?:it|that)|scratch that)`;
+/**
+ * NOGITA_CONTINUE_REQUEST: "עצרי" stops her, "בטלי" drops the question, like "stop" and "never mind"; also mixed (P10-4):
+ * "רגע, stop", "Nogita, עצרי", "never mind, עזבי". Only a whole command, and only with Hebrew in it: plain English stays
+ * with isStopCommand and isCancelCommand, and "stop את הדיפלוי" is a request, not a command.
+ */
 export function hebrewVoiceCommand(text: string): 'stop' | 'cancel' | undefined {
-  const t = text.trim().replace(/[.!?,]+/g, ' ').replace(/(?:^|\s)(?:נוגיטה|בבקשה|רגע)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
-  if (/^(?:עצרי|תעצרי|עצור|תעצור|די|מספיק|שקט)$/.test(t)) return 'stop';
-  if (/^(?:בטלי|תבטלי|בטל|תבטל|עזבי|לא משנה|תשכחי מזה)(?:\s+(?:את זה|זה))?$/.test(t)) return 'cancel';
+  if (!/\p{Script=Hebrew}/u.test(text)) return undefined;
+  const t = text.trim().toLowerCase().replace(/[.!?,]+/g, ' ')
+    .replace(/(?:^|\s)(?:נוגיטה|בבקשה|רגע|nogita|please|wait|okay|ok|hey)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (new RegExp(`^${HEBREW_STOP}(?:\\s+${HEBREW_STOP})*$`).test(t)) return 'stop';
+  if (new RegExp(`^${HEBREW_CANCEL}(?:\\s+${HEBREW_CANCEL})*$`).test(t)) return 'cancel';
   return undefined;
 }
 export const CONTINUE_ACK = 'Okay, let me answer the full question.';
