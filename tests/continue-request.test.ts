@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentContent, ChatModel, ChatModelRequest, ChatModelResponse } from '../src/core/agent.ts';
-import { CONTINUE_ACK, NogitaEngine, hebrewVoiceCommand, type QuestionEvent } from '../src/core/engine.ts';
+import { CONTINUE_ACK, NogitaEngine, hebrewVoiceCommand, looksLikeCorrection, looksLikeHebrewCorrection, type QuestionEvent } from '../src/core/engine.ts';
 import { SpeechInterruptedError } from '../src/core/contracts.ts';
 import { AllowlistPolicy } from '../src/core/policy.ts';
 import { DemoBoard, DemoBrain, DemoCode, DemoMeeting } from '../src/adapters/demo.ts';
@@ -166,6 +166,48 @@ test('a correction replaces what it corrects', async () => {
   await until(() => f.meeting.heard.length >= 2);
   assert.deepEqual(f.meeting.heard, [CONTINUE_ACK, 'The mobile app has two open bugs.']);
   assert.match(model.asked.at(-1)!, /then corrected: "no, I meant the mobile app"/);
+});
+
+test('Hebrew and mixed corrections are recognized; a sentence that only contains "לא" is not', () => {
+  for (const text of ['לא, התכוונתי לאפליקציה במובייל', 'לא התכוונתי לשרת, אלא לאפליקציה', 'סליחה, התכוונתי ל-staging',
+    'בעצם, אני שואלת על המובייל', 'no, התכוונתי ל-mobile app', 'לא, I meant the mobile app', 'לא, לא זה, אלא המובייל']) {
+    assert.equal(looksLikeHebrewCorrection(text), true, text);
+  }
+  for (const text of ['לא הבנתי למה הבילד נכשל', 'למה הבילד לא עובר?', 'וגם תבדקי שאין באגים לא סגורים', 'לא משנה',
+    'לא', 'and also the tests']) {
+    assert.equal(looksLikeHebrewCorrection(text), false, text);
+  }
+  // Without the flag nothing changes: the English check never knew Hebrew.
+  assert.equal(looksLikeCorrection('לא, התכוונתי לאפליקציה במובייל'), false);
+});
+
+for (const [name, correction] of [['Hebrew', 'לא, התכוונתי לאפליקציה במובייל'], ['mixed', 'no, התכוונתי ל-mobile app']] as const) {
+  test(`a ${name} correction replaces what it corrects: "${correction}"`, async () => {
+    const model = new Model(said => /corrected/.test(said) ? [{ text: 'The mobile app has two open bugs.' }] : [{ text: 'The web app has five.', delayMs: 300 }]);
+    const f = fixture(model, true);
+    await f.engine.startSession('s', f.meeting);
+    const first = say(f, 'Nogita, how many bugs are open in the web app?', '1');
+    await sleep(30);
+    await say(f, correction, '2');
+    await first;
+    await until(() => f.meeting.heard.length >= 2);
+    assert.deepEqual(f.meeting.heard, [CONTINUE_ACK, 'The mobile app has two open bugs.']);
+    assert.ok(model.asked.at(-1)!.includes(`then corrected: "${correction}"`), model.asked.at(-1));
+  });
+}
+
+test('a sentence with "לא" that is not a correction is added to the request, not treated as one', async () => {
+  const model = new Model(said => /לא סגורים/.test(said) ? [{ text: 'Five, and none are unassigned.' }] : [{ text: 'The web app has five.', delayMs: 300 }]);
+  const f = fixture(model, true);
+  await f.engine.startSession('s', f.meeting);
+  const first = say(f, 'Nogita, how many bugs are open in the web app?', '1');
+  await sleep(30);
+  await say(f, 'וגם תבדקי שאין באגים לא סגורים בלי בעלים', '2');
+  await first;
+  await until(() => f.meeting.heard.length >= 2);
+  assert.deepEqual(f.meeting.heard, [CONTINUE_ACK, 'Five, and none are unassigned.']);
+  assert.ok(model.asked.at(-1)!.includes('web app? וגם תבדקי שאין באגים לא סגורים בלי בעלים'), model.asked.at(-1));
+  assert.ok(!model.asked.at(-1)!.includes('then corrected'));
 });
 
 test('"okay" while she speaks is a backchannel: nothing is added and the answer goes on', async () => {

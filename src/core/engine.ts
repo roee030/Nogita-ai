@@ -469,6 +469,16 @@ export function looksLikeCorrection(text: string): boolean {
   return /^(?:(?:no|nope|sorry|actually|wait)[,.!]?\s+)*(?:i meant|i mean|not that|i'm asking about|i am asking about|i was asking about|what i meant|i'm talking about|i was talking about)\b/i.test(t) ||
     /^(?:no|nope)[,.!]?\s+(?:the|for|in|on|about|not)\b/i.test(t);
 }
+/**
+ * NOGITA_CONTINUE_REQUEST: "לא, התכוונתי לאפליקציה במובייל", "סליחה, התכוונתי ל-staging", "no, התכוונתי ל-mobile app",
+ * "לא, I meant the mobile app". Hebrew or mixed only (English stays with looksLikeCorrection), and only when the words
+ * say what was meant: "לא הבנתי למה" or "באגים לא סגורים" go on the request, they correct nothing.
+ */
+export function looksLikeHebrewCorrection(text: string): boolean {
+  const t = text.trim();
+  if (!/\p{Script=Hebrew}/u.test(t)) return false;
+  return /^(?:(?:לא|סליחה|רגע|בעצם|no|nope|sorry|actually|wait)[,.!]?\s+)*(?:התכוונתי|כוונתי|הכוונה שלי|אני מתכוונת|אני מתכוון|אני שואלת על|אני שואל על|שאלתי על|לא זה|i meant|i mean|what i meant|i'm asking about|i was asking about)(?![\p{L}'])/iu.test(t);
+}
 /** "Nogita, -- the --": after her name, recognition kept too little of the question to answer it. */
 function lostAfterName(request: string): boolean {
   if (!looksLikeCrosstalk(request)) return false;
@@ -1874,7 +1884,7 @@ Proposed in Nogita's meeting recap; approved by ${utterance.actor.displayName}.`
         !addressesSomeoneElse(current, this.otherNames(s, utterance.actor.id)) && !this.isRoomNoise(s, current)) {
       // A correction ("no, I meant the mobile app") replaces the speaker's open question even well after it was asked,
       // and stops what she is saying about the old one.
-      const correction = looksLikeCorrection(current);
+      const correction = looksLikeCorrection(current) || (this.continueRequest && looksLikeHebrewCorrection(current));
       // Continue-request: while her answer is still open (being looked up, spoken or waiting to resume), however long it
       // has taken, the same person's next words belong to it.
       const started = s.questions.filter(q => NogitaEngine.isOpen(q) && q.actorId === utterance.actor.id &&
